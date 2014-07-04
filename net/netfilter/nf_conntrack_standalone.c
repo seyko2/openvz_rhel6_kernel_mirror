@@ -518,13 +518,13 @@ out_init:
 static void nf_conntrack_net_exit(struct list_head *net_exit_list)
 {
 	struct net *net;
-	struct net_context ctx;
+	struct ve_struct *old_env;
 
 	list_for_each_entry(net, net_exit_list, exit_list) {
-		set_net_context(net, &ctx);
+		old_env = set_exec_env(net->owner_ve);
 		nf_conntrack_standalone_fini_sysctl(net);
 		nf_conntrack_standalone_fini_proc(net);
-		restore_net_context(&ctx);
+		set_exec_env(old_env);
 	}
 	nf_conntrack_cleanup_list(net_exit_list);
 }

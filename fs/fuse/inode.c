@@ -20,11 +20,7 @@
 #include <linux/random.h>
 #include <linux/sched.h>
 #include <linux/exportfs.h>
-#ifdef CONFIG_VE
 #include <linux/ve_proto.h>
-#else
-#define ve_is_super(env) 1
-#endif
 #include <linux/sysctl.h>
 
 MODULE_AUTHOR("Miklos Szeredi <miklos@szeredi.hu>");

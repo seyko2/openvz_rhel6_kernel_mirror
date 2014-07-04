@@ -140,12 +140,8 @@ static inline unsigned long skb_charge_datalen(unsigned long chargesize)
 	unsigned long slabsize;
 
 	chargesize -= sizeof(struct sk_buff);
-	slabsize = 64;
-	do { 
-		slabsize <<= 1; 
-	} while (slabsize <= chargesize);
+	slabsize = rounddown_pow_of_two(chargesize);
 
-	slabsize >>= 1;
 	return (slabsize - sizeof(struct skb_shared_info)) &
 		~(SMP_CACHE_BYTES-1);
 #else

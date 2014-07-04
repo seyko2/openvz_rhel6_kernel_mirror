@@ -1021,14 +1021,13 @@ err:
 static __net_exit void venet_exit_net(struct list_head *net_exit_list)
 {
 	struct net *net;
-	struct ve_struct *env;
+	struct ve_struct *env, *old_env;
 	struct net_device *dev;
 	LIST_HEAD(netdev_kill_list);
-	struct net_context ctx;
 
 	list_for_each_entry(net, net_exit_list, exit_list) {
-		set_net_context(net, &ctx);
 		env = net->owner_ve;
+		old_env = set_exec_env(env);
 
 		if (env->ve_netns != net)
 			goto next;
@@ -1044,7 +1043,7 @@ static __net_exit void venet_exit_net(struct list_head *net_exit_list)
 		unregister_netdevice_queue(dev, &netdev_kill_list);
 		rtnl_unlock();
 next:
-		restore_net_context(&ctx);
+		set_exec_env(old_env);
 	}
 
 	rtnl_lock();
@@ -1063,9 +1062,9 @@ next:
 
 		env->_venet_dev = NULL;
 
-		set_net_context(net, &ctx);
+		old_env = set_exec_env(env);
 		free_netdev(dev);
-		restore_net_context(&ctx);
+		set_exec_env(old_env);
 	}
 }
 

@@ -26,6 +26,7 @@
 #include <linux/delay.h>
 #include <linux/ve_proto.h>
 #include <linux/kmod.h>
+#include <linux/freezer.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -602,7 +603,78 @@ static struct file_operations cpt_fops = {
 	.ioctl	 = cpt_ioctl,
 };
 
+static ssize_t melt_write( struct file *file,
+			   const char __user *buffer,
+			   size_t len,
+			   loff_t *offset )
+{
+	struct task_struct *p, *g;
+	char veid_str[32];
+	unsigned long veid;
+	struct ve_struct *ve, *curr_ve;
+
+	memset(veid_str, 0, 32);
+
+	if (len >= sizeof(veid_str))
+	       return -ENOMEM;
+
+	if (copy_from_user(veid_str, buffer, len))
+		return -EFAULT;
+
+	if (strict_strtoul(veid_str, 10, &veid) < 0)
+		return -EINVAL;
+
+	ve = get_ve_by_id(veid);
+	if (!ve)
+		return -ENOENT;
+
+	if (ve_is_super(ve)) {
+		len = -EPERM;
+		goto out;
+	}
+
+	curr_ve = set_exec_env(ve);
+
+	read_lock(&tasklist_lock);
+	do_each_thread_ve(g, p) {
+		if (freezing(p) || frozen(p)) {
+			if (!thaw_process(p)) {
+				printk(KERN_ERR "Failed to thaw: " CPT_FID " \n",
+						CPT_TID(p));
+			}
+		}
+	} while_each_thread_ve(g, p);
+	read_unlock(&tasklist_lock);
+
+	set_exec_env(curr_ve);
+	put_ve(ve);
+out:
+	return len;
+}
+
+static int melt_open(struct inode *inode, struct file *file)
+{
+	if (!try_module_get(THIS_MODULE))
+		return -EBUSY;
+
+	return 0;
+}
+
+static int melt_release(struct inode * inode, struct file * file)
+{
+	module_put(THIS_MODULE);
+	return 0;
+}
+
+static struct file_operations melt_fops = {
+	.owner	 = THIS_MODULE,
+	.open    = melt_open,
+	.write	 = melt_write,
+	.release = melt_release,
+};
+
 static struct proc_dir_entry *proc_ent;
+static struct proc_dir_entry *melt_ent;
 
 static struct ctl_table_header *cpt_control;
 
@@ -681,8 +753,14 @@ static int __init init_cpt(void)
 	proc_ent->read_proc = proc_read;
 	proc_ent->data = NULL;
 
+	melt_ent = proc_create("thaw", 0200, proc_vz_dir, &melt_fops);
+	if (!melt_ent)
+		goto err_melt;
+
 	return 0;
 
+err_melt:
+	remove_proc_entry("cpt", NULL);
 err_out:
 	unregister_sysctl_table(cpt_control);
 err_control:
@@ -694,6 +772,7 @@ module_init(init_cpt);
 
 static void __exit exit_cpt(void)
 {
+	remove_proc_entry("thaw", proc_vz_dir);
 	remove_proc_entry("cpt", NULL);
 	unregister_sysctl_table(cpt_control);
 	unregister_sysctl_table(ctl_header);

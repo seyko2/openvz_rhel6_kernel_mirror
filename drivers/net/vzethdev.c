@@ -676,17 +676,18 @@ static __net_exit void veth_exit_net(struct list_head *net_exit_list)
 	struct net *net;
 	struct veth_struct *entry, *tmp;
 	LIST_HEAD(netdev_kill_list);
-	struct net_context ctx;
 
 	down(&hwaddr_sem);
 	list_for_each_entry(net, net_exit_list, exit_list) {
-		set_net_context(net, &ctx);
+		struct ve_struct *old_env;
+
+		old_env = set_exec_env(net->owner_ve);
 		list_for_each_entry_safe(entry, tmp,
 					 &veth_hwaddr_list, hwaddr_list)
 			if (net == veth_to_netdev(entry)->nd_net)
 				veth_pair_del(net->owner_ve, entry,
 					      &netdev_kill_list);
-		restore_net_context(&ctx);
+		set_exec_env(old_env);
 	}
 	up(&hwaddr_sem);
 

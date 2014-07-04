@@ -90,6 +90,15 @@ static void ve_print_frozen(cpt_context_t *ctx)
 {
 	struct task_struct *p, *g;
 	int tainted = 0;
+	struct ve_struct *curr, *ve;
+
+	ve = get_ve_by_id(ctx->ve_id);
+	if (!ve) {
+		eprintk_ctx("%s: Failed to get VE by id %d\n", __func__, ctx->ve_id);
+		return;
+	}
+
+	curr = set_exec_env(ve);
 
 	read_lock(&tasklist_lock);
 	do_each_thread_ve(g, p) {
@@ -98,12 +107,16 @@ static void ve_print_frozen(cpt_context_t *ctx)
 				add_taint(TAINT_CRAP);
 			eprintk_ctx("ve#%d: %s process: " CPT_FID
 				    ", exit_state: %d, state: %ld\n",
-				    ctx->ve_id,
+				    get_exec_env()->veid,
 				    (freezing(p)) ? "freezing" : "frozen",
 				    CPT_TID(p), p->exit_state, p->state);
 		}
 	} while_each_thread_ve(g, p);
 	read_unlock(&tasklist_lock);
+
+	(void)set_exec_env(curr);
+
+	put_ve(ve);
 }
 
 static void wake_ve(cpt_context_t *ctx)

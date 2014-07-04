@@ -243,39 +243,49 @@ static struct {
 				VE_IP_IPTABLES6			},
 };
 
-static int ve0_module_is_allowed(const char *module)
+/*
+ * module_payload_allowed - check if module functionality is allowed
+ * 			    to be used inside current virtual enviroment.
+ *
+ * Returns true if it is allowed or we're in ve0, false otherwise.
+ */
+bool module_payload_allowed(const char *module)
 {
-	struct net *net = get_exec_env()->ve_netns;
+	u64 permitted = get_exec_env()->ipt_mask;
 	int i;
 
 	if (ve_is_super(get_exec_env()))
-		return 1;
-	else if (!ve_allow_module_load)
-		return 0;
+		return true;
 
 	/* Look for full module name in ve0_am table */
 	for (i = 0; i < ARRAY_SIZE(ve0_am); i++) {
 		if (!strcmp(ve0_am[i].name, module))
-			return net_ipt_permitted(net, ve0_am[i].perm);
+			return mask_ipt_allow(permitted, ve0_am[i].perm);
 	}
 
 	/* The rest of xt_* modules is allowed in both ipv4 and ipv6 modes */
 	if (!strncmp("xt_", module, 3))
-		return net_ipt_permitted(net, VE_IP_IPTABLES) ||
-		       net_ipt_permitted(net, VE_IP_IPTABLES6);
+		return mask_ipt_allow(permitted, VE_IP_IPTABLES) ||
+		       mask_ipt_allow(permitted, VE_IP_IPTABLES6);
 
 	/* The rest of ipt_* modules */
 	if (!strncmp("ipt_", module, 4))
-		return net_ipt_permitted(net, VE_IP_IPTABLES);
+		return mask_ipt_allow(permitted, VE_IP_IPTABLES);
 
 	/* The rest of ip6t_* modules */
 	if (!strncmp("ip6t_", module, 5))
-		return net_ipt_permitted(net, VE_IP_IPTABLES6);
+		return mask_ipt_allow(permitted, VE_IP_IPTABLES6);
 
-	return 0;
+	/* The rest of arpt_* modules */
+	if (!strncmp("arpt_", module, 5))
+		return true;
+
+	/* The rest of ebt_* modules */
+	if (!strncmp("ebt_", module, 4))
+		return true;
+
+	return false;
 }
-#else /* !CONFIG_VE_IPTABLES */
-static inline int ve0_module_is_allowed(const char *module) { return 0; }
 #endif /* CONFIG_VE_IPTABLES */
 
 int ve0_request_module(const char *name,...)
@@ -292,7 +302,13 @@ int ve0_request_module(const char *name,...)
 	if (ret >= MODULE_NAME_LEN)
 		return -ENAMETOOLONG;
 
-	if (!ve0_module_is_allowed(module_name))
+	/* Check that autoload is not prohobited using /proc interface */
+	if (!ve_is_super(get_exec_env()) &&
+	    !ve_allow_module_load)
+		return -EPERM;
+
+	/* Check that module functionality is permitted */
+	if (!module_payload_allowed(module_name))
 		return -EPERM;
 
 	old = set_exec_env(get_ve0());

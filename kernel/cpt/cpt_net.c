@@ -418,6 +418,7 @@ struct args_t
 {
 	int* pfd;
 	envid_t veid;
+	int is_ipv6;
 };
 
 static int dumpfn(void *arg)
@@ -426,10 +427,23 @@ static int dumpfn(void *arg)
 	struct args_t *args = arg;
 	int *pfd = args->pfd;
 	char *argv[] = { "iptables-save", "-c", NULL };
+	bool may_fail = false;
+	const char *path1, *path2;
+
+	if (!args->is_ipv6) {
+		path1 = "/sbin/iptables-save";
+		path2 = "/usr/sbin/iptables-save";
+	} else {
+		argv[0]  = "ip6tables-save";
+		path1 = "/sbin/ip6tables-save";
+		path2 = "/usr/sbin/ip6tables-save";
+		/* We ignore nonexistent ip6-tools */
+		may_fail = true;
+	}
 
 	i = real_env_create(args->veid, VE_ENTER|VE_SKIPLOCK, 2, NULL, 0);
 	if (i < 0) {
-		eprintk("cannot enter ve to dump iptables\n");
+		eprintk("cannot enter ve to execute %s\n", argv[0]);
 		module_put(THIS_MODULE);
 		return 255 << 8;
 	}
@@ -445,15 +459,20 @@ static int dumpfn(void *arg)
 	module_put(THIS_MODULE);
 
 	set_fs(KERNEL_DS);
-	i = kernel_execve("/sbin/iptables-save", argv, NULL);
+	i = kernel_execve(path1, argv, NULL);
 	if (i == -ENOENT)
-		i = kernel_execve("/usr/sbin/iptables-save", argv, NULL);
-	eprintk("failed to exec iptables-save: %d\n", i);
+		i = kernel_execve(path2, argv, NULL);
+	if (i == -ENOENT && may_fail) {
+		sc_close(1);
+		eprintk("Can't find %s, ignoring...\n", argv[0]);
+		return 0;
+	}
+
+	eprintk("failed to exec %s: %d\n", argv[0], i);
 	return 255 << 8;
 }
 
-
-static int cpt_dump_iptables(struct cpt_context * ctx)
+static int cpt_dump_xtables(struct cpt_context *ctx, bool is_ipv6)
 {
 	int err = 0;
 #ifdef CONFIG_VE_IPTABLES
@@ -470,9 +489,6 @@ static int cpt_dump_iptables(struct cpt_context * ctx)
 	struct args_t args;
 	struct ve_struct *oldenv;
 
-	if (!(get_exec_env()->_iptables_modules & VE_IP_IPTABLES_MOD))
-		return 0;
-
 	err = sc_pipe(pfd);
 	if (err < 0) {
 		eprintk_ctx("sc_pipe: %d\n", err);
@@ -480,6 +496,7 @@ static int cpt_dump_iptables(struct cpt_context * ctx)
 	}
 	args.pfd = pfd;
 	args.veid = VEID(get_exec_env());
+	args.is_ipv6 = is_ipv6;
 	ignore.sig[0] = CPT_SIG_IGNORE_MASK;
 	sigprocmask(SIG_BLOCK, &ignore, &blocked);
 	oldenv = set_exec_env(get_ve0());
@@ -495,13 +512,11 @@ static int cpt_dump_iptables(struct cpt_context * ctx)
 	sc_close(pfd[1]);
 	sc_close(pfd[0]);
 
-	cpt_open_section(ctx, CPT_SECT_NET_IPTABLES);
-
 	cpt_open_object(NULL, ctx);
 	v.cpt_next = CPT_NULL;
 	v.cpt_object = CPT_OBJ_NAME;
 	v.cpt_hdrlen = sizeof(v);
-	v.cpt_content = CPT_CONTENT_NAME;
+	v.cpt_content = is_ipv6 ? CPT_NULL : CPT_CONTENT_NAME;
 
 	ctx->write(&v, sizeof(v), ctx);
 
@@ -540,12 +555,9 @@ static int cpt_dump_iptables(struct cpt_context * ctx)
 		ctx->write(buf, 1, ctx);
 		ctx->align(ctx);
 		cpt_close_object(ctx);
-		cpt_close_section(ctx);
 	} else {
-		pos = ctx->current_section;
+		pos = ctx->current_object;
 		cpt_close_object(ctx);
-		cpt_close_section(ctx);
-		ctx->sections[CPT_SECT_NET_IPTABLES] = CPT_NULL;
 		ctx->file->f_pos = pos;
 	}
 	return n ? : err;
@@ -558,6 +570,39 @@ out:
 	sigprocmask(SIG_SETMASK, &blocked, NULL);
 #endif
 	return err;
+}
+
+static int cpt_dump_iptables(struct cpt_context *ctx)
+{
+	u64 mask = get_exec_env()->_iptables_modules;
+	int pos, ret = 0;
+
+	if (!(mask & (VE_IP_IPTABLES_MOD|VE_IP_IPTABLES6_MOD)))
+		goto out;
+
+	cpt_open_section(ctx, CPT_SECT_NET_IPTABLES);
+	pos = ctx->file->f_pos;
+
+	if ((mask & VE_IP_IPTABLES_MOD) != 0) {
+		ret = cpt_dump_xtables(ctx, false);
+		if (ret)
+			goto close;
+	}
+
+	if ((mask & VE_IP_IPTABLES6_MOD) != 0)
+		ret = cpt_dump_xtables(ctx, true);
+close:
+	if (pos == ctx->file->f_pos || ret) {
+		pos = ctx->current_section;
+		cpt_close_section(ctx);
+		ctx->sections[CPT_SECT_NET_IPTABLES] = CPT_NULL;
+		ctx->file->f_pos = pos;
+	} else {
+		/* Already aligned */
+		cpt_close_section(ctx);
+	}
+out:
+	return ret;
 }
 
 static void __maybe_unused cpt_dump_snmp_stub(struct cpt_context *ctx);

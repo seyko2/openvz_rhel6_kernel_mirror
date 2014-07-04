@@ -179,6 +179,13 @@ static int handle_to_path(int mountdirfd, struct file_handle __user *ufh,
 		retval = -EPERM;
 		goto out_err;
 	}
+#ifdef CONFIG_VE
+       /* Don't allow opening files by handle inside VE. */
+       if (!ve_is_super(get_exec_env())) {
+               retval = -EPERM;
+               goto out_err;
+       }
+#endif
 	if (copy_from_user(&f_handle, ufh, sizeof(struct file_handle))) {
 		retval = -EFAULT;
 		goto out_err;

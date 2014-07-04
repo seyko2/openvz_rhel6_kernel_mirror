@@ -49,6 +49,12 @@ extern int ve0_request_module(const char *name,...) \
 #define ve0_try_then_request_module(x, mod...) \
 	((x) ?: (ve0_request_module(mod), (x)))
 
+#ifdef CONFIG_VE_IPTABLES
+extern bool module_payload_allowed(const char *module);
+#else
+static inline bool module_payload_allowed(const char *module) { return true; }
+#endif
+
 struct cred;
 struct file;
 

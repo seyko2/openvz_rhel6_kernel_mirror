@@ -25,7 +25,6 @@
 #include <linux/module.h>
 #include <linux/mm_inline.h>
 #include <linux/mmgang.h>
-#include <linux/buffer_head.h>	/* for try_to_release_page() */
 #include <linux/percpu_counter.h>
 #include <linux/percpu.h>
 #include <linux/cpu.h>
@@ -506,7 +505,7 @@ static void ____pagevec_lru_deactivate(struct pagevec *pvec)
  * Either "cpu" is the current CPU, and preemption has already been
  * disabled; or "cpu" is being hot-unplugged, and is already dead.
  */
-static void drain_cpu_pagevecs(int cpu)
+void lru_add_drain_cpu(int cpu)
 {
 	struct pagevec *pvecs = per_cpu(lru_add_pvecs, cpu);
 	struct pagevec *pvec;
@@ -554,7 +553,7 @@ void deactivate_page(struct page *page)
 
 void lru_add_drain(void)
 {
-	drain_cpu_pagevecs(get_cpu());
+	lru_add_drain_cpu(get_cpu());
 	put_cpu();
 }
 
@@ -587,11 +586,10 @@ int lru_add_drain_all(void)
 void release_pages(struct page **pages, int nr, int cold)
 {
 	int i;
-	struct pagevec pages_to_free;
+	LIST_HEAD(pages_to_free);
 	struct lruvec *lruvec = NULL;
 	unsigned long flags;
 
-	pagevec_init(&pages_to_free, cold);
 	local_irq_save(flags);
 	for (i = 0; i < nr; i++) {
 		struct page *page = pages[i];
@@ -614,17 +612,12 @@ void release_pages(struct page **pages, int nr, int cold)
 			gang_del_user_page(page);
 		}
 
-		if (!pagevec_add(&pages_to_free, page)) {
-			unlock_lruvec(lruvec);
-			lruvec = NULL;
-			__pagevec_free(&pages_to_free);
-			pagevec_reinit(&pages_to_free);
-		}
+		list_add(&page->lru, &pages_to_free);
 	}
 	unlock_lruvec(lruvec);
 	local_irq_restore(flags);
 
-	pagevec_free(&pages_to_free);
+	free_hot_cold_page_list(&pages_to_free, cold);
 }
 
 /*
@@ -727,24 +720,6 @@ void ____pagevec_lru_add(struct pagevec *pvec, enum lru_list lru)
 }
 
 EXPORT_SYMBOL(____pagevec_lru_add);
-
-/*
- * Try to drop buffers from the pages in a pagevec
- */
-void pagevec_strip(struct pagevec *pvec)
-{
-	int i;
-
-	for (i = 0; i < pagevec_count(pvec); i++) {
-		struct page *page = pvec->pages[i];
-
-		if (page_has_private(page) && trylock_page(page)) {
-			if (page_has_private(page))
-				try_to_release_page(page, 0);
-			unlock_page(page);
-		}
-	}
-}
 
 /**
  * pagevec_lookup - gang pagecache lookup

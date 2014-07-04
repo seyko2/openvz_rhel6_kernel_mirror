@@ -278,14 +278,6 @@ struct pernet_operations {
 	size_t size;
 };
 
-struct net_context {
-	struct ve_struct *ve;
-	struct user_beancounter *ub;
-};
-
-extern void set_net_context(struct net *net, struct net_context *ctx);
-extern void restore_net_context(struct net_context *ctx);
-
 /*
  * Use these carefully.  If you implement a network device and it
  * needs per network namespace operations use device pernet operations,

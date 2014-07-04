@@ -11,9 +11,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/sched.h>
-#ifdef CONFIG_VE
 #include <linux/ve_proto.h>
-#endif
 #include <linux/seq_file.h>
 
 #define FUSE_CTL_SUPER_MAGIC 0x65735543

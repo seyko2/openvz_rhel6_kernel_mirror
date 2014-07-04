@@ -1,4 +1,4 @@
-cmd_scripts/kconfig/kxgettext.o := gcc -Wp,-MD,scripts/kconfig/.kxgettext.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer   -DCURSES_LOC="<curses.h>" -DLOCALE   -c -o scripts/kconfig/kxgettext.o scripts/kconfig/kxgettext.c
+cmd_scripts/kconfig/kxgettext.o := gcc -Wp,-MD,scripts/kconfig/.kxgettext.o.d -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer   -I/usr/include/ncurses -DCURSES_LOC="<ncurses.h>" -DLOCALE   -c -o scripts/kconfig/kxgettext.o scripts/kconfig/kxgettext.c
 
 deps_scripts/kconfig/kxgettext.o := \
   scripts/kconfig/kxgettext.c \

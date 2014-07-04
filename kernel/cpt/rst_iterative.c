@@ -396,21 +396,28 @@ int rst_iteration(cpt_context_t *ctx)
 		swn = rb_lookup_pfn(rep.handle, ctx);
 		if (swn) {
 			page = dontread_swap_cache(swn->ent, file, ub);
-			if (page == NULL)
+			if (page == NULL) {
+				eprintk_ctx("Found swap entry without page\n");
 				break;
+			}
 			page_cache_release(page);
 			continue;
 		}
 
-		if (nr_swap_pages*4 < total_swap_pages)
+		if (nr_swap_pages*4 < total_swap_pages) {
+			eprintk_ctx("Swap pages barrier\n");
 			break;
+		}
 
 		page = alloc_page(GFP_HIGHUSER);
-		if (page == NULL)
+		if (page == NULL) {
+			eprintk_ctx("Failed to alloc page\n");
 			break;
+		}
 
 		err = gang_add_user_page(page, get_ub_gs(ub), GFP_KERNEL);
 		if (err) {
+			eprintk_ctx("Failed to charge page\n");
 			page_cache_release(page);
 			break;
 		}
@@ -420,6 +427,7 @@ int rst_iteration(cpt_context_t *ctx)
 		kunmap(page);
 
 		if (err) {
+			eprintk_ctx("Failed to read page\n");
 			gang_del_user_page(page);
 			page_cache_release(page);
 			break;
@@ -435,6 +443,7 @@ int rst_iteration(cpt_context_t *ctx)
 			unlock_page(page);
 			gang_del_user_page(page);
 			page_cache_release(page);
+			eprintk_ctx("Failed to add page to swap\n");
 			err = -ENOMEM;
 			break;
 		}
@@ -442,11 +451,14 @@ int rst_iteration(cpt_context_t *ctx)
 		page_cache_release(page);
 
 		err = swap_duplicate(ent);
-		if (err)
+		if (err) {
+			eprintk_ctx("Failed to duplicate page in swap\n");
 			break;
+		}
 
 		err = rb_insert_pfn(rep.handle, ent, ctx);
 		if (err) {
+			eprintk_ctx("Failed to add swap enry to tree\n");
 			free_swap_and_cache(ent);
 			break;
 		}

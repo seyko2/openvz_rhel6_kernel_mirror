@@ -500,11 +500,28 @@ out:
 	return err;
 }
 
+struct args_t
+{
+	int *pfd;
+	bool is_ipv6;
+};
+
 static int dumpfn(void *arg)
 {
 	int i;
-	int *pfd = arg;
+	struct args_t *args = arg;
+	int *pfd = args->pfd;
 	char *argv[] = { "iptables-restore", "-c", NULL };
+	const char *path1, *path2;
+
+	if (!args->is_ipv6) {
+		path1 = "/sbin/iptables-restore";
+		path2 = "/usr/sbin/iptables-restore";
+	} else {
+		argv[0] = "ip6tables-restore";
+		path1 = "/sbin/ip6tables-restore";
+		path2 = "/usr/sbin/ip6tables-restore";
+	}
 
 	if (pfd[0] != 0)
 		sc_dup2(pfd[0], 0);
@@ -515,52 +532,39 @@ static int dumpfn(void *arg)
 	module_put(THIS_MODULE);
 
 	set_fs(KERNEL_DS);
-	i = kernel_execve("/sbin/iptables-restore", argv, NULL);
+	i = kernel_execve(path1, argv, NULL);
 	if (i == -ENOENT)
-		i = kernel_execve("/usr/sbin/iptables-restore", argv, NULL);
-	eprintk("failed to exec iptables-restore: %d\n", i);
+		i = kernel_execve(path2, argv, NULL);
+	eprintk("failed to exec %s: %d\n", argv[0], i);
 	return 255 << 8;
 }
 
-static int rst_restore_iptables(struct cpt_context * ctx)
+static int rst_restore_xtables(struct cpt_context *ctx, loff_t *pos)
 {
 	int err;
 	int pfd[2];
 	struct file *f;
 	struct cpt_object_hdr v;
 	int n;
-	struct cpt_section_hdr h;
-	loff_t sec = ctx->sections[CPT_SECT_NET_IPTABLES];
 	loff_t end;
 	int pid;
 	int status;
 	mm_segment_t oldfs;
 	sigset_t ignore, blocked;
+	struct args_t args;
 
-	if (sec == CPT_NULL)
-		return 0;
-
-	err = ctx->pread(&h, sizeof(h), ctx, sec);
-	if (err)
-		return err;
-	if (h.cpt_section != CPT_SECT_NET_IPTABLES || h.cpt_hdrlen < sizeof(h))
-		return -EINVAL;
-
-	if (h.cpt_hdrlen == h.cpt_next)
-		return 0;
-	if (h.cpt_hdrlen > h.cpt_next)
-		return -EINVAL;
-	sec += h.cpt_hdrlen;
-	err = rst_get_object(CPT_OBJ_NAME, sec, &v, ctx);
+	err = rst_get_object(CPT_OBJ_NAME, *pos, &v, ctx);
 	if (err < 0)
 		return err;
 
 	err = sc_pipe(pfd);
 	if (err < 0)
 		return err;
+	args.pfd = pfd;
+	args.is_ipv6 = (v.cpt_content == CPT_CONTENT_NAME ? false : true);
 	ignore.sig[0] = CPT_SIG_IGNORE_MASK;
 	sigprocmask(SIG_BLOCK, &ignore, &blocked);
-	pid = err = local_kernel_thread(dumpfn, (void*)pfd, SIGCHLD, 0);
+	pid = err = local_kernel_thread(dumpfn, (void*)&args, SIGCHLD, 0);
 	if (err < 0) {
 		eprintk_ctx("iptables local_kernel_thread: %d\n", err);
 		goto out;
@@ -569,8 +573,8 @@ static int rst_restore_iptables(struct cpt_context * ctx)
 	sc_close(pfd[1]);
 	sc_close(pfd[0]);
 
-	ctx->file->f_pos = sec + v.cpt_hdrlen;
-	end = sec + v.cpt_next;
+	ctx->file->f_pos = *pos + v.cpt_hdrlen;
+	end = *pos + v.cpt_next;
 	do {
 		char *p;
 		char buf[16];
@@ -609,6 +613,8 @@ static int rst_restore_iptables(struct cpt_context * ctx)
 	set_fs(oldfs);
 	sigprocmask(SIG_SETMASK, &blocked, NULL);
 
+	*pos = end;
+
 	return err;
 
 out:
@@ -618,6 +624,37 @@ out:
 		sc_close(pfd[0]);
 	sigprocmask(SIG_SETMASK, &blocked, NULL);
 	return err;
+}
+
+static int rst_restore_iptables(struct cpt_context *ctx)
+{
+	loff_t sec = ctx->sections[CPT_SECT_NET_IPTABLES];
+	struct cpt_section_hdr h;
+	loff_t pos;
+	int err;
+
+	if (sec == CPT_NULL)
+		return 0;
+
+	err = ctx->pread(&h, sizeof(h), ctx, sec);
+	if (err)
+		return err;
+	if (h.cpt_section != CPT_SECT_NET_IPTABLES || h.cpt_hdrlen < sizeof(h))
+		return -EINVAL;
+
+	if (h.cpt_hdrlen == h.cpt_next)
+		return 0;
+	if (h.cpt_hdrlen > h.cpt_next)
+		return -EINVAL;
+	pos = sec + h.cpt_hdrlen;
+
+	err = rst_restore_xtables(ctx, &pos);
+	if (err)
+		return err;
+	else if (pos == sec + h.cpt_next)
+		return 0;
+
+	return rst_restore_xtables(ctx, &pos);
 }
 
 static int rst_restore_snmp_stat(struct cpt_context *ctx, void *mib[], int n,

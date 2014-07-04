@@ -1082,7 +1082,7 @@ static struct shrinker dcache_shrinker = {
  * copied and the copy passed in may be reused after this call.
  */
  
-struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
+static struct dentry *__d_alloc(struct dentry *parent, const struct qstr *name)
 {
 	struct dentry *dentry;
 	struct user_beancounter *ub = NULL;
@@ -1135,21 +1135,32 @@ struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 	INIT_LIST_HEAD(&dentry->d_bclru);
 	INIT_LIST_HEAD(&dentry->d_subdirs);
 	INIT_LIST_HEAD(&dentry->d_alias);
+	INIT_LIST_HEAD(&dentry->d_u.d_child);
 
+	spin_lock(&dcache_lock);
+	dentry_stat.nr_dentry++;
+	spin_unlock(&dcache_lock);
+
+	return dentry;
+}
+
+struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
+{
+	struct dentry *dentry;
+	
+	dentry = __d_alloc(parent, name);
+	if (!dentry)
+		return NULL;
+
+	spin_lock(&dcache_lock);
 	if (parent) {
 		dentry->d_parent = dget(parent);
 		dentry->d_sb = parent->d_sb;
+		list_add(&dentry->d_u.d_child, &parent->d_subdirs);
 	} else {
 		dentry->d_flags |= DCACHE_BCTOP;
-		INIT_LIST_HEAD(&dentry->d_u.d_child);
+		list_add_tail(&dentry->d_bclru, &dentry->d_ub->ub_dentry_top);
 	}
-
-	spin_lock(&dcache_lock);
-	if (parent)
-		list_add(&dentry->d_u.d_child, &parent->d_subdirs);
-	else
-		list_add_tail(&dentry->d_bclru, &ub->ub_dentry_top);
-	dentry_stat.nr_dentry++;
 	spin_unlock(&dcache_lock);
 
 	return dentry;
@@ -1157,7 +1168,7 @@ struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 
 struct dentry *d_alloc_pseudo(struct super_block *sb, const struct qstr *name)
 {
-	struct dentry *dentry = d_alloc(NULL, name);
+	struct dentry *dentry = __d_alloc(NULL, name);
 	if (dentry) {
 		dentry->d_sb = sb;
 		dentry->d_parent = dentry;
@@ -1409,6 +1420,19 @@ struct dentry *d_obtain_alias(struct inode *inode)
 }
 EXPORT_SYMBOL(d_obtain_alias);
 
+static struct dentry *__find_moveable_alias(struct inode *inode,
+						struct dentry *parent)
+{
+	struct dentry *alias;
+
+	if (list_empty(&inode->i_dentry))
+		return NULL;
+	alias = list_first_entry(&inode->i_dentry, struct dentry, d_alias);
+	if (alias->d_parent == parent || IS_ROOT(alias))
+		return __dget_locked(alias);
+	return NULL;
+}
+
 /**
  * d_splice_alias - splice a disconnected dentry into the tree if one exists
  * @inode:  the inode which may have a disconnected dentry
@@ -1431,20 +1455,14 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 
 	if (inode && S_ISDIR(inode->i_mode)) {
 		spin_lock(&dcache_lock);
-		new = __d_find_any_alias(inode);
+		new = __find_moveable_alias(inode, dentry->d_parent);
 		if (new) {
-			if (new->d_parent != dentry->d_parent &&
-					!IS_ROOT(new->d_parent)) {
-				WARN_ON_ONCE(1);
-				goto add_duplicate_alias;
-			}
 			spin_unlock(&dcache_lock);
 			security_d_instantiate(new, inode);
 			d_rehash(dentry);
 			d_move(new, dentry);
 			iput(inode);
 		} else {
-add_duplicate_alias:
 			/* already taking dcache_lock, so d_add() by hand */
 			__d_instantiate(dentry, inode);
 			spin_unlock(&dcache_lock);

@@ -278,10 +278,13 @@ static int br_rst_nested_dev(loff_t start, struct cpt_br_image *bri,
 		if (ret)
 			break;
 
-		printk(KERN_ERR "%s: restore '%s' nested dev\n", __func__, o.name);
-
 		dev = dev_get_by_name(dev_net(br->dev), o.name);
-		BUG_ON(dev == NULL);
+		if (!dev) {
+			printk(KERN_ERR "%s: restore '%s' nested dev\n", __func__, o.name);
+			WARN_ON(1);
+			ret = -ENODEV;
+			break;
+		}
 
 		ret = br_add_if(br, dev);
 		dev_put(dev);

@@ -683,7 +683,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 					unsigned long *ret_nr_writeback)
 {
 	LIST_HEAD(ret_pages);
-	struct pagevec freed_pvec;
+	LIST_HEAD(free_pages);
 	int pgactivate = 0;
 	unsigned long nr_dirty = 0;
 	unsigned long nr_congested = 0;
@@ -692,7 +692,6 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 	cond_resched();
 
-	pagevec_init(&freed_pvec, 1);
 	while (!list_empty(page_list)) {
 		enum page_references references;
 		struct address_space *mapping;
@@ -918,10 +917,12 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 free_it:
 		gang_del_user_page(page);
 		nr_reclaimed++;
-		if (!pagevec_add(&freed_pvec, page)) {
-			__pagevec_free(&freed_pvec);
-			pagevec_reinit(&freed_pvec);
-		}
+
+		/*
+		 * Is there need to periodically free_page_list? It would
+		 * appear not as the counts should be low
+		 */
+		list_add(&page->lru, &free_pages);
 		continue;
 
 cull_mlocked:
@@ -955,9 +956,9 @@ keep:
 	if (nr_dirty && nr_dirty == nr_congested && global_reclaim(sc))
 		zone_set_flag(zone, ZONE_CONGESTED);
 
+	free_hot_cold_page_list(&free_pages, 1);
+
 	list_splice(&ret_pages, page_list);
-	if (pagevec_count(&freed_pvec))
-		__pagevec_free(&freed_pvec);
 	count_vm_events(PGACTIVATE, pgactivate);
 	trace_mm_pagereclaim_free(nr_reclaimed);
         *ret_nr_dirty += nr_dirty;
@@ -1331,7 +1332,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 		     struct scan_control *sc, enum lru_list lru)
 {
 	LIST_HEAD(page_list);
-	struct pagevec pvec;
+	LIST_HEAD(pages_to_free);
 	unsigned long nr_scanned = 0;
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_dirty = 0;
@@ -1347,8 +1348,6 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 		if (fatal_signal_pending(current))
 			return SWAP_CLUSTER_MAX;
 	}
-
-	pagevec_init(&pvec, 1);
 
 	lru_add_drain();
 	spin_lock_irq(&lruvec->lru_lock);
@@ -1441,11 +1440,19 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 			/* XXX - mess with active/inactive? */
 			if (locked == lruvec)
 				count[lru] += hpage_nr_pages(page);
-			if (!pagevec_add(&pvec, page)) {
-				spin_unlock_irq(&locked->lru_lock);
-				locked = NULL;
-				__pagevec_release(&pvec);
-				local_irq_disable();
+			if (put_page_testzero(page)) {
+				__ClearPageLRU(page);
+				__ClearPageActive(page);
+				del_page_from_lru_list(locked, page, lru);
+				gang_del_user_page(page);
+
+				if (unlikely(PageCompound(page))) {
+					spin_unlock_irq(&locked->lru_lock);
+					(*get_compound_page_dtor(page))(page);
+					locked = NULL;
+					local_irq_disable();
+				} else
+					list_add(&page->lru, &pages_to_free);
 			}
 		}
 
@@ -1492,7 +1499,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 
 done:
 	spin_unlock_irq(&lruvec->lru_lock);
-	pagevec_release(&pvec);
+	free_hot_cold_page_list(&pages_to_free, 1);
 	trace_mm_pagereclaim_shrinkinactive(nr_scanned, file, 
 				nr_reclaimed, sc->priority);
 	return nr_reclaimed;
@@ -1516,15 +1523,26 @@ done:
  * But we had to alter page->flags anyway.
  */
 
-void move_active_pages_to_lru(struct zone *zone, struct lruvec *lruvec,
-		struct list_head *list, enum lru_list lru)
+static void move_active_pages_to_lru(struct zone *zone, struct lruvec *lruvec,
+				     struct list_head *list,
+				     struct list_head *pages_to_free,
+				     enum lru_list lru)
 {
 	unsigned long pgmoved = 0;
-	struct pagevec pvec;
 	struct page *page;
 	struct lruvec *locked = lruvec;
 
-	pagevec_init(&pvec, 1);
+	if (is_file_lru(lru) && buffer_heads_over_limit) {
+		spin_unlock_irq(&locked->lru_lock);
+		list_for_each_entry(page, list, lru) {
+			if (page_has_private(page) && trylock_page(page)) {
+				if (page_has_private(page))
+					try_to_release_page(page, 0);
+				unlock_page(page);
+			}
+		}
+		spin_lock_irq(&locked->lru_lock);
+	}
 
 	while (!list_empty(list)) {
 		int numpages;
@@ -1543,13 +1561,19 @@ void move_active_pages_to_lru(struct zone *zone, struct lruvec *lruvec,
 		locked->nr_pages[lru] += numpages;
 		pgmoved += numpages;
 
-		if (!pagevec_add(&pvec, page) || list_empty(list)) {
-			spin_unlock_irq(&locked->lru_lock);
-			if (is_file_lru(lru) && buffer_heads_over_limit)
-				pagevec_strip(&pvec);
-			__pagevec_release(&pvec);
-			spin_lock_irq(&lruvec->lru_lock);
-			locked = lruvec;
+		if (put_page_testzero(page)) {
+			__ClearPageLRU(page);
+			__ClearPageActive(page);
+			del_page_from_lru_list(locked, page, lru);
+			gang_del_user_page(page);
+
+			if (unlikely(PageCompound(page))) {
+				spin_unlock_irq(&locked->lru_lock);
+				(*get_compound_page_dtor(page))(page);
+				spin_lock_irq(&lruvec->lru_lock);
+				locked = lruvec;
+			} else
+				list_add(&page->lru, pages_to_free);
 		}
 	}
 	__mod_zone_page_state(zone, NR_LRU_BASE + lru, pgmoved);
@@ -1635,12 +1659,15 @@ static void shrink_active_list(unsigned long nr_to_scan,
 	 */
 	lruvec->recent_rotated[file] += nr_rotated;
 
-	move_active_pages_to_lru(zone, lruvec, &l_active,
+	move_active_pages_to_lru(zone, lruvec, &l_active, &l_hold,
 						LRU_ACTIVE + file * LRU_FILE);
-	move_active_pages_to_lru(zone, lruvec, &l_inactive,
+	move_active_pages_to_lru(zone, lruvec, &l_inactive, &l_hold,
 						LRU_BASE   + file * LRU_FILE);
 	__mod_zone_page_state(zone, NR_ISOLATED_ANON + file, -nr_taken);
 	spin_unlock_irq(&lruvec->lru_lock);
+
+	free_hot_cold_page_list(&l_hold, 1);
+
 	trace_mm_pagereclaim_shrinkactive(pgscanned, file, sc->priority);
 	KSTAT_PERF_LEAVE(refill_inact)}
 }
@@ -1937,6 +1964,85 @@ out:
 	}
 }
 
+/*
+ * This is a basic per-zone page freer.  Used by both kswapd and direct reclaim.
+ */
+static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
+{
+	unsigned long nr[NR_LRU_LISTS];
+	unsigned long nr_to_scan;
+	enum lru_list l;
+	unsigned long nr_reclaimed = sc->nr_reclaimed;
+	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
+	struct gang *gang = lruvec_gang(lruvec);
+
+	get_scan_count(lruvec, sc, nr);
+
+	while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
+					nr[LRU_INACTIVE_FILE]) {
+		cond_resched();
+
+		for_each_evictable_lru(l) {
+			if (nr[l]) {
+				nr_to_scan = min_t(unsigned long,
+						   nr[l], SWAP_CLUSTER_MAX);
+				nr[l] -= nr_to_scan;
+
+				nr_reclaimed += shrink_list(l, nr_to_scan,
+							    lruvec, sc);
+			}
+		}
+
+		/*
+		 * Update vmscan priority after meeting milestones in lru lists.
+		 */
+		if (test_bit(GANG_NEED_RESCHED, &gang->flags)) {
+			clear_bit(GANG_NEED_RESCHED, &gang->flags);
+			update_vmscan_priority(gang);
+		}
+
+		/*
+		 * Abort scanning if lru no longer suitable for this priority
+		 */
+		if (lruvec->priority < sc->priority)
+			break;
+
+		/*
+		 * On large memory systems, scan >> priority can become
+		 * really large. This is fine for the starting priority;
+		 * with multiple processes reclaiming pages, the total
+		 * freeing target can get unreasonably large.
+		 */
+		if (nr_reclaimed >= nr_to_reclaim &&
+		    sc->priority < sc->max_priority)
+			break;
+	}
+
+	sc->nr_reclaimed = nr_reclaimed;
+
+	trace_mm_pagereclaim_shrinkgang(zone_to_nid(gang_zone(gang)),
+					zone_idx(gang_zone(gang)),
+					get_gang_ub(gang)->ub_uid,
+					sc->gs ? 2 : gang_in_shadow(gang),
+					sc->priority, sc->nr_reclaimed);
+
+	/*
+	 * Even if we did not try to evict anon pages at all, we want to
+	 * rebalance the anon lru active/inactive ratio.
+	 */
+	if ((lru_list_is_old(lruvec, LRU_ACTIVE_ANON) ||
+	     inactive_anon_is_low(lruvec)) && !no_swap_space(sc))
+		shrink_active_list(SWAP_CLUSTER_MAX, lruvec, sc, LRU_ACTIVE_ANON);
+
+	/*
+	 * Update vmscan priority after each serious scanning pass.
+	 */
+	if (sc->priority < sc->max_priority)
+		update_vmscan_priority(gang);
+
+	throttle_vm_writeout(sc->gfp_mask);
+}
+
 /* Use reclaim/compaction for costly allocs or under memory pressure */
 static bool in_reclaim_compaction(struct scan_control *sc)
 {
@@ -2010,84 +2116,6 @@ static inline bool should_continue_reclaim(struct zone *zone,
 	default:
 		return true;
 	}
-}
-
-/*
- * This is a basic per-zone page freer.  Used by both kswapd and direct reclaim.
- */
-static void shrink_lruvec(struct lruvec *lruvec, struct scan_control *sc)
-{
-	unsigned long nr[NR_LRU_LISTS];
-	unsigned long nr_to_scan;
-	enum lru_list l;
-	unsigned long nr_reclaimed = sc->nr_reclaimed;
-	unsigned long nr_to_reclaim = sc->nr_to_reclaim;
-	struct gang *gang = lruvec_gang(lruvec);
-
-	get_scan_count(lruvec, sc, nr);
-
-	while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
-					nr[LRU_INACTIVE_FILE]) {
-		cond_resched();
-
-		for_each_evictable_lru(l) {
-			if (nr[l]) {
-				nr_to_scan = min_t(unsigned long,
-						nr[l], SWAP_CLUSTER_MAX);
-				nr[l] -= nr_to_scan;
-				nr_reclaimed += shrink_list(l, nr_to_scan,
-							    lruvec, sc);
-			}
-		}
-
-		/*
-		 * Update vmscan priority after meeting milestones in lru lists.
-		 */
-		if (test_bit(GANG_NEED_RESCHED, &gang->flags)) {
-			clear_bit(GANG_NEED_RESCHED, &gang->flags);
-			update_vmscan_priority(gang);
-		}
-
-		/*
-		 * Abort scanning if lru no longer suitable for this priority
-		 */
-		if (lruvec->priority < sc->priority)
-			break;
-
-		/*
-		 * On large memory systems, scan >> priority can become
-		 * really large. This is fine for the starting priority;
-		 * with multiple processes reclaiming pages, the total
-		 * freeing target can get unreasonably large.
-		 */
-		if (nr_reclaimed >= nr_to_reclaim &&
-		    sc->priority < sc->max_priority)
-			break;
-	}
-
-	sc->nr_reclaimed = nr_reclaimed;
-
-	trace_mm_pagereclaim_shrinkgang(zone_to_nid(gang_zone(gang)),
-					zone_idx(gang_zone(gang)),
-					get_gang_ub(gang)->ub_uid,
-					sc->gs ? 2 : gang_in_shadow(gang),
-					sc->priority, sc->nr_reclaimed);
-
-	/*
-	 * Even if we did not try to evict anon pages at all, we want to
-	 * rebalance the anon lru active/inactive ratio.
-	 */
-	if ((lru_list_is_old(lruvec, LRU_ACTIVE_ANON) ||
-	     inactive_anon_is_low(lruvec)) && !no_swap_space(sc))
-		shrink_active_list(SWAP_CLUSTER_MAX, lruvec, sc, LRU_ACTIVE_ANON);
-
-	/*
-	 * Update vmscan priority after each serious scanning pass.
-	 */
-	if (sc->priority < sc->max_priority)
-		update_vmscan_priority(gang);
-
-	throttle_vm_writeout(sc->gfp_mask);
 }
 
 
@@ -2259,37 +2287,48 @@ static void wakeup_kswapd_timer_fn(unsigned long data)
 
 static void shrink_zone(struct zone *zone, struct scan_control *sc)
 {
-	struct mem_cgroup *root = sc->target_mem_cgroup;
-	struct mem_cgroup_reclaim_cookie reclaim = {
-		.zone = zone,
-		.priority = priority,
-	};
-	struct mem_cgroup *memcg;
+	unsigned long nr_reclaimed, nr_scanned;
 
-	memcg = mem_cgroup_iter(root, NULL, &reclaim);
 	do {
-		struct mem_cgroup_zone mz = {
-			.mem_cgroup = memcg,
+		struct mem_cgroup *root = sc->target_mem_cgroup;
+		struct mem_cgroup_reclaim_cookie reclaim = {
 			.zone = zone,
+			.priority = priority,
 		};
+		struct mem_cgroup *memcg;
 
-		shrink_mem_cgroup_zone(priority, &mz, sc);
-		/*
-		 * Limit reclaim has historically picked one memcg and
-		 * scanned it with decreasing priority levels until
-		 * nr_to_reclaim had been reclaimed.  This priority
-		 * cycle is thus over after a single memcg.
-		 *
-		 * Direct reclaim and kswapd, on the other hand, have
-		 * to scan all memory cgroups to fulfill the overall
-		 * scan target for the zone.
-		 */
-		if (!global_reclaim(sc)) {
-			mem_cgroup_iter_break(root, memcg);
-			break;
-		}
-		memcg = mem_cgroup_iter(root, memcg, &reclaim);
-	} while (memcg);
+		nr_reclaimed = sc->nr_reclaimed;
+		nr_scanned = sc->nr_scanned;
+
+		memcg = mem_cgroup_iter(root, NULL, &reclaim);
+		do {
+			struct mem_cgroup_zone mz = {
+				.mem_cgroup = memcg,
+				.zone = zone,
+			};
+
+			shrink_mem_cgroup_zone(priority, &mz, sc);
+			/*
+			 * Limit reclaim has historically picked one
+			 * memcg and scanned it with decreasing
+			 * priority levels until nr_to_reclaim had
+			 * been reclaimed.  This priority cycle is
+			 * thus over after a single memcg.
+			 *
+			 * Direct reclaim and kswapd, on the other
+			 * hand, have to scan all memory cgroups to
+			 * fulfill the overall scan target for the
+			 * zone.
+			 */
+			if (!global_reclaim(sc)) {
+				mem_cgroup_iter_break(root, memcg);
+				break;
+			}
+			memcg = mem_cgroup_iter(root, memcg, &reclaim);
+		} while (memcg);
+	} while (should_continue_reclaim(zone, sc->nr_reclaimed - nr_reclaimed,
+					 sc->nr_scanned - nr_scanned, priority,
+					 sc));
 }
 
 #endif /* CONFIG_MEMORY_GANGS */
@@ -3484,6 +3523,18 @@ static int __zone_reclaim(struct zone *zone, gfp_t gfp_mask, unsigned int order)
 		.order = order,
 	};
 	unsigned long slab_reclaimable;
+
+	/*
+	 * RHEL6: we have removed the ZONE_RECLAIM_LOCKED scheme in order to
+	 * allow reclaim threads performing concurrent scans for a given zone.
+	 * This bailout is now required here to avoid time wasting zone scans
+	 * when a thread is about to start scanning a zone that cannot satisfy
+	 * the scan requirements anymore. It's better to give up and go scan
+	 * another zone in fallback list to prevent wasting cycles on a scan
+	 * that will not produce good results for now.
+	 */
+	if (zone_pagecache_reclaimable(zone) < sc.nr_to_reclaim)
+		return ZONE_RECLAIM_NOSCAN;
 
 	disable_swap_token();
 	cond_resched();

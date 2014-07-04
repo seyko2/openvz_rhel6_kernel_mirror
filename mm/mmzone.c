@@ -814,7 +814,8 @@ static struct page *gangs_migration_new_page(struct page *page,
 					     unsigned long private, int **x)
 {
 	struct gangs_migration_work *w = (void *)private;
-	gfp_t gfp_mask = GFP_HIGHUSER_MOVABLE | __GFP_NORETRY;
+	gfp_t gfp_mask = GFP_HIGHUSER_MOVABLE |
+			__GFP_NORETRY | __GFP_OTHER_NODE;
 
 	return __alloc_pages_nodemask(gfp_mask, 0,
 			node_zonelist(w->preferred_node, gfp_mask),

@@ -35,21 +35,24 @@ EXPORT_SYMBOL(init_net);
 
 static unsigned int max_gen_ptrs = INITIAL_NET_GEN_PTRS;
 
-void set_net_context(struct net *net, struct net_context *ctx)
+struct net_context {
+	struct ve_struct *ve;
+	struct user_beancounter *ub;
+};
+
+static void set_net_context(struct net *net, struct net_context *ctx)
 {
 	ctx->ve = set_exec_env(net->owner_ve);
 	ctx->ub = get_exec_ub();
 	if (net->loopback_dev)
 		set_exec_ub(netdev_bc(net->loopback_dev)->exec_ub);
 }
-EXPORT_SYMBOL(set_net_context);
 
-void restore_net_context(struct net_context *ctx)
+static void restore_net_context(struct net_context *ctx)
 {
 	set_exec_env(ctx->ve);
 	set_exec_ub(ctx->ub);
 }
-EXPORT_SYMBOL(restore_net_context);
 
 static struct net_generic *net_alloc_generic(void)
 {
@@ -97,11 +100,11 @@ static void ops_exit_list(const struct pernet_operations *ops,
 
 	if (ops->exit) {
 		list_for_each_entry(net, net_exit_list, exit_list) {
-			struct net_context ctx;
+			struct ve_struct *old_env;
 
-			set_net_context(net, &ctx);
+			old_env = set_exec_env(net->owner_ve);
 			ops->exit(net);
-			restore_net_context(&ctx);
+			set_exec_env(old_env);
 		}
 	}
 	if (ops->exit_batch)

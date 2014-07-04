@@ -108,7 +108,13 @@ again:
 		n = n->rb_left;
 
 	bc = container_of(n, struct user_beancounter, dc_node);
-	if (bc->ub_dentry_unused <= bc->ub_dcache_threshold) {
+	/*
+	 * The ub_dentry_lru list may be empty even if ub_dentry_unused > 0,
+	 * because in __shrink_dcache_ub we can drop the dcache_lock between
+	 * removing unused dentries from the list and fixing up the counter.
+	 */
+	if (bc->ub_dentry_unused <= bc->ub_dcache_threshold ||
+	    list_empty(&bc->ub_dentry_lru)) {
 		ub_dcache_remove(bc);
 		goto again;
 	}

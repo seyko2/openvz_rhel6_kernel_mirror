@@ -1306,13 +1306,6 @@ static int do_env_create(envid_t veid, unsigned int flags, u32 class_id,
 	if ((err = init_ve_sysfs(ve)))
 		goto err_sysfs;
 
-	if ((err = init_ve_namespaces(ve, &old_ns)))
-		goto err_ns;
-
-	if ((err = init_ve_proc(ve)))
-		goto err_proc;
-
-
 	init_mask = data ? data->iptables_mask : VE_IP_DEFAULT;
 
 #ifdef CONFIG_VE_IPTABLES
@@ -1322,6 +1315,12 @@ static int do_env_create(envid_t veid, unsigned int flags, u32 class_id,
 	init_mask = setup_iptables_mask(init_mask);
 	ve->ipt_mask = init_mask;
 #endif
+
+	if ((err = init_ve_namespaces(ve, &old_ns)))
+		goto err_ns;
+
+	if ((err = init_ve_proc(ve)))
+		goto err_proc;
 
 	if ((err = init_ve_netns(ve, &old_ns_net)))
 		goto err_netns;

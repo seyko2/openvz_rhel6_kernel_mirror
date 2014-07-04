@@ -1718,13 +1718,13 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 
 		if (msg->msg_flags & MSG_DONTWAIT)
 			ub_sock_makewres_other(sk, skb_charge_size(size));
-		if (sock_bc(sk) != NULL && 
-				sock_bc(sk)->poll_reserv >= 
-					SOCK_MIN_UBCSPACE &&
-				skb_charge_size(size) >
-					sock_bc(sk)->poll_reserv)
-			size = skb_charge_datalen(sock_bc(sk)->poll_reserv);
-				
+		if (sock_bc(sk) != NULL) {
+			unsigned long res = sock_bc(sk)->poll_reserv;
+
+			if (res >= SOCK_MIN_UBCSPACE &&
+			    skb_charge_size(size) > res)
+				size = skb_charge_datalen(res);
+		}
 
 		/* Keep two messages in the pipe so it schedules better */
 		if (size > ((sk->sk_sndbuf >> 1) - 64))
