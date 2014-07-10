@@ -537,7 +537,7 @@ struct ext4_new_group_data {
 #define EXT4_IOC_RESIZE_FS		_IOW('f', 16, __u64)
 #define EXT4_IOC_OPEN_BALLOON		_IO('f', 42)
 #define EXT4_IOC_MFSYNC			_IO('f', 43)
-
+#define EXT4_IOC_SET_RSV_BLOCKS		_IOW('f', 44, __u64)
 /*
  * ioctl commands in 32 bit emulation
  */

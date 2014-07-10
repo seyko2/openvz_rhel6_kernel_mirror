@@ -1064,7 +1064,7 @@ NORET_TYPE void do_exit(long code)
 	 */
 	perf_event_exit_task(tsk);
 
-	if (!(tsk->flags & PF_EXIT_RESTART))
+	if (!(tsk->flags & PF_EXIT_RESTART) || atomic_read(&get_exec_env()->suspend))
 		exit_notify(tsk, group_dead);
 	else {
 		write_lock_irq(&tasklist_lock);

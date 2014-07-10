@@ -119,6 +119,7 @@ enum _cpt_object_type
 	CPT_OBJ_NET_BR_DEV		= 4121,
 	CPT_OBJ_MOUNT_DATA		= 4122,
 	CPT_OBJ_POSIX_TIMER		= 4123,
+	CPT_OBJ_SOCK_PACKET		= 4124,
 
 	/* 2.6.27-specific */
 	CPT_OBJ_NET_TAP_FILTER = 0x01000000,
@@ -965,6 +966,37 @@ struct cpt_sockmc_image {
 	__u32	cpt_mcaddr[4];
 } __attribute__ ((aligned (8)));
 /* Followed by array of source addresses, each zero padded to 16 bytes */
+
+struct cpt_sock_packet_ring_image {
+	__u32	cpt_tp_block_size;
+	__u32	cpt_tp_block_nr;
+	__u32	cpt_tp_frame_size;
+	__u32	cpt_tp_frame_nr;
+};
+
+struct cpt_sock_packet_image {
+	__u64	cpt_next;
+	__u32	cpt_object;
+	__u16	cpt_hdrlen;
+	__u16	cpt_content;
+
+	__u32	cpt_stats_tp_packets;
+	__u32	cpt_stats_tp_drops;
+
+	__u8	cpt_tp_loss;
+	__u8	cpt_auxdata;
+	__u8	cpt_origdev;
+	__u8	cpt_pad1;
+	__u32	cpt_pad2;
+
+	__u32	cpt_copy_thresh;
+	__u32	cpt_tp_version;
+	__u32	cpt_tp_reserve;
+	__u32	cpt_tp_tstamp;
+
+	struct cpt_sock_packet_ring_image cpt_rx_ring;
+	struct cpt_sock_packet_ring_image cpt_tx_ring;
+} __attribute__ ((aligned (8)));
 
 struct cpt_openreq_image
 {

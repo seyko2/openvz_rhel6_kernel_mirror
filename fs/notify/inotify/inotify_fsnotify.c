@@ -171,12 +171,12 @@ static void inotify_detach_mnt(struct fsnotify_mark_entry *fe)
 	struct inotify_inode_mark_entry *e;
 
 	e = container_of(fe, struct inotify_inode_mark_entry, fsn_entry);
-	if (e->path.dentry) {
-		dput(e->path.dentry);
-		e->path.dentry = NULL;
-		mnt_unpin(e->path.mnt);
-		mntput(e->path.mnt);
-		e->path.dentry = NULL;
+	if (e->cpt_wd_path) {
+		kfree(e->cpt_wd_path);
+		e->cpt_wd_path = NULL;
+		mnt_unpin(e->cpt_wd_mnt);
+		mntput(e->cpt_wd_mnt);
+		e->cpt_wd_mnt = NULL;
 	}
 }
 

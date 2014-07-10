@@ -888,6 +888,23 @@ rst_sock_attr_skfilter(loff_t *pos_p, struct sock *sk, cpt_context_t *ctx)
 	return 0;
 }
 
+static int
+rst_sock_attr_packet(loff_t *pos_p, struct sock *sk, cpt_context_t *ctx)
+{
+	int err;
+	loff_t pos = *pos_p;
+	struct cpt_sock_packet_image v;
+
+	err = rst_get_object(CPT_OBJ_SOCK_PACKET, pos, &v, ctx);
+	if (err)
+		return err;
+
+	if (sk->sk_family != AF_PACKET)
+		return -EINVAL;
+
+	*pos_p += v.cpt_next;
+	return sock_packet_rst_attr(sk, &v);
+}
 
 /*
  * returns:
@@ -909,6 +926,8 @@ int rst_sock_attr(loff_t *pos_p, struct sock *sk, cpt_context_t *ctx)
 		err = rst_sock_attr_skfilter(pos_p, sk, ctx);
 	else if (hdr.cpt_object == CPT_OBJ_SOCK_MCADDR)
 		err = rst_sock_attr_mcfilter(pos_p, sk, ctx);
+	else if (hdr.cpt_object == CPT_OBJ_SOCK_PACKET)
+		err = rst_sock_attr_packet(pos_p, sk, ctx);
 	else
 		err = hdr.cpt_object;
 

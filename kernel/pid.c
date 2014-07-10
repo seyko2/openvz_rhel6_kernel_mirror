@@ -371,8 +371,8 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t vpid)
 		hlist_add_head_rcu(&upid->pid_chain,
 				&pid_hash[pid_hashfn(upid->nr, upid->ns)]);
 		if (upid->ns->flags & PID_NS_HIDDEN)
-			while (i--)
-				INIT_HLIST_NODE(&pid->numbers[i].pid_chain);
+			while (upid-- > pid->numbers)
+				INIT_HLIST_NODE(&upid->pid_chain);
 		upid->ns->nr_hashed++;
 	}
 	spin_unlock_irq(&pidmap_lock);

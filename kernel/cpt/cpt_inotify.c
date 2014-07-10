@@ -79,10 +79,30 @@ static int cpt_dump_watches(struct fsnotify_group *g, struct cpt_context *ctx)
 
 	/* FIXME locking */
 	list_for_each_entry(fse, &g->mark_entries, g_list) {
-		struct path path;
+		struct nameidata nd;
 
 		ie = container_of(fse, struct inotify_inode_mark_entry,
 				fsn_entry);
+
+		err = path_lookup(ie->cpt_wd_path, 0, &nd);
+		if (err) {
+			/*
+			 * If the watchee we're looking for has been
+			 * deleted, the "delete" event should be in
+			 * notify queue, mark is alive but path no
+			 * longer accessible, thus simply skip it
+			 * from dumping -- we won't receive any new
+			 * event from it.
+			 */
+			if (err == -ENOENT) {
+				err = 0;
+				continue;
+			} else {
+				eprintk_ctx("Unable to resolve inotify mark path `%s': err = %d\n",
+					    ie->cpt_wd_path, err);
+				break;
+			}
+		}
 
 		cpt_open_object(NULL, ctx);
 
@@ -96,26 +116,16 @@ static int cpt_dump_watches(struct fsnotify_group *g, struct cpt_context *ctx)
 		ctx->write(&wi, sizeof(wi), ctx);
 
 		cpt_push_object(&saved_obj, ctx);
-		spin_lock(&fse->lock);
-		if (ie->path.dentry == NULL) {
-			err = -EINVAL;
-			eprintk_ctx("inotify mark without path\n");
-			spin_unlock(&fse->lock);
-			break;
-		}
 
-		path = ie->path;
-		path_get(&path);
-		spin_unlock(&fse->lock);
+		err = dump_watch_inode(&nd.path, ctx);
+		path_put(&nd.path);
 
-		err = dump_watch_inode(&path, ctx);
 		cpt_pop_object(&saved_obj, ctx);
-		path_put(&path);
+
+		cpt_close_object(ctx);
 
 		if (err)
 			break;
-
-		cpt_close_object(ctx);
 	}
 
 	return err;

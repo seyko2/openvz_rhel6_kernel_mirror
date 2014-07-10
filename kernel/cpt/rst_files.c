@@ -42,6 +42,8 @@
 #include <linux/anon_inodes.h>
 #include <linux/timerfd.h>
 #include <linux/cgroup.h>
+#include <linux/blkdev.h>
+#include <linux/buffer_head.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -1593,6 +1595,108 @@ int rst_fs_complete(struct cpt_task_image *ti, struct cpt_context *ctx)
 	return 0;
 }
 
+/*
+ * Read dev's UUID from its superblock and compare with the given.
+ * Returns device string like "/dev/ploopXXXp1" if success.
+ */
+static char *compare_mntdev_uuid(dev_t dev, u8 *uuid, struct cpt_context *ctx)
+{
+	struct block_device *bdev;
+	char buf[36 + 1]; /* heximal UUID is 36 symbols */
+	char *mntdev = NULL;
+	unsigned long long logical_sb_block, sb_block = 1;
+	unsigned long offset = 0;
+	struct buffer_head *bh;
+	void *es;
+	const u8 *u;
+	int blocksize, err;
+
+	bdev = open_by_devnum(dev, FMODE_READ);
+	if (IS_ERR(bdev)) {
+		eprintk_ctx("Can't get UUID: open_by_devnum(%d:%d) failed with %ld\n",
+			    MAJOR(dev), MINOR(dev),PTR_ERR(bdev));
+		return (void *)bdev;
+	}
+
+	err = bd_claim(bdev, get_exec_env());
+	if (err) {
+		/* Already claimed by somebody */
+		goto put;
+	}
+
+#define EXT4_MIN_BLOCK_SIZE	1024
+#define EXT4_UUID_OFFSET	0x68
+	blocksize = EXT4_MIN_BLOCK_SIZE;
+	if (blocksize < bdev_logical_block_size(bdev))
+		blocksize = bdev_logical_block_size(bdev);
+
+	if (blocksize != EXT4_MIN_BLOCK_SIZE) {
+		logical_sb_block = sb_block * EXT4_MIN_BLOCK_SIZE;
+		offset = do_div(logical_sb_block, blocksize);
+	} else {
+		logical_sb_block = sb_block;
+	}
+
+	set_blocksize(bdev, blocksize);
+	bh = __bread(bdev, logical_sb_block, blocksize);
+	if (!bh) {
+		eprintk_ctx("Can't get UUID: bread(%d:%d) failed with %ld\n",
+			    MAJOR(dev), MINOR(dev),PTR_ERR(bdev));
+		mntdev = ERR_PTR(-EIO);
+		goto release;
+	}
+
+	/* start of ext4 superblock */
+	es = (((char *)bh->b_data) + offset);
+	/* UUID address */
+	u = es + EXT4_UUID_OFFSET;
+
+	uuid_bytes_to_hex(buf, u);
+	if (strcmp(buf, uuid) == 0) {
+		/* We reuse this buffer for mntdev */
+		mntdev = uuid;
+		/* This stands on that ploop has only partition */
+		sprintf(mntdev, "/dev/%sp1", bdev->bd_disk->disk_name);
+	}
+	brelse(bh);
+release:
+	bd_release(bdev);
+put:
+	blkdev_put(bdev, FMODE_READ);
+	return mntdev;
+}
+
+static char *rst_get_mntdev_by_uuid(loff_t *pos_p, bool *missed, struct cpt_context *ctx)
+{
+	struct ve_struct *ve = get_exec_env();
+	char *uuid = __rst_get_name(pos_p, ctx);
+	struct ve_devmnt *devmnt;
+	char *mntdev = NULL;
+
+	if (!uuid) {
+		eprintk_ctx("Can't get mntdev UUID\n");
+		return NULL;
+	}
+
+	mutex_lock(&ve->devmnt_mutex);
+	list_for_each_entry(devmnt, &ve->devmnt_list, link) {
+		mntdev = compare_mntdev_uuid(devmnt->dev, (u8 *)uuid, ctx);
+		if (IS_ERR(mntdev))
+			continue;
+		else if (mntdev)
+			break;
+	}
+	mutex_unlock(&ve->devmnt_mutex);
+
+	if (IS_ERR_OR_NULL(mntdev)) {
+		/* Return non-zero string */
+		mntdev = uuid;
+		*missed = true;
+	}
+
+	return mntdev;
+}
+
 int rst_get_dentry(struct dentry **dp, struct vfsmount **mp,
 		   loff_t *pos, struct cpt_context *ctx)
 {
@@ -2027,7 +2131,7 @@ static void restore_put_mount_data(char *data, struct cpt_context *ctx, int type
 int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 			 cpt_object_t *ns_obj, struct cpt_context *ctx)
 {
-	int err;
+	int err = 0;
 	loff_t endpos;
 	loff_t mntpos = pos;
 	struct vfsmount *mnt, *shared, *master;
@@ -2036,17 +2140,22 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 	endpos = pos + mi->cpt_next;
 	pos += mi->cpt_hdrlen;
 
-	while (pos < endpos) {
+	while (pos < endpos && !err) {
 		char *mntdev;
 		char *mntpnt;
 		char *mnttype;
 		char *mntbind = NULL;
 		char *mntdata = NULL;
+		bool missed_ploop = false;
 		int is_cgroup;
 		int is_tmpfs = 0;
 		int data_type = 0;
 
-		mntdev = __rst_get_name(&pos, ctx);
+		if (!(mi->cpt_mntflags & CPT_MNT_PLOOP))
+			mntdev = __rst_get_name(&pos, ctx);
+		else
+			mntdev = rst_get_mntdev_by_uuid(&pos, &missed_ploop, ctx);
+
 		mntpnt = __rst_get_name(&pos, ctx);
 		mnttype = __rst_get_name(&pos, ctx);
 
@@ -2158,14 +2267,18 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 			if (IS_ERR(mnt))
 				eprintk_ctx("mount point is missing: %s\n", mntpnt);
 		} else if (mi->cpt_mntflags & CPT_MNT_PLOOP) {
-			unsigned sb_flags = mi->cpt_flags & ~MS_KERNMOUNT;
-			/*
-			 * rst_kern_mount() is for in-kernel filesystems, which do not
-			 * require BKL. We add lock_kernel() just to use it for EXT4.
-			 */
-			lock_kernel();
-			mnt = rst_kern_mount(mnttype, sb_flags, mntdev, NULL);
-			unlock_kernel();
+			mnt = NULL;
+			if (!missed_ploop) {
+				unsigned sb_flags = mi->cpt_flags & ~MS_KERNMOUNT;
+				/*
+				 * rst_kern_mount() is for in-kernel filesystems, which do not
+				 * require BKL. We add lock_kernel() just to use it for EXT4.
+				 */
+				lock_kernel();
+				mnt = rst_kern_mount(mnttype, sb_flags, mntdev, NULL);
+				unlock_kernel();
+			}
+
 			if (IS_ERR_OR_NULL(mnt)) {
 				eprintk_ctx("restore of ploop mount was failed\n");
 				if (missed_mount_allowed(mi->cpt_mntflags)) {
@@ -2277,6 +2390,10 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 			}
 		}
 out_err:
+		if (err)
+			eprintk_ctx("Failed to restore mount point @%lld"
+					" dev '%s', type '%s', path '%s'\n",
+					mntpos, mntdev, mnttype, mntpnt);
 		if (mntdev)
 			rst_put_name(mntdev, ctx);
 		if (mntpnt)
@@ -2287,14 +2404,8 @@ out_err:
 			rst_put_name(mntbind, ctx);
 		if (mntdata)
 			restore_put_mount_data(mntdata, ctx, data_type);
-		if (err) {
-			eprintk_ctx("Failed to restore mount point @%lld"
-					" dev '%s', type '%s', path '%s'\n",
-					mntpos, mntdev, mnttype, mntpnt);
-			return err;
-		}
 	}
-	return 0;
+	return err;
 }
 
 int restore_one_namespace(cpt_object_t *obj, loff_t pos, loff_t endpos,

@@ -441,8 +441,8 @@ add_mm_rss(struct mm_struct *mm, int file_rss, int anon_rss, int swap_usage)
  *
  * The calling function must still handle the error.
  */
-static void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
-			  pte_t pte, struct page *page)
+void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
+		   pte_t pte, struct page *page)
 {
 	pgd_t *pgd = pgd_offset(vma->vm_mm, addr);
 	pud_t *pud = pud_offset(pgd, addr);
@@ -501,6 +501,7 @@ static void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
 	dump_stack();
 	add_taint(TAINT_BAD_PAGE);
 }
+EXPORT_SYMBOL(print_bad_pte);
 
 static inline int is_cow_mapping(vm_flags_t flags)
 {

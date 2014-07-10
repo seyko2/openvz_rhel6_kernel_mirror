@@ -161,10 +161,61 @@ unsigned long suspend_timeout_max = DEFAULT_SUSPEND_TIMEOUT_MAX;
 
 unsigned int suspend_timeout = DEFAULT_SUSPEND_TIMEOUT_MIN;
 
+unsigned int kill_external = 0;
+
 static int check_trace(struct task_struct *tsk, struct task_struct *root,
 			cpt_context_t *ctx)
 {
 	return task_utrace_attached(tsk);
+}
+
+static int vps_kill_and_reap_external(struct cpt_context *ctx)
+{
+	struct task_struct *p, *g;
+	struct task_struct *root;
+	int external_tasks = 0;
+
+	read_lock(&tasklist_lock);
+
+	root = find_task_by_pid_ns(1, current->nsproxy->pid_ns);
+	if (!root) {
+		eprintk_ctx("cannot find ve init\n");
+		read_unlock(&tasklist_lock);
+		return -ESRCH;
+	}
+
+	do_each_thread_ve(g, p) {
+		if ((vps_child_level(root, p) < 0) && !cpt_skip_task(p)) {
+			if (!fatal_signal_pending(p)) {
+				p->flags |= PF_EXIT_RESTART;
+				send_sig(SIGKILL, p, true);
+				wake_up_process(p);
+			}
+			external_tasks++;
+		}
+	} while_each_thread_ve(g, p);
+
+	read_unlock(&tasklist_lock);
+
+	if (external_tasks > 0) {
+		/* Wait for external tasks to die. See do_notify_parent(). */
+		schedule_timeout_interruptible(HZ/20);
+	}
+	return external_tasks;
+}
+
+static int vps_handle_external(struct cpt_context *ctx)
+{
+	int status;
+
+	if (!kill_external)
+		return 0;
+
+	do {
+		status = vps_kill_and_reap_external(ctx);
+	} while (status > 0);
+
+	return status;
 }
 
 static int vps_stop_iteration(struct cpt_context *ctx)
@@ -247,7 +298,7 @@ static int vps_stop_iteration(struct cpt_context *ctx)
 				goto out;
 			}
 
-			if (freeze_task(p, false))
+			if (freeze_task(p, false) && (todo >= 0))
 				todo++;
 			else if (!frozen(p))
 				eprintk_ctx("This can't be: task's " CPT_FID " is not frozen, and freeze attempt has failed.\n", CPT_TID(p));
@@ -356,6 +407,10 @@ static int vps_stop_tasks(struct cpt_context *ctx)
 
 	atomic_inc(&get_exec_env()->suspend);
 
+	status = vps_handle_external(ctx);
+	if (status)
+		goto out;
+
 	do {
 		unsigned long stop_time = jiffies + timeout;
 		int result;
@@ -388,6 +443,7 @@ static int vps_stop_tasks(struct cpt_context *ctx)
 		}
 	} while (status > 0);
 
+out:
 	atomic_dec(&get_exec_env()->suspend);
 
 	return status;
@@ -444,11 +500,6 @@ void cpt_drop_nfs_unhashed(struct cpt_context *ctx)
 	for_each_object(obj, CPT_OBJ_FILE) {
 		struct file *file = obj->o_obj;
 		struct dentry *d = file->f_dentry;
-
-		if (IS_ROOT(d) || !d_unhashed(d))
-			continue;
-		if (d->d_sb->s_magic != FSMAGIC_NFS)
-			continue;
 
 		if (d->d_flags & DCACHE_NFSFS_RENAMED) {
 			spin_lock(&d->d_lock);

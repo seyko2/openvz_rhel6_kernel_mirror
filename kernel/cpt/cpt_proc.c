@@ -195,7 +195,8 @@ int cpt_context_lookup_veid(unsigned int veid)
  * occured in case administrator should receive detailed information in the
  * log about missing capabilities and modules.
  */
-static int cpt_test_vecaps(cpt_context_t *ctx, __u32 dst_flags)
+static int cpt_test_vecaps_features(cpt_context_t *ctx, __u32 dst_flags,
+				    __u32 *features)
 {
 	int err;
 	__u32 src_flags;
@@ -245,7 +246,33 @@ static int cpt_test_vecaps(cpt_context_t *ctx, __u32 dst_flags)
 		err = VECAPS_NO_MNT_NAMESPACES;
 	}
 
+	if (features)
+		*features = src_flags & CPT_UNSUPPORTED_MASK;
+
 	return err;
+}
+
+static int cpt_test_vecaps(cpt_context_t *ctx, __u32 dst_flags)
+{
+	return cpt_test_vecaps_features(ctx, dst_flags, NULL);
+}
+
+static int cpt_test_vecaps2(cpt_context_t *ctx, void __user *data)
+{
+	struct vecaps caps;
+	int err;
+
+	if (copy_from_user(&caps, data, sizeof(caps)))
+		return -EFAULT;
+
+	err = cpt_test_vecaps_features(ctx, caps.dst_flags, &caps.features);
+	if (err)
+		return err;
+
+	if (copy_to_user(data, &caps, sizeof(caps)))
+		return -EFAULT;
+
+	return 0;
 }
 
 static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd, unsigned long arg)
@@ -553,6 +580,9 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 	case CPT_TEST_VECAPS:
 		err = cpt_test_vecaps(ctx, arg);
 		break;
+	case CPT_TEST_VECAPS2:
+		err = cpt_test_vecaps2(ctx, (void *)arg);
+		break;
 	default:
 		err = -EINVAL;
 		break;
@@ -678,6 +708,9 @@ static struct proc_dir_entry *melt_ent;
 
 static struct ctl_table_header *cpt_control;
 
+static int zero = 0;
+static int one = 1;
+
 static ctl_table tunables_table[] = {
 	{
 		.ctl_name	= CTL_UNNUMBERED,
@@ -688,6 +721,16 @@ static ctl_table tunables_table[] = {
 		.proc_handler	= &proc_dointvec_minmax,
 		.extra1		= &suspend_timeout_min,
 		.extra2		= &suspend_timeout_max,
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "kill_external_processes",
+		.data		= &kill_external,
+		.maxlen		= sizeof(kill_external),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
 	},
 	{ .ctl_name = 0 }
 };

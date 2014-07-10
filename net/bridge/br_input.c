@@ -19,6 +19,7 @@
 
 static int br_pass_frame_up(struct net_bridge *br, struct sk_buff *skb)
 {
+	struct net_device *vlan_dev = NULL;
 	struct net_device *indev, *brdev, *master_dev = NULL;
 
 	brdev = BR_INPUT_SKB_CB(skb)->brdev;
@@ -26,13 +27,21 @@ static int br_pass_frame_up(struct net_bridge *br, struct sk_buff *skb)
 	brdev->stats.rx_packets++;
 	brdev->stats.rx_bytes += skb->len;
 
+	/* If this frame came in through a HW-acclerated port find
+	 * the vlan device it belongs to.
+	 */
+	if (vlan_tx_tag_present(skb)) {
+		struct net_bridge *br = netdev_priv(brdev);
+		vlan_dev = vlan_hwaccel_dev(skb, br->vlgrp);
+	}
+
 	indev = skb->dev;
 
 	if (br->via_phys_dev)
 		master_dev = rcu_dereference(br->master_dev);
 
 	if (!master_dev)
-		skb->dev = brdev;
+		skb->dev = vlan_dev ? vlan_dev : brdev;
 	else {
 		skb->brmark = BR_ALREADY_SEEN;
 		skb->dev = master_dev;

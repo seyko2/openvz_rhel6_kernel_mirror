@@ -236,7 +236,7 @@ unsigned long shrink_slab(unsigned long scanned, gfp_t gfp_mask,
 		gfp_mask &= ~__GFP_FS;
 
 	if (unlikely(test_tsk_thread_flag(current, TIF_MEMDIE)))
-		return 1;
+		return 0;
 
 	if (!down_read_trylock(&shrinker_rwsem)) {
 		/* Assume we'll be able to shrink next time */

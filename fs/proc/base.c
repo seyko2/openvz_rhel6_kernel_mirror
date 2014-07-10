@@ -3692,6 +3692,11 @@ int proc_dentry_of_dead_task(struct dentry *dentry)
 	if (de && de->data == &dummy_proc_pid_file_operations)
 		return 1;
 
+	while (de && de->parent != &proc_root && (dentry != dentry->d_parent)) {
+		dentry = dentry->d_parent;
+		de = PDE(dentry->d_inode);
+	}
+
 	return (dentry->d_op == &pid_dentry_operations &&
 		 proc_pid(dentry->d_inode)->tasks[PIDTYPE_PID].first == NULL);
 }

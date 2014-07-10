@@ -241,6 +241,15 @@ static struct {
 	{ "ip6t_state",		VE_NF_CONNTRACK|VE_IP_CONNTRACK },
 	{ "ip6t_socket",	VE_NF_CONNTRACK|VE_IP_CONNTRACK|
 				VE_IP_IPTABLES6			},
+	{ "nf-nat-ipv4",	VE_NF_CONNTRACK|VE_IP_CONNTRACK|
+				VE_IP_NAT			},
+	{ "nf-nat",		VE_NF_CONNTRACK|VE_IP_CONNTRACK|
+				VE_IP_NAT			},
+	{ "nf_conntrack-2",	VE_NF_CONNTRACK|VE_IP_CONNTRACK },
+	{ "nf_conntrack_ipv4",	VE_NF_CONNTRACK|VE_IP_CONNTRACK },
+	{ "ip_conntrack",	VE_NF_CONNTRACK|VE_IP_CONNTRACK },
+	{ "nf_conntrack-10",	VE_NF_CONNTRACK|VE_IP_CONNTRACK },
+	{ "nf_conntrack_ipv6",	VE_NF_CONNTRACK|VE_IP_CONNTRACK },
 };
 
 /*

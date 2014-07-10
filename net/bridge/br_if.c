@@ -205,9 +205,13 @@ static void del_nbp(struct net_bridge_port *p)
 
 	list_del_rcu(&p->list);
 
-	rcu_assign_pointer(dev->br_port, NULL);
-
 	dev->priv_flags &= ~IFF_BRIDGE_PORT;
+
+	smp_wmb(); /* In pair to handle_bridge() and bridge_hard_start_xmit() */
+
+	synchronize_net();
+
+	rcu_assign_pointer(dev->br_port, NULL);
 
 	br_multicast_del_port(p);
 
@@ -492,6 +496,8 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	dev_disable_lro(dev);
 
 	dev->priv_flags |= IFF_BRIDGE_PORT;
+
+	smp_wmb(); /* In pair to handle_bridge() and bridge_hard_start_xmit() */
 
 	list_add_rcu(&p->list, &br->port_list);
 

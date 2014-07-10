@@ -120,3 +120,5 @@ int rst_cgroups(struct cpt_context *ctx);
 int cpt_add_cgroup(struct vfsmount *mnt, struct cpt_context *ctx);
 int rst_cgroup_task(struct cpt_context * ctx);
 void rst_cgroup_close(struct cpt_context * ctx);
+
+void uuid_bytes_to_hex(char *buf, const u8 *u);

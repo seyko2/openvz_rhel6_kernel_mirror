@@ -343,6 +343,12 @@ static int fuse_release(struct inode *inode, struct file *file)
 			spin_lock(&ff->fc->lock);
 			list_del_init(&ff->write_entry);
 			spin_unlock(&ff->fc->lock);
+
+			/* A writeback from another fuse file might come after
+			 * filemap_write_and_wait() above
+			 */
+			if (!ff->fc->close_wait)
+				filemap_write_and_wait(file->f_mapping);
 		} else
 			BUG_ON(!list_empty(&ff->write_entry));
 
@@ -2026,10 +2032,28 @@ static int fuse_send_writepages(struct fuse_fill_data *data)
 	int npages = req->num_pages;
 	struct page * orig_pages[npages];
 
+	/* we can acquire ff here because we do have locked pages here! */
+	if (!data->ff)
+		data->ff = fuse_write_file(fc, fi);
+
 	if (!data->ff) {
 		printk("FUSE: pages dirtied on dead file\n");
 		fuse_end_writeback(npages, req->pages);
 		return -EIO;
+	}
+
+	if (test_bit(FUSE_S_FAIL_IMMEDIATELY, &data->ff->ff_state)) {
+		for (i = 0; i < npages; i++) {
+			struct page *page = req->pages[i];
+			req->pages[i] = NULL;
+			SetPageError(page);
+			unlock_page(page);
+			end_page_writeback(page);
+		}
+		fuse_file_put(data->ff);
+		data->ff = NULL;
+		fuse_put_request(fc, req);
+		return 0;
 	}
 
 	for (i = 0; i < npages; i++) {
@@ -2066,6 +2090,8 @@ static int fuse_send_writepages(struct fuse_fill_data *data)
 			}
 		}
 		fuse_end_writeback(npages, orig_pages);
+		fuse_file_put(data->ff);
+		data->ff = NULL;
 		return -ENOMEM;
 	}
 
@@ -2088,6 +2114,8 @@ static int fuse_send_writepages(struct fuse_fill_data *data)
 
 	fuse_end_writeback(npages, orig_pages);
 
+	fuse_file_put(data->ff);
+	data->ff = NULL;
 	return 0;
 }
 
@@ -2151,14 +2179,6 @@ static int fuse_writepages_fill(struct page *page,
 	return 0;
 }
 
-static int fuse_dummy_writepage(struct page *page,
-				struct writeback_control *wbc,
-				void *data)
-{
-	unlock_page(page);
-	return 0;
-}
-
 static int fuse_writepages(struct address_space *mapping, struct writeback_control *wbc)
 {
 	struct inode *inode = mapping->host;
@@ -2187,18 +2207,7 @@ static int fuse_writepages(struct address_space *mapping, struct writeback_contr
 	 * Can be NULL, but providing the dirty set is empty it's OK.
 	 * The real check occurs in fuse_send_writepages.
 	 */
-
-	data.ff = fuse_write_file(fc, get_fuse_inode(inode));
-
-	/* More than optimization: writeback pages to /dev/null; fused would
-	 * drop our FUSE_WRITE requests anyway, but it will be blocked while
-	 * sending NOTIFY_INVAL_FILES until we return!
-	 */
-	if (data.ff && test_bit(FUSE_S_FAIL_IMMEDIATELY, &data.ff->ff_state)) {
-		err = write_cache_pages(mapping, wbc, fuse_dummy_writepage,
-					mapping);
-		goto out_put;
-	}
+	data.ff = NULL;
 
 	if (!wbc->nonblocking)
 		wait_event(fc->blocked_waitq, !fc->blocked);
@@ -2219,13 +2228,9 @@ static int fuse_writepages(struct address_space *mapping, struct writeback_contr
 			fuse_put_request(fc, data.req);
 	}
 out_put:
-	if (data.ff) {
-		if (data.ff->fc->close_wait) {
-			__fuse_file_put(data.ff);
-			wake_up(&get_fuse_inode(inode)->page_waitq);
-		} else {
-			fuse_file_put(data.ff);
-		}
+	if (data.ff && data.ff->fc->close_wait) {
+		__fuse_file_put(data.ff);
+		wake_up(&get_fuse_inode(inode)->page_waitq);
 	}
 out:
 	return err;

@@ -716,7 +716,6 @@ lookup_pi_state(u32 uval, struct futex_hash_bucket *hb,
 		out_state:
 			atomic_inc(&pi_state->refcount);
 			*ps = pi_state;
-
 			return 0;
 		}
 	}
@@ -990,7 +989,7 @@ static int wake_futex_pi(u32 __user *uaddr, u32 uval, struct futex_q *this)
 	else if (curval != uval)
 		ret = -EINVAL;
 	if (ret) {
-		spin_unlock(&pi_state->pi_mutex.wait_lock);
+		_spin_unlock(&pi_state->pi_mutex.wait_lock);
 		return ret;
 	}
 
@@ -2273,7 +2272,6 @@ retry:
 	 */
 	if (!(uval & ~FUTEX_TID_MASK))
 		uval = cmpxchg_futex_value_locked(uaddr, task_pid_vnr(current), 0);
-
 
 	if (unlikely(uval == -EFAULT))
 		goto pi_faulted;

@@ -2236,7 +2236,31 @@ static cpt_object_t *cpt_lookup_bind_source(struct vfsmount *mnt,
 	return NULL;
 }
 
-static int is_ploop(struct vfsmount *mnt)
+void uuid_bytes_to_hex(char *buf, const u8 *u)
+{
+	sprintf(buf, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			(((((u[0] * 0x100) + u[1]) * 0x100) + u[2]) * 0x100 + u[3]),
+			u[4] * 0x100 + u[5],
+			u[6] * 0x100 + u[7],
+			u[8], u[9],
+			u[10], u[11], u[12], u[13], u[14], u[15]);
+}
+
+EXPORT_SYMBOL(uuid_bytes_to_hex);
+
+static void cpt_dump_uuid(struct vfsmount *mnt, cpt_context_t *ctx)
+{
+	const u8 *uuid = mnt->mnt_sb->s_uuid;
+	char *buf = cpt_get_buf(ctx);
+
+	uuid_bytes_to_hex(buf, uuid);
+	cpt_dump_string(buf, ctx);
+
+	__cpt_release_buf(ctx);
+}
+
+/* Checks if mnt is ploop, which is mounted inside container */
+static int is_ploop(struct vfsmount *mnt, struct cpt_context *ctx)
 {
 	struct super_block *sb = mnt->mnt_sb;
 	const char *name;
@@ -2251,7 +2275,13 @@ static int is_ploop(struct vfsmount *mnt)
 
 	name = sb->s_bdev->bd_disk->disk_name;
 
-	return !strncmp(name, "ploop", 5);
+	if (strncmp(name, "ploop", 5) != 0)
+		return 0;
+
+	if (mnt->mnt_root != mnt->mnt_sb->s_root)
+		return 0;
+
+	return (cpt_lookup_bind_source(mnt, ctx) == NULL);
 }
 
 static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
@@ -2330,7 +2360,7 @@ static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
 
 	if (slab_ub(mnt) != get_exec_ub()) {
 		v.cpt_mntflags |= CPT_MNT_EXT;
-	} else if (is_ploop(mnt)) {
+	} else if (is_ploop(mnt, ctx)) {
 		v.cpt_mntflags |= CPT_MNT_PLOOP;
 	} else if (cpt_need_delayfs(mnt)) {
 		v.cpt_mntflags |= CPT_MNT_DELAYFS;
@@ -2357,7 +2387,10 @@ static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
 	ctx->write(&v, sizeof(v), ctx);
 
 	cpt_push_object(&saved_obj, ctx);
-	cpt_dump_string(mnt->mnt_devname ? : "none", ctx);
+	if (!is_ploop(mnt, ctx))
+		cpt_dump_string(mnt->mnt_devname ? : "none", ctx);
+	else
+		cpt_dump_uuid(mnt, ctx);
 	cpt_dump_string(path, ctx);
 	cpt_dump_string(mnt->mnt_sb->s_type->name, ctx);
 
@@ -2365,7 +2398,6 @@ static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
 		err = cpt_dump_path(mnt->mnt_root, bind_obj->o_obj, 0, ctx);
 	else if (!(v.cpt_mntflags & CPT_MNT_EXT) &&
 		 !(v.cpt_mntflags & CPT_MNT_PLOOP)) {
-
 		if (mnt->mnt_sb->s_type->fs_flags & FS_REQUIRES_DEV) {
 			eprintk_ctx("Checkpoint supports only nodev fs: %s\n",
 				    mnt->mnt_sb->s_type->name);

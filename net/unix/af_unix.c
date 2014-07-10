@@ -1676,7 +1676,8 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 	struct sock *sk = sock->sk;
 	struct sock *other = NULL;
 	struct sockaddr_un *sunaddr = msg->msg_name;
-	int err, size;
+	unsigned int size, data_len;
+	int err;
 	struct sk_buff *skb;
 	int sent = 0;
 	struct scm_cookie tmp_scm;
@@ -1733,26 +1734,19 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 		if (size > SKB_MAX_ALLOC)
 			size = SKB_MAX_ALLOC;
 
+		if (size <= SKB_MAX_HEAD(0))
+			data_len = 0;
+		else
+			data_len = size;
+
 		/*
 		 *	Grab a buffer
 		 */
 
-
-		skb = sock_alloc_send_skb2(sk, size, SOCK_MIN_UBCSPACE,
-				msg->msg_flags&MSG_DONTWAIT, &err);
-
-		if (skb == NULL)
+		skb = sock_alloc_send_skb2(sk, size-data_len, data_len, SOCK_MIN_UBCSPACE,
+					   msg->msg_flags&MSG_DONTWAIT, &err);
+		if (!skb)
 			goto out_err;
-
-		/*
-		 *	If you pass two values to the sock_alloc_send_skb
-		 *	it tries to grab the large buffer with GFP_NOFS
-		 *	(which can fail easily), and if it fails grab the
-		 *	fallback size buffer which is under a page and will
-		 *	succeed. [Alan]
-		 */
-		size = min_t(int, size, skb_tailroom(skb));
-
 
 		/* Only send the fds in the first buffer */
 		err = unix_scm_to_skb(siocb->scm, skb, !fds_sent);
@@ -1763,7 +1757,17 @@ static int unix_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
 		max_level = err + 1;
 		fds_sent = true;
 
-		err = memcpy_fromiovec(skb_put(skb, size), msg->msg_iov, size);
+		/*
+		 *  We could allocate less or more than requested. Calculate sizes again.
+		 */
+
+		data_len = skb_pagelen(skb);
+		size = min(size, data_len + (skb->end - skb->tail));
+
+		skb_put(skb, size - data_len);
+		skb->data_len = data_len;
+		skb->len = size;
+		err = skb_copy_datagram_from_iovec(skb, 0, msg->msg_iov, sent, size);
 		if (err) {
 			kfree_skb(skb);
 			goto out_err;
@@ -1959,7 +1963,10 @@ static long unix_stream_data_wait(struct sock *sk, long timeo)
 	return timeo;
 }
 
-
+static unsigned int unix_skb_len(const struct sk_buff *skb)
+{
+	return skb->len - UNIXCB(skb).consumed;
+}
 
 static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 			       struct msghdr *msg, size_t size,
@@ -2060,8 +2067,9 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 			sunaddr = NULL;
 		}
 
-		chunk = min_t(unsigned int, skb->len, size);
-		if (memcpy_toiovec(msg->msg_iov, skb->data, chunk)) {
+		chunk = min_t(unsigned int, unix_skb_len(skb), size);
+		if (skb_copy_datagram_iovec(skb, UNIXCB(skb).consumed,
+					    msg->msg_iov, chunk)) {
 			skb_queue_head(&sk->sk_receive_queue, skb);
 			if (copied == 0)
 				copied = -EFAULT;
@@ -2072,13 +2080,13 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 		/* Mark read part of skb as used */
 		if (!(flags & MSG_PEEK)) {
-			skb_pull(skb, chunk);
+			UNIXCB(skb).consumed += chunk;
 
 			if (UNIXCB(skb).fp)
 				unix_detach_fds(siocb->scm, skb);
 
 			/* put the skb back if we didn't use it up.. */
-			if (skb->len) {
+			if (unix_skb_len(skb)) {
 				skb_queue_head(&sk->sk_receive_queue, skb);
 				break;
 			}
@@ -2171,7 +2179,7 @@ static int unix_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 			if (sk->sk_type == SOCK_STREAM ||
 			    sk->sk_type == SOCK_SEQPACKET) {
 				skb_queue_walk(&sk->sk_receive_queue, skb)
-					amount += skb->len;
+					amount += unix_skb_len(skb);
 			} else {
 				skb = skb_peek(&sk->sk_receive_queue);
 				if (skb)

@@ -1149,7 +1149,7 @@ static int init_ve_cgroups(struct ve_struct *ve)
 			CGRP_CREAT|CGRP_WEAK, name);
 	if (IS_ERR(ve->ve_cgroup))
 		return PTR_ERR(ve->ve_cgroup);
-	return 0;
+	return ve_prep_devcgroup(ve);
 }
 
 static void fini_ve_cgroups(struct ve_struct *ve)

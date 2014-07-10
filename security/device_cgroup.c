@@ -86,42 +86,6 @@ static int devcgroup_can_attach(struct cgroup_subsys *ss,
 	return 0;
 }
 
-#ifdef CONFIG_VE
-static struct dev_exception_item default_exception_items[] = {
-	{ ~0,                     ~0, DEV_ALL,  ACC_MKNOD },
-	{ UNIX98_PTY_MASTER_MAJOR, ~0, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ UNIX98_PTY_SLAVE_MAJOR, ~0, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ PTY_MASTER_MAJOR,       ~0, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ PTY_SLAVE_MAJOR,        ~0, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ MEM_MAJOR,	/* null */ 3, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ MEM_MAJOR,    /* zero */ 5, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ MEM_MAJOR,    /* full */ 7, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ TTYAUX_MAJOR,  /* tty */ 0, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ TTYAUX_MAJOR, /* console */ 1, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ TTYAUX_MAJOR, /* ptmx */ 2, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ MEM_MAJOR,  /* random */ 8, DEV_CHAR, ACC_READ },
-	{ MEM_MAJOR, /* urandom */ 9, DEV_CHAR, ACC_READ | ACC_WRITE },
-	{ MEM_MAJOR, /* kmsg */ 11, DEV_CHAR, ACC_WRITE },
-};
-
-static LIST_HEAD(default_perms);
-#define parent_exceptions(p)	(&default_perms)
-#define parent_behavior(p)	DEVCG_DEFAULT_DENY
-static void prepare_def_perms(void)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(default_exception_items); i++) {
-		default_exception_items[i].access |= ACC_HIDDEN;
-		list_add(&default_exception_items[i].list, &default_perms);
-	}
-}
-#else
-#define prepare_def_perms()	do { } while(0)
-#define parent_exceptions(p)	(&p->exceptions)
-#define parent_behavior(p)	(p->behavior)
-#endif
-
 /*
  * called under devcgroup_mutex
  */
@@ -276,14 +240,12 @@ static struct cgroup_subsys_state *devcgroup_create(struct cgroup_subsys *ss,
 
 	if (parent_cgroup == NULL) {
 		dev_cgroup->behavior = DEVCG_DEFAULT_ALLOW;
-
-		prepare_def_perms();
 	} else {
 		parent_dev_cgroup = cgroup_to_devcgroup(parent_cgroup);
 		mutex_lock(&devcgroup_mutex);
 		ret = dev_exceptions_copy(&dev_cgroup->exceptions,
-					  parent_exceptions(parent_dev_cgroup));
-		dev_cgroup->behavior = parent_behavior(parent_dev_cgroup);
+					  &parent_dev_cgroup->exceptions);
+		dev_cgroup->behavior = parent_dev_cgroup->behavior;
 		mutex_unlock(&devcgroup_mutex);
 		if (ret) {
 			kfree(dev_cgroup);
@@ -826,6 +788,61 @@ int devcgroup_inode_mknod(int mode, dev_t dev)
 }
 
 #ifdef CONFIG_VE
+
+static struct dev_exception_item ve_devcgroup_ex_items[] = {
+	{ ~0,				~0,	DEV_ALL,  ACC_MKNOD		},
+	{ UNIX98_PTY_MASTER_MAJOR,	~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
+	{ UNIX98_PTY_SLAVE_MAJOR,	~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
+	{ PTY_MASTER_MAJOR,		~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
+	{ PTY_SLAVE_MAJOR,		~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
+	{ MEM_MAJOR,			3,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* null */
+	{ MEM_MAJOR,			5,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* zero */
+	{ MEM_MAJOR,			7,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* full */
+	{ TTYAUX_MAJOR,			0,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* tty */
+	{ TTYAUX_MAJOR,			1,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* console */
+	{ TTYAUX_MAJOR,			2,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* ptmx */
+	{ MEM_MAJOR,			8,	DEV_CHAR, ACC_READ		}, /* random */
+	{ MEM_MAJOR,			9,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* urandom */
+	{ MEM_MAJOR,			11,	DEV_CHAR, ACC_WRITE		}, /* kmsg */
+};
+
+static LIST_HEAD(ve_devcgroup_ex_list);
+
+int ve_prep_devcgroup(struct ve_struct *ve)
+{
+	struct dev_cgroup *dev_cgroup = cgroup_to_devcgroup(ve->ve_cgroup);
+	size_t i;
+	int ret;
+
+	if (unlikely(list_empty(&ve_devcgroup_ex_list))) {
+		for (i = 0; i < ARRAY_SIZE(ve_devcgroup_ex_items); i++) {
+			ve_devcgroup_ex_items[i].access |= ACC_HIDDEN;
+			list_add(&ve_devcgroup_ex_items[i].list,
+				 &ve_devcgroup_ex_list);
+		}
+	}
+
+	/*
+	 * When allowing device cgroup inside a container
+	 * we use _very_ strict rules over them:
+	 *
+	 *  - DEVCG_DEFAULT_DENY is used for children behaviour
+	 *  - we ship predefined "exception" items which are known
+	 *    to be virtualized
+	 */
+	mutex_lock(&devcgroup_mutex);
+
+	dev_cgroup->behavior = DEVCG_DEFAULT_DENY;
+
+	dev_exception_clean(dev_cgroup);
+	ret = dev_exceptions_copy(&dev_cgroup->exceptions,
+				  &ve_devcgroup_ex_list);
+
+	mutex_unlock(&devcgroup_mutex);
+	return ret;
+}
+EXPORT_SYMBOL(ve_prep_devcgroup);
+
 int get_device_perms_ve(int dev_type, dev_t dev, int access_mode)
 {
 	short access = 0;

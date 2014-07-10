@@ -4192,6 +4192,36 @@ static int ext4_convert_and_extend(struct inode *inode, loff_t offset,
 	return err;
 }
 
+/* Wait and complete all outstanding aio unwritten extents */
+int  wait_flush_aiodio_work(struct inode *inode)
+{
+	wait_queue_head_t *wq = to_aio_wq(inode);
+	DEFINE_WAIT(wait);
+	int ret;
+
+	BUG_ON(!mutex_is_locked(&inode->i_mutex));
+
+	ret = flush_aio_dio_completed_IO(inode);
+	if (ret)
+		return ret;
+
+	while(atomic_read(&EXT4_I(inode)->i_aiodio_unwritten)) {
+		spin_lock(&EXT4_I(inode)->i_completed_io_lock);
+		if (list_empty(&EXT4_I(inode)->i_aio_dio_complete_list)) {
+			prepare_to_wait(wq, &wait, TASK_UNINTERRUPTIBLE);
+			spin_unlock(&EXT4_I(inode)->i_completed_io_lock);
+			schedule();
+			continue;
+		}
+		spin_unlock(&EXT4_I(inode)->i_completed_io_lock);
+		ret = flush_aio_dio_completed_IO(inode);
+		if (ret)
+			break;
+	}
+	finish_wait(wq, &wait);
+	return ret;
+}
+
 /*
  * preallocate space for a file. This implements ext4's fallocate inode
  * operation, which gets called from sys_fallocate system call.
@@ -4257,7 +4287,11 @@ long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
 	}
 
 	/* Prevent race condition between unwritten */
-	flush_aio_dio_completed_IO(inode);
+	ret = wait_flush_aiodio_work(inode);
+	if (ret) {
+		mutex_unlock(&inode->i_mutex);
+		return ret;
+	}
 retry:
 	while (ret >= 0 && ret < max_blocks) {
 		block = block + ret;
@@ -4637,7 +4671,7 @@ int ext4_ext_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 	}
 
 	/* finish any pending end_io work */
-	err = flush_aio_dio_completed_IO(inode);
+	err = wait_flush_aiodio_work(inode);
 	if (err)
 		goto out_mutex;
 

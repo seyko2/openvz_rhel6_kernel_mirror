@@ -3814,8 +3814,8 @@ static int ext4_releasepage(struct page *page, gfp_t wait)
 {
 	journal_t *journal = EXT4_JOURNAL(page->mapping->host);
 
-	WARN_ON(PageChecked(page));
-	if (!page_has_buffers(page))
+	/* Page has dirty journalled data -> cannot release */
+	if(PageChecked(page))
 		return 0;
 	if (journal)
 		return jbd2_journal_try_to_free_buffers(journal, page, wait);
@@ -3989,7 +3989,6 @@ static void dump_aio_dio_list(struct inode * inode)
 	}
 
 	ext4_debug("Dump inode %lu aio_dio_completed_IO list \n", inode->i_ino);
-	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
 	list_for_each_entry(io, &EXT4_I(inode)->i_aio_dio_complete_list, list){
 		cur = &io->list;
 		before = cur->prev;
@@ -4000,7 +3999,6 @@ static void dump_aio_dio_list(struct inode * inode)
 		ext4_debug("io 0x%p from inode %lu,prev 0x%p,next 0x%p\n",
 			    io, inode->i_ino, io0, io1);
 	}
-	spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
 #endif
 }
 
@@ -4088,11 +4086,13 @@ int flush_aio_dio_completed_IO(struct inode *inode)
 	unsigned long flags;
 	struct ext4_inode_info *ei = EXT4_I(inode);
 
-	if (list_empty(&EXT4_I(inode)->i_aio_dio_complete_list))
+	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
+	if (list_empty(&EXT4_I(inode)->i_aio_dio_complete_list)) {
+		spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);
 		return ret;
+	}
 
 	dump_aio_dio_list(inode);
-	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
 	while (!list_empty(&EXT4_I(inode)->i_aio_dio_complete_list)){
 		io = list_entry(EXT4_I(inode)->i_aio_dio_complete_list.next,
 				ext4_io_end_t, list);
@@ -4151,6 +4151,7 @@ static void ext4_end_io_dio(struct kiocb *iocb, loff_t offset,
         ext4_io_end_t *io_end = iocb->private;
 	struct ext4_inode_info *ei;
 	struct workqueue_struct *wq;
+	wait_queue_head_t *w;
 	unsigned long flags;
 
 	/* if not async direct IO or dio with 0 bytes write, just return */
@@ -4182,9 +4183,15 @@ out:
 		io_end->result = ret;
 	}
 	wq = EXT4_SB(io_end->inode->i_sb)->dio_unwritten_wq;
+	w = to_aio_wq(io_end->inode);
 
 	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
+
 	/* Add the io_end to per-inode completed aio dio list*/
+	if (list_empty(&EXT4_I(io_end->inode)->i_aio_dio_complete_list) &&
+	    waitqueue_active(w))
+		wake_up_all(w);
+
 	list_add_tail(&io_end->list,
 		 &EXT4_I(io_end->inode)->i_aio_dio_complete_list);
 	spin_unlock_irqrestore(&ei->i_completed_io_lock, flags);

@@ -782,7 +782,7 @@ static int dump_one_process(cpt_object_t *obj, struct cpt_context *ctx)
 	struct task_struct *tsk = obj->o_obj;
 	const struct cred *cred;
 	int last_thread;
-	struct cpt_task_image *v = cpt_get_buf(ctx);
+	struct cpt_task_image *v;
 	cpt_object_t *tobj;
 	cpt_object_t *tg_obj;
 	loff_t saved_obj;
@@ -799,6 +799,7 @@ static int dump_one_process(cpt_object_t *obj, struct cpt_context *ctx)
 
 	cpt_open_object(obj, ctx);
 
+	v = cpt_get_buf(ctx);
 	v->cpt_signal = CPT_NULL;
 	tg_obj = lookup_cpt_object(CPT_OBJ_SIGNAL_STRUCT, tsk->signal, ctx);
 	if (!tg_obj) BUG();

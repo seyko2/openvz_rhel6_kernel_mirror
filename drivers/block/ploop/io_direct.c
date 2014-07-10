@@ -1565,6 +1565,9 @@ static void dio_trim_prealloc(struct ploop_io * io, struct file * file)
 
 	if (size < i_size_read(io->files.inode)) {
 		struct iattr iattr;
+		/* Can't be here because of FALLOC_FL_KEEP_SIZE */
+		printk(KERN_WARNING "ploop%d: dio prealloc: %lld < %lld",
+		       io->plo->index, size, i_size_read(io->files.inode));
 		iattr.ia_size = size;
 		iattr.ia_valid = ATTR_SIZE;
 		notify_change(F_DENTRY(file), &iattr);

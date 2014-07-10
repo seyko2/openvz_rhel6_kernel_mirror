@@ -18,3 +18,5 @@ int cpt_check_unsupported(struct task_struct *tsk, struct cpt_context *ctx);
 extern unsigned long suspend_timeout_min;
 extern unsigned long suspend_timeout_max;
 extern unsigned int suspend_timeout;
+
+extern unsigned int kill_external;

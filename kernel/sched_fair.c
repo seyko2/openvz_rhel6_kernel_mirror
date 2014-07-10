@@ -1077,23 +1077,6 @@ static inline void update_entity_shares_tick(struct cfs_rq *cfs_rq)
 }
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
-#ifdef CONFIG_CFS_BANDWIDTH
-static inline u64 SCALE_IDLE_TIME(u64 delta, struct sched_entity *se)
-{
-	struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(group_cfs_rq(se)->tg);
-	unsigned long idle_scale_inv = cfs_b->idle_scale_inv;
-
-	if (!idle_scale_inv)
-		delta = 0;
-	else if (idle_scale_inv != CFS_IDLE_SCALE)
-		delta = div64_u64(delta * CFS_IDLE_SCALE, idle_scale_inv);
-
-	return delta;
-}
-#else
-#define SCALE_IDLE_TIME(delta, se) (delta)
-#endif
-
 static void enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
 #ifdef CONFIG_SCHEDSTATS
@@ -1116,8 +1099,7 @@ static void enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		if (tsk) {
 			account_scheduler_latency(tsk, delta >> 10, 1);
 			trace_sched_stat_sleep(tsk, delta);
-		} else
-			delta = SCALE_IDLE_TIME(delta, se);
+		}
 
 		se->sum_sleep_runtime += delta;
 	}
@@ -1152,10 +1134,8 @@ static void enqueue_sleeper(struct cfs_rq *cfs_rq, struct sched_entity *se)
 						delta >> 20);
 			}
 			account_scheduler_latency(tsk, delta >> 10, 0);
-		} else {
-			delta = SCALE_IDLE_TIME(delta, se);
+		} else
 			se->iowait_sum += delta;
-		}
 
 		se->sum_sleep_runtime += delta;
 	}
@@ -3580,7 +3560,6 @@ static void nr_iowait_dec_fair(struct task_struct *p)
 		se->block_start = 0;
 		se->sleep_start = rq->clock;
 
-		delta = SCALE_IDLE_TIME(delta, se);
 		se->iowait_sum += delta;
 		se->sum_sleep_runtime += delta;
 	}
@@ -3612,7 +3591,6 @@ static void nr_iowait_inc_fair(struct task_struct *p)
 		se->sleep_start = 0;
 		se->block_start = rq->clock;
 
-		delta = SCALE_IDLE_TIME(delta, se);
 		se->sum_sleep_runtime += delta;
 	}
 #endif

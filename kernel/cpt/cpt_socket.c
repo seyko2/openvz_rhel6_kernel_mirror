@@ -458,6 +458,24 @@ void cpt_dump_sock_attr(struct sock *sk, cpt_context_t *ctx)
 		cpt_dump_mcfilter(sk, ctx);
 		cpt_pop_object(&saved_obj, ctx);
 	}
+	if (sk->sk_family == AF_PACKET) {
+		struct cpt_sock_packet_image v;
+
+		memset(&v, 0, sizeof(v));
+
+		cpt_push_object(&saved_obj, ctx);
+		cpt_open_object(NULL, ctx);
+
+		v.cpt_next = CPT_NULL;
+		v.cpt_object = CPT_OBJ_SOCK_PACKET;
+		v.cpt_hdrlen = sizeof(v);
+		v.cpt_content = CPT_CONTENT_VOID;
+		sock_packet_cpt_attr(sk, &v);
+
+		ctx->write(&v, sizeof(v), ctx);
+		cpt_close_object(ctx);
+		cpt_pop_object(&saved_obj, ctx);
+	}
 }
 
 static int cpt_dump_unix_mount(struct sock *sk, struct cpt_sock_image *v,

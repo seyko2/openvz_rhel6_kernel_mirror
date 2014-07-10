@@ -901,6 +901,9 @@ struct zap_details {
 	unsigned long truncate_count;		/* Compare vm_truncate_count */
 };
 
+void print_bad_pte(struct vm_area_struct *vma, unsigned long addr,
+		pte_t pte, struct page *page);
+
 struct page *vm_normal_page(struct vm_area_struct *vma, unsigned long addr,
 		pte_t pte);
 

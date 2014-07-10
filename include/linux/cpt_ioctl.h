@@ -49,6 +49,8 @@
 
 #define CPT_STOP_TRACKER	_IOW(CPTCTLTYPE, 29, int)
 
+#define CPT_TEST_VECAPS2	_IOW(CPTCTLTYPE, 30, unsigned int)
+
 /* CPT_TEST_VECAPS return codes */
 #define VECAPS_OK			0
 #define VECAPS_NO_CPU_FEATURE		1
@@ -56,5 +58,10 @@
 #define VECAPS_NO_IPV6_MODULE		3
 #define VECAPS_NO_SLM_MODULE		4
 #define VECAPS_NO_MNT_NAMESPACES	5
+
+struct vecaps {
+	__u32	dst_flags;
+	__u32	features;
+};
 
 #endif

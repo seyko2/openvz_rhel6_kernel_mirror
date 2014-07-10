@@ -2236,9 +2236,18 @@ static __inline__ int bridge_hard_start_xmit(struct sk_buff *skb,
 	if (!br_hard_xmit_hook)
 		return 0;
 
-	if (((port = rcu_dereference(dev->br_port)) == NULL) ||
-		(skb->brmark == BR_ALREADY_SEEN))
+	if (skb->brmark == BR_ALREADY_SEEN)
 		return 0;
+	if (!(skb->dev->priv_flags & IFF_BRIDGE_PORT))
+		return 0;
+
+	smp_rmb(); /* Pairs with smp_wmb in del_nbp() and in br_add_if() */
+
+	port = rcu_dereference(dev->br_port);
+	if (!port) {
+		WARN_ON(1);
+		return 0;
+	}
 
 	return br_hard_xmit_hook(skb, port);
 }
@@ -3161,8 +3170,16 @@ static inline struct sk_buff *handle_bridge(struct sk_buff *skb,
 	struct net_bridge_port *port;
 
 	if (skb->pkt_type == PACKET_LOOPBACK ||
-	    (port = rcu_dereference(skb->dev->br_port)) == NULL)
+	    !(skb->dev->priv_flags & IFF_BRIDGE_PORT))
 		return skb;
+
+	smp_rmb(); /* Pairs with smp_wmb in del_nbp() and in br_add_if() */
+
+	port = rcu_dereference(skb->dev->br_port);
+	if (!port) {
+		WARN_ON(1);
+		return skb;
+	}
 
 	/* RHEL only: skbs received on inactive slaves
 	 * due the vlan hwaccel path should not pass along */

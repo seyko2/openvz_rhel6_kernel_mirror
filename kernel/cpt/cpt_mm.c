@@ -38,6 +38,12 @@
 #include "cpt_fsmagic.h"
 #include "cpt_ubc.h"
 
+static int is_packet_sock_vma(struct vm_area_struct *vma)
+{
+	extern const struct vm_operations_struct packet_mmap_ops;
+	return vma->vm_ops == &packet_mmap_ops;
+}
+
 /*
  * Locking order between mmap_sem and i_mutex
  *
@@ -435,9 +441,8 @@ retry:
 		wprintk_ctx("that's how it works now\n");
 	}
 
-	if (!pg->mapping) {
-		eprintk_ctx("page without mapping at %08lx@%Ld\n", addr,
-			    mmobj->o_pos);
+	if (!pg->mapping && !is_packet_sock_vma(vma)) {
+		print_bad_pte(vma, addr, pte, pg);
 		goto out_unsupported;
 	}
 

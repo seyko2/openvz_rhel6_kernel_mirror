@@ -89,6 +89,8 @@
 #include <net/inet_common.h>
 #endif
 
+#include <linux/cpt_image.h>
+
 /*
    Assumptions:
    - if device has no dev->hard_header routine, it adds and removes ll header
@@ -2231,10 +2233,11 @@ static void packet_mm_close(struct vm_area_struct *vma)
 		atomic_dec(&pkt_sk(sk)->mapped);
 }
 
-static const struct vm_operations_struct packet_mmap_ops = {
+const struct vm_operations_struct packet_mmap_ops = {
 	.open	=	packet_mm_open,
 	.close	=	packet_mm_close,
 };
+EXPORT_SYMBOL(packet_mmap_ops);
 
 static void free_pg_vec(char **pg_vec, unsigned int order, unsigned int len)
 {
@@ -2467,6 +2470,80 @@ out:
 }
 #endif
 
+void sock_packet_cpt_attr(struct sock *sk, struct cpt_sock_packet_image *v)
+{
+	struct packet_sock *po = pkt_sk(sk);
+#ifdef CONFIG_PACKET_MMAP
+	struct cpt_sock_packet_ring_image *ri;
+	struct packet_ring_buffer *rb;
+#endif
+
+	v->cpt_stats_tp_packets = po->stats.tp_packets;
+	v->cpt_stats_tp_drops = po->stats.tp_drops;
+
+	v->cpt_auxdata = po->auxdata;
+	v->cpt_origdev = po->origdev;
+	v->cpt_tp_tstamp = po->tp_tstamp;
+
+#ifdef CONFIG_PACKET_MMAP
+	v->cpt_copy_thresh = po->copy_thresh;
+	v->cpt_tp_version = po->tp_version;
+	v->cpt_tp_reserve = po->tp_reserve;
+	v->cpt_tp_loss = po->tp_loss;
+
+	for (rb = &po->rx_ring, ri = &v->cpt_rx_ring;
+	     rb <= &po->tx_ring; rb++, ri++) {
+		memset(ri, 0, sizeof(*ri));
+		if (!rb->pg_vec)
+			continue;
+		ri->cpt_tp_block_size = rb->pg_vec_pages * PAGE_SIZE;
+		ri->cpt_tp_block_nr = rb->pg_vec_len;
+		ri->cpt_tp_frame_size = rb->frame_size;
+		ri->cpt_tp_frame_nr = rb->frame_max + 1;
+	}
+#endif
+}
+EXPORT_SYMBOL(sock_packet_cpt_attr);
+
+int sock_packet_rst_attr(struct sock *sk, struct cpt_sock_packet_image *v)
+{
+	int err = 0;
+	struct packet_sock *po = pkt_sk(sk);
+#ifdef CONFIG_PACKET_MMAP
+	struct cpt_sock_packet_ring_image *ri;
+#endif
+
+	spin_lock_bh(&sk->sk_receive_queue.lock);
+	po->stats.tp_packets = v->cpt_stats_tp_packets;
+	po->stats.tp_drops = v->cpt_stats_tp_drops;
+	spin_unlock_bh(&sk->sk_receive_queue.lock);
+
+	po->auxdata = v->cpt_auxdata;
+	po->origdev = v->cpt_origdev;
+	po->tp_tstamp = v->cpt_tp_tstamp;
+
+#ifdef CONFIG_PACKET_MMAP
+	po->copy_thresh = v->cpt_copy_thresh;
+	po->tp_version = v->cpt_tp_version;
+	po->tp_reserve = v->cpt_tp_reserve;
+	po->tp_loss = v->cpt_tp_loss;
+
+	for (ri = &v->cpt_rx_ring; ri <= &v->cpt_tx_ring; ri++) {
+		struct tpacket_req req;
+
+		req.tp_block_size = ri->cpt_tp_block_size;
+		req.tp_block_nr = ri->cpt_tp_block_nr;
+		req.tp_frame_size = ri->cpt_tp_frame_size;
+		req.tp_frame_nr = ri->cpt_tp_frame_nr;
+
+		err = packet_set_ring(sk, &req, 0, ri == &v->cpt_tx_ring);
+		if (err)
+			break;
+	}
+#endif
+	return err;
+}
+EXPORT_SYMBOL(sock_packet_rst_attr);
 
 static const struct proto_ops packet_ops_spkt = {
 	.family =	PF_PACKET,

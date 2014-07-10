@@ -691,7 +691,8 @@ long do_msgsnd(int msqid, long mtype, void __user *mtext,
 
 		ipc_lock_by_ptr(&msq->q_perm);
 		ipc_rcu_putref(msq);
-		if (msq->q_perm.deleted) {
+		/* raced with RMID? */
+		if (!ipc_valid_object(&msq->q_perm)) {
 			err = -EIDRM;
 			goto out_unlock_free;
 		}
@@ -878,6 +879,12 @@ long do_msgrcv(int msqid, long *pmtype, void __user *mtext,
 		 */
 		ipc_lock_by_ptr(&msq->q_perm);
 		rcu_read_unlock();
+
+		/* raced with RMID? */
+		if (!ipc_valid_object(&msq->q_perm)) {
+			msg = PTR_ERR(-EIDRM);
+			goto out_unlock;
+		}
 
 		/* Lockless receive, part 4:
 		 * Repeat test after acquiring the spinlock.

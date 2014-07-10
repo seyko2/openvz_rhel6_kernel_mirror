@@ -844,7 +844,11 @@ static int do_rst_vma(struct cpt_vma_image *vmai, loff_t vmapos, loff_t mmpos,
 						}
 					}
 				} else if (u.pb.cpt_content == CPT_CONTENT_DATA) {
-					if ((vma->vm_file) ||
+					/*
+					 * If this is a socket buffer mapping, all pages must be already there,
+					 * so there is no need in optimizing out page faults.
+					 */
+					if ((vma->vm_file && !S_ISSOCK(vma->vm_file->f_dentry->d_inode->i_mode)) ||
 						((vma->vm_flags & VM_GROWSDOWN) && u.pb.cpt_start == vma->vm_start))
 					{
 						struct vm_area_struct *vma;

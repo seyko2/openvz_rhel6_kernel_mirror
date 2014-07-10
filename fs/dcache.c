@@ -1082,16 +1082,11 @@ static struct shrinker dcache_shrinker = {
  * copied and the copy passed in may be reused after this call.
  */
  
-static struct dentry *__d_alloc(struct dentry *parent, const struct qstr *name)
+static struct dentry *__d_alloc(struct dentry *parent, const struct qstr *name,
+				struct user_beancounter *ub)
 {
 	struct dentry *dentry;
-	struct user_beancounter *ub = NULL;
 	char *dname;
-
-	if (parent)
-		ub = parent->d_ub;
-	else
-		ub = get_exec_ub();
 
 	if (ub_dcache_charge(ub, name->len))
 		return NULL;
@@ -1148,7 +1143,8 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 {
 	struct dentry *dentry;
 	
-	dentry = __d_alloc(parent, name);
+	dentry = __d_alloc(parent, name,
+			   parent ? parent->d_ub : get_exec_ub());
 	if (!dentry)
 		return NULL;
 
@@ -1168,7 +1164,7 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 
 struct dentry *d_alloc_pseudo(struct super_block *sb, const struct qstr *name)
 {
-	struct dentry *dentry = __d_alloc(NULL, name);
+	struct dentry *dentry = __d_alloc(NULL, name, get_ub0());
 	if (dentry) {
 		dentry->d_sb = sb;
 		dentry->d_parent = dentry;

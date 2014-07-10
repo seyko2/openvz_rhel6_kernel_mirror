@@ -1499,18 +1499,24 @@ static long sock_wait_for_wmem(struct sock *sk, long timeo)
 	return timeo;
 }
 
-
 /*
  *	Generic send/receive buffer handlers
  */
-struct sk_buff *sock_alloc_send_skb2(struct sock *sk, unsigned long size,
-				     unsigned long size2, int noblock,
-				     int *errcode)
+struct sk_buff *sock_alloc_send_skb2(struct sock *sk, unsigned long header_len,
+				     unsigned long data_len,
+				     unsigned long min_size,
+				     int noblock, int *errcode)
 {
 	struct sk_buff *skb;
 	gfp_t gfp_mask;
 	long timeo;
-	int err;
+	int err, i;
+	unsigned long chunk, size = header_len + data_len;
+	int npages = (data_len + (PAGE_SIZE - 1)) >> PAGE_SHIFT;
+
+	err = -EMSGSIZE;
+	if (npages > MAX_SKB_FRAGS)
+		goto failure;
 
 	gfp_mask = sk->sk_allocation;
 	if (gfp_mask & __GFP_WAIT)
@@ -1527,50 +1533,86 @@ struct sk_buff *sock_alloc_send_skb2(struct sock *sk, unsigned long size,
 			goto failure;
 
 		if (ub_sock_getwres_other(sk, skb_charge_size(size))) {
-			if (size2 < size) {
-				size = size2;
+			if (min_size < size) {
+				chunk = min_t(unsigned long,
+					      data_len, min_size);
+				data_len -= chunk;
+				if (!data_len)
+					header_len -= (min_size - chunk);
+				size = min_size;
 				continue;
 			}
 			set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 			err = -EAGAIN;
 			if (!timeo)
 				goto failure;
+			err = sock_intr_errno(timeo);
 			if (signal_pending(current))
-				goto interrupted;
+				goto failure;
 			timeo = ub_sock_wait_for_space(sk, timeo,
 					skb_charge_size(size));
 			continue;
 		}
 
-		if (atomic_read(&sk->sk_wmem_alloc) < sk->sk_sndbuf) {
-			skb = alloc_skb(size, gfp_mask);
-			if (skb)
-				/* Full success... */
-				break;
-			ub_sock_retwres_other(sk, skb_charge_size(size),
+		if (atomic_read(&sk->sk_wmem_alloc) >= sk->sk_sndbuf) {
+			ub_sock_retwres_other(sk,
+					skb_charge_size(size),
 					SOCK_MIN_UBCSPACE_CH);
-			err = -ENOBUFS;
-			goto failure;
+			set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
+			err = -EAGAIN;
+			if (!timeo)
+				goto failure;
+			err = sock_intr_errno(timeo);
+			if (signal_pending(current))
+				goto failure;
+			timeo = sock_wait_for_wmem(sk, timeo);
+			continue;
 		}
-		ub_sock_retwres_other(sk,
-				skb_charge_size(size),
-				SOCK_MIN_UBCSPACE_CH);
-		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
-		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
-		err = -EAGAIN;
-		if (!timeo)
-			goto failure;
-		if (signal_pending(current))
-			goto interrupted;
-		timeo = sock_wait_for_wmem(sk, timeo);
+
+		skb = alloc_skb(header_len, gfp_mask);
+		if (!skb)
+			goto ret_ubc;
+
+		skb->truesize += data_len;
+
+		for (i = 0; npages > 0; i++) {
+			int order = 0;
+			struct page *page;
+
+			while (order) {
+				if (npages >= 1 << order) {
+					page = alloc_pages(sk->sk_allocation |
+							   __GFP_COMP |
+							   __GFP_NOWARN |
+							   __GFP_NORETRY,
+							   order);
+					if (page)
+						goto fill_page;
+				}
+				order--;
+			}
+			page = alloc_page(sk->sk_allocation);
+			if (!page)
+				goto ret_ubc;
+fill_page:
+			chunk = min_t(unsigned long, data_len,
+				      PAGE_SIZE << order);
+			skb_fill_page_desc(skb, i, page, 0, chunk);
+			data_len -= chunk;
+			npages -= 1 << order;
+		}
+
+		break;
 	}
 
 	ub_skb_set_charge(skb, sk, skb_charge_size(size), UB_OTHERSOCKBUF);
 	skb_set_owner_w(skb, sk);
 	return skb;
 
-interrupted:
-	err = sock_intr_errno(timeo);
+ret_ubc:
+	ub_sock_retwres_other(sk, skb_charge_size(size), SOCK_MIN_UBCSPACE_CH);
+	kfree_skb(skb);
 failure:
 	*errcode = err;
 	return NULL;
@@ -1580,7 +1622,7 @@ EXPORT_SYMBOL(sock_alloc_send_skb2);
 struct sk_buff *sock_alloc_send_skb(struct sock *sk, unsigned long size,
 				    int noblock, int *errcode)
 {
-	return sock_alloc_send_skb2(sk, size, size, noblock, errcode);
+	return sock_alloc_send_skb2(sk, size, 0, size, noblock, errcode);
 }
 EXPORT_SYMBOL(sock_alloc_send_skb);
 

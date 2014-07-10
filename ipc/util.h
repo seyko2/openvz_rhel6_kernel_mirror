@@ -159,6 +159,11 @@ static inline void ipc_lock_by_ptr(struct kern_ipc_perm *perm)
 	spin_lock(&perm->lock);
 }
 
+static inline bool ipc_valid_object(struct kern_ipc_perm *perm)
+{
+	return !perm->deleted;
+}
+
 struct kern_ipc_perm *ipc_lock_check(struct ipc_ids *ids, int id);
 int ipcget(struct ipc_namespace *ns, struct ipc_ids *ids,
 			struct ipc_ops *ops, struct ipc_params *params);

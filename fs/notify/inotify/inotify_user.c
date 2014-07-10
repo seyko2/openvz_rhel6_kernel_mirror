@@ -463,10 +463,10 @@ static void inotify_free_mark(struct fsnotify_mark_entry *entry)
 {
 	struct inotify_inode_mark_entry *ientry = (struct inotify_inode_mark_entry *)entry;
 
-	if (ientry->path.dentry) {
-		dput(ientry->path.dentry);
-		mnt_unpin(ientry->path.mnt);
-		mntput(ientry->path.mnt);
+	if (ientry->cpt_wd_path) {
+		kfree(ientry->cpt_wd_path);
+		mnt_unpin(ientry->cpt_wd_mnt);
+		mntput(ientry->cpt_wd_mnt);
 	}
 
 	kmem_cache_free(inotify_inode_mark_cachep, ientry);
@@ -539,11 +539,22 @@ int __inotify_new_watch(struct fsnotify_group *group,
 			     struct path *path, __u32 mask, int wd)
 {
 	struct inotify_inode_mark_entry *tmp_ientry;
+	char *kwd_path = NULL, *wd_path = NULL;
 	u32 start_wd;
 	int ret;
 
 	if (unlikely(!mask))
 		return -EINVAL;
+
+	kwd_path = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!kwd_path)
+		return -ENOMEM;
+
+	wd_path = d_path(path, kwd_path, PATH_MAX);
+	if (IS_ERR(wd_path)) {
+		kfree(kwd_path);
+		return PTR_ERR(wd_path);
+	}
 
 	tmp_ientry = kmem_cache_alloc(inotify_inode_mark_cachep, GFP_KERNEL);
 	if (unlikely(!tmp_ientry))
@@ -552,8 +563,14 @@ int __inotify_new_watch(struct fsnotify_group *group,
 	fsnotify_init_mark(&tmp_ientry->fsn_entry, inotify_free_mark);
 	tmp_ientry->fsn_entry.mask = mask;
 	tmp_ientry->wd = -1;
-	tmp_ientry->path.dentry = NULL;
-	tmp_ientry->path.mnt = NULL;
+	tmp_ientry->cpt_wd_path = NULL;
+	tmp_ientry->cpt_wd_mnt = NULL;
+
+	wd_path = kstrdup(wd_path, GFP_KERNEL);
+	if (!wd_path) {
+		ret = -ENOMEM;
+		goto out_err;
+	}
 
 	ret = -ENOSPC;
 	if (atomic_read(&group->inotify_data.user->inotify_watches) >= inotify_max_user_watches)
@@ -607,9 +624,9 @@ retry:
 	atomic_inc(&group->inotify_data.user->inotify_watches);
 
 	if (!ve_is_super(get_exec_env())) {
-		tmp_ientry->path.dentry = dget(path->dentry);
+		tmp_ientry->cpt_wd_path = wd_path;
 		mnt_pin(path->mnt);
-		tmp_ientry->path.mnt = path->mnt;
+		tmp_ientry->cpt_wd_mnt = path->mnt;
 	}
 
 	/* return the watch descriptor for this new entry */
@@ -623,8 +640,11 @@ retry:
 		fsnotify_recalc_group_mask(group);
 
 out_err:
-	if (ret < 0)
+	if (ret < 0) {
+		kfree(wd_path);
 		kmem_cache_free(inotify_inode_mark_cachep, tmp_ientry);
+	}
+	kfree(kwd_path);
 
 	return ret;
 }

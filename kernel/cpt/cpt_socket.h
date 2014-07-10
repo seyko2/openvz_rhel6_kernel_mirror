@@ -52,3 +52,6 @@ struct unix_bind_info {
 int rebind_unix_socket(struct vfsmount *rmnt, struct unix_bind_info *bii,
 			int flags);
 void rst_put_delayed_sockets(cpt_context_t *);
+
+void sock_packet_cpt_attr(struct sock *sk, struct cpt_sock_packet_image *v);
+int sock_packet_rst_attr(struct sock *sk, struct cpt_sock_packet_image *v);

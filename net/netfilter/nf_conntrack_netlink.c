@@ -918,7 +918,7 @@ ctnetlink_parse_nat_setup(struct nf_conn *ct,
 		rcu_read_unlock();
 		spin_unlock_bh(&nf_conntrack_lock);
 		nfnl_unlock();
-		if (request_module("nf-nat-ipv4") < 0) {
+		if (ve0_request_module("nf-nat-ipv4") < 0) {
 			nfnl_lock();
 			spin_lock_bh(&nf_conntrack_lock);
 			rcu_read_lock();
