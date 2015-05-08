@@ -97,7 +97,7 @@ static int restore_one_epoll(cpt_object_t *obj,
 		epds.data = efi.cpt_data;
 		mutex_lock(&epmutex);
 		mutex_lock(&ep->mtx);
-		err = ep_insert(ep, &epds, tobj->o_obj, efi.cpt_fd);
+		err = ep_insert(ep, &epds, tobj->o_obj, efi.cpt_fd, 1);
 		clear_tfile_check_list();
 		if (!err) {
 			struct epitem *epi;

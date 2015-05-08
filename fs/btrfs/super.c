@@ -1116,13 +1116,15 @@ static int btrfs_get_sb(struct file_system_type *fs_type, int flags,
 	}
 
 	root = !error ? get_default_root(s, subvol_objectid) : ERR_PTR(error);
-	if (IS_ERR(root))
+	if (IS_ERR(root)) {
 		deactivate_locked_super(s);
+		error = PTR_ERR(root);
+	}
 
 	mnt->mnt_sb = s;
 	mnt->mnt_root = root;
 
-	return 0;
+	return error;
 
 error_close_devices:
 	btrfs_close_devices(fs_devices);
@@ -1506,7 +1508,7 @@ static int btrfs_unfreeze(struct super_block *sb)
 	return 0;
 }
 
-static void btrfs_fs_dirty_inode(struct inode *inode)
+static void btrfs_fs_dirty_inode(struct inode *inode, int flags)
 {
 	int ret;
 

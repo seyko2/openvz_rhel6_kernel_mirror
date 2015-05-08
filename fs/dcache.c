@@ -515,6 +515,7 @@ int __shrink_dcache_ub(struct user_beancounter *ub, int count, int popup)
 	LIST_HEAD(referenced);
 	LIST_HEAD(tmp);
 	struct dentry *dentry;
+	struct super_block *sb = NULL;
 	int pruned = 0;
 	unsigned int d_time = 0;
 
@@ -558,6 +559,23 @@ int __shrink_dcache_ub(struct user_beancounter *ub, int count, int popup)
 		}
 
 		pruned++;
+
+		/*
+		 * Do not prune dentry if the filesystem is being unmounted,
+		 * otherwise we could race with shrink_dcache_for_umount() and
+		 * end up holding a reference to a dentry while the filesystem
+		 * is unmounted.
+		 */
+		if (dentry->d_sb != sb) {
+			if (!down_read_trylock(&dentry->d_sb->s_umount)) {
+				spin_unlock(&dentry->d_lock);
+				continue;
+			}
+			if (sb)
+				up_read(&sb->s_umount);
+			sb = dentry->d_sb;
+		}
+
 		prune_one_dentry(dentry);
 		/* dentry->d_lock was dropped in prune_one_dentry() */
 		cond_resched_lock(&dcache_lock);
@@ -570,6 +588,9 @@ int __shrink_dcache_ub(struct user_beancounter *ub, int count, int popup)
 	/* report fake progress if lru isn't empty */
 	if (!pruned && !list_empty(&ub->ub_dentry_lru))
 		pruned = 1;
+
+	if (sb)
+		up_read(&sb->s_umount);
 
 	return pruned;
 }
@@ -676,7 +697,7 @@ static void prune_dcache_rr(int count, gfp_t gfp_mask)
 		prune_ratio = unused / count;
 
 	rcu_read_lock();
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		if (!get_beancounter_rcu(ub))
 			continue;
 		rcu_read_unlock();
@@ -1144,7 +1165,7 @@ struct dentry *d_alloc(struct dentry *parent, const struct qstr *name)
 	struct dentry *dentry;
 	
 	dentry = __d_alloc(parent, name,
-			   parent ? parent->d_ub : get_exec_ub());
+			   parent ? parent->d_ub : get_exec_ub_top());
 	if (!dentry)
 		return NULL;
 

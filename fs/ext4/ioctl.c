@@ -290,9 +290,6 @@ group_extend_out:
 		struct file *donor_filp;
 		int err;
 
-		/* Ioctl is temproraly disabled due to PCLIN-31215 */
-		return -EOPNOTSUPP;
-
 		if (!(filp->f_mode & FMODE_READ) ||
 		    !(filp->f_mode & FMODE_WRITE))
 			return -EBADF;

@@ -100,7 +100,7 @@ static int collect_one_mm(struct mm_struct *mm, cpt_context_t * ctx)
 		return -ENOMEM;
 
 #ifdef CONFIG_BEANCOUNTERS
-	if (cpt_add_ubc(mm->mm_ub, ctx) == NULL)
+	if (cpt_add_ubc(mm_ub_top(mm), ctx) == NULL)
 		return -ENOMEM;
 #endif
 
@@ -770,6 +770,7 @@ static int dump_one_vma(cpt_object_t *mmobj,
 
 		if (pd.type == PD_FUNKEY) {
 			eprintk_ctx("dump_one_vma: funkey page\n");
+			cpt_release_buf(ctx);
 			return -EINVAL;
 		}
 
@@ -922,7 +923,7 @@ static int dump_one_mm(cpt_object_t *obj, struct cpt_context *ctx)
 	v->cpt_end_env = mm->env_end;
 	v->cpt_def_flags = mm->def_flags;
 #ifdef CONFIG_BEANCOUNTERS
-	v->cpt_mmub = cpt_lookup_ubc(mm->mm_ub, ctx);
+	v->cpt_mmub = cpt_lookup_ubc(mm_ub_top(mm), ctx);
 #endif
 	v->cpt_mm_flags = mm->flags;
 	v->cpt_vps_dumpable = mm->vps_dumpable;

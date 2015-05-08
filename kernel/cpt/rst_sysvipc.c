@@ -460,7 +460,18 @@ static int fixup_one_sem(int semid, struct sem_array *sma, void *arg)
 
 	sma->sem_ctime = warg->v->cpt_ctime;
 	sma->sem_otime = warg->v->cpt_otime;
-	memcpy(sma->sem_base, warg->arr, sma->sem_nsems*8);
+	{
+		int i;
+		struct {
+			__u32 semval;
+			__u32 sempid;
+		} *s = (void*)warg->arr;
+
+		for (i=0; i < sma->sem_nsems; i++) {
+			sma->sem_base[i].semval = s[i].semval;
+			sma->sem_base[i].sempid = s[i].sempid;
+		}
+	}
 	return 1;
 }
 

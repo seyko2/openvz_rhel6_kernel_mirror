@@ -260,7 +260,8 @@ struct nf_afinfo {
 					    unsigned int dataoff,
 					    unsigned int len,
 					    u_int8_t protocol);
-	int		(*route)(struct dst_entry **dst, struct flowi *fl);
+	int		(*route)(struct net *net, struct dst_entry **dst,
+				 struct flowi *fl);
 	void		(*saveroute)(const struct sk_buff *skb,
 				     struct nf_queue_entry *entry);
 	int		(*reroute)(struct sk_buff *skb,
@@ -374,16 +375,16 @@ static inline void nf_ct_attach(struct sk_buff *new, struct sk_buff *skb) {}
 
 #define net_ipt_module_set(netns, ipt)					\
 	({								\
-		(netns)->owner_ve->_iptables_modules |= ipt##_MOD;	\
+		(netns)->_iptables_modules |= ipt##_MOD;		\
 	})
 
 #define net_ipt_module_clear(netns, ipt)				\
 	({								\
-		(netns)->owner_ve->_iptables_modules &= ~ipt##_MOD;	\
+		(netns)->_iptables_modules &= ~ipt##_MOD;		\
 	})
 
 #define net_is_ipt_module_set(netns, ipt)				\
-	((netns)->owner_ve->_iptables_modules & (ipt##_MOD))
+	((netns)->_iptables_modules & (ipt##_MOD))
 
 #else /* CONFIG_VE_IPTABLES */
 

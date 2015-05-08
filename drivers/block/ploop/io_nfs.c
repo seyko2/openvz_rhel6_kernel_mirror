@@ -104,7 +104,7 @@ static void nfsio_read_release(void *calldata)
 	int status = nreq->task.tk_status;
 
 	if (unlikely(status < 0))
-		ploop_set_error(preq, status);
+		PLOOP_REQ_SET_ERROR(preq, status);
 
 	ploop_complete_io_request(preq);
 
@@ -259,7 +259,7 @@ nfsio_submit_read(struct ploop_io *io, struct ploop_request * preq,
 
 				err = rbio_submit(io, nreq, &nfsio_read_ops);
 				if (err) {
-					ploop_set_error(preq, err);
+					PLOOP_REQ_SET_ERROR(preq, err);
 					ploop_complete_io_request(preq);
 					goto out;
 				}
@@ -269,7 +269,7 @@ nfsio_submit_read(struct ploop_io *io, struct ploop_request * preq,
 					 bv->bv_len, preq, inode);
 
 			if (nreq == NULL) {
-				ploop_set_error(preq, -ENOMEM);
+				PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 				goto out;
 			}
 
@@ -285,7 +285,7 @@ nfsio_submit_read(struct ploop_io *io, struct ploop_request * preq,
 
 		err = rbio_submit(io, nreq, &nfsio_read_ops);
 		if (err) {
-			ploop_set_error(preq, err);
+			PLOOP_REQ_SET_ERROR(preq, err);
 			ploop_complete_io_request(preq);
 			goto out;
 		}
@@ -317,7 +317,7 @@ static void nfsio_write_release(void *calldata)
 	int status = nreq->task.tk_status;
 
 	if (unlikely(status < 0))
-		ploop_set_error(preq, status);
+		PLOOP_REQ_SET_ERROR(preq, status);
 
 	if (!preq->error &&
 	    nreq->res.verf->committed != NFS_FILE_SYNC) {
@@ -482,7 +482,7 @@ nfsio_submit_write(struct ploop_io *io, struct ploop_request * preq,
 				atomic_inc(&preq->io_count);
 				err = wbio_submit(io, nreq, &nfsio_write_ops);
 				if (err) {
-					ploop_set_error(preq, err);
+					PLOOP_REQ_SET_ERROR(preq, err);
 					nfsio_complete_io_request(preq);
 					goto out;
 				}
@@ -492,7 +492,7 @@ nfsio_submit_write(struct ploop_io *io, struct ploop_request * preq,
 					 bv->bv_len, preq, inode);
 
 			if (nreq == NULL) {
-				ploop_set_error(preq, -ENOMEM);
+				PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 				goto out;
 			}
 
@@ -506,7 +506,7 @@ nfsio_submit_write(struct ploop_io *io, struct ploop_request * preq,
 		atomic_inc(&preq->io_count);
 		err = wbio_submit(io, nreq, &nfsio_write_ops);
 		if (err) {
-			ploop_set_error(preq, err);
+			PLOOP_REQ_SET_ERROR(preq, err);
 			nfsio_complete_io_request(preq);
 		}
 	}
@@ -641,7 +641,7 @@ nfsio_submit_write_pad(struct ploop_io *io, struct ploop_request * preq,
 			atomic_inc(&preq->io_count);
 			err = wbio_submit(io, nreq, &nfsio_write_ops);
 			if (err) {
-				ploop_set_error(preq, err);
+				PLOOP_REQ_SET_ERROR(preq, err);
 				nfsio_complete_io_request(preq);
 				goto out;
 			}
@@ -650,7 +650,7 @@ nfsio_submit_write_pad(struct ploop_io *io, struct ploop_request * preq,
 		nreq = wbio_init(pos, page, poff, plen, preq, inode);
 
 		if (nreq == NULL) {
-			ploop_set_error(preq, -ENOMEM);
+			PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 			goto out;
 		}
 
@@ -664,7 +664,7 @@ nfsio_submit_write_pad(struct ploop_io *io, struct ploop_request * preq,
 		atomic_inc(&preq->io_count);
 		err = wbio_submit(io, nreq, &nfsio_write_ops);
 		if (err) {
-			ploop_set_error(preq, err);
+			PLOOP_REQ_SET_ERROR(preq, err);
 			nfsio_complete_io_request(preq);
 		}
 	}
@@ -681,7 +681,7 @@ nfsio_submit_alloc(struct ploop_io *io, struct ploop_request * preq,
 	iblock_t iblk = io->alloc_head++;
 
 	if (!(io->files.file->f_mode & FMODE_WRITE)) {
-		ploop_fail_request(preq, -EBADF);
+		PLOOP_FAIL_REQUEST(preq, -EBADF);
 		return;
 	}
 	preq->iblock = iblk;
@@ -740,7 +740,7 @@ nfsio_read_page(struct ploop_io * io, struct ploop_request * preq,
 
 	nreq = rbio_init((loff_t)sec << 9, page, 0, PAGE_SIZE, preq, inode);
 	if (nreq == NULL) {
-		ploop_set_error(preq, -ENOMEM);
+		PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 		goto out;
 	}
 
@@ -748,7 +748,7 @@ nfsio_read_page(struct ploop_io * io, struct ploop_request * preq,
 
 	err = rbio_submit(io, nreq, &nfsio_read_ops);
 	if (err) {
-		ploop_set_error(preq, err);
+		PLOOP_REQ_SET_ERROR(preq, err);
 		ploop_complete_io_request(preq);
 	}
 
@@ -770,14 +770,14 @@ nfsio_write_page(struct ploop_io * io, struct ploop_request * preq,
 	nreq = wbio_init((loff_t)sec << 9, page, 0, PAGE_SIZE, preq, inode);
 
 	if (nreq == NULL) {
-		ploop_set_error(preq, -ENOMEM);
+		PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 		goto out;
 	}
 
 	atomic_inc(&preq->io_count);
 	err = wbio_submit(io, nreq, &nfsio_write_ops);
 	if (err) {
-		ploop_set_error(preq, err);
+		PLOOP_REQ_SET_ERROR(preq, err);
 		nfsio_complete_io_request(preq);
 	}
 
@@ -1272,7 +1272,7 @@ static int nfsio_fsync_thread(void * data)
 			io->fsync_qlen--;
 
 			if (err) {
-				ploop_set_error(preq, err);
+				PLOOP_REQ_SET_ERROR(preq, err);
 			} else if (memcmp(&preq->verf, &verf, 8)) {
 				/* Oops, server reboot. Must resubmit write. */
 				spin_unlock_irq(&plo->lock);

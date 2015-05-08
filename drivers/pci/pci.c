@@ -28,11 +28,13 @@ u8 rh_get_mpss(struct pci_dev *dev)
 {
 	return ((struct pci_dev_rh1 *) dev->rh_reserved1)->pcie_mpss;
 }
+EXPORT_SYMBOL(rh_get_mpss);
 
 void rh_set_mpss(struct pci_dev *dev, u8 mpss)
 {
 	((struct pci_dev_rh1 *) dev->rh_reserved1)->pcie_mpss = mpss;
 }
+EXPORT_SYMBOL(rh_set_mpss);
 
 const char *pci_power_names[] = {
 	"error", "D0", "D1", "D2", "D3hot", "D3cold", "unknown",
@@ -389,6 +391,32 @@ pci_find_parent_resource(const struct pci_dev *dev, struct resource *res)
 			best = r;	/* Approximating prefetchable by non-prefetchable */
 	}
 	return best;
+}
+
+/**
+ * pci_wait_for_pending - wait for @mask bit(s) to clear in status word @pos
+ * @dev: the PCI device to operate on
+ * @pos: config space offset of status word
+ * @mask: mask of bit(s) to care about in status word
+ *
+ * Return 1 when mask bit(s) in status word clear, 0 otherwise.
+ */
+int pci_wait_for_pending(struct pci_dev *dev, int pos, u16 mask)
+{
+	int i;
+
+	/* Wait for Transaction Pending bit clean */
+	for (i = 0; i < 4; i++) {
+		u16 status;
+		if (i)
+			msleep((1 << (i - 1)) * 100);
+
+		pci_read_config_word(dev, pos, &status);
+		if (!(status & mask))
+			return 1;
+	}
+
+	return 0;
 }
 
 /**
@@ -897,8 +925,7 @@ int pci_reenable_device(struct pci_dev *dev)
 	return 0;
 }
 
-static int __pci_enable_device_flags(struct pci_dev *dev,
-				     resource_size_t flags)
+static int pci_enable_device_flags(struct pci_dev *dev, unsigned long flags)
 {
 	int err;
 	int i, bars = 0;
@@ -906,7 +933,11 @@ static int __pci_enable_device_flags(struct pci_dev *dev,
 	if (atomic_add_return(1, &dev->enable_cnt) > 1)
 		return 0;		/* already enabled */
 
-	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++)
+	/* only skip sriov related */
+	for (i = 0; i <= PCI_ROM_RESOURCE; i++)
+		if (dev->resource[i].flags & flags)
+			bars |= (1 << i);
+	for (i = PCI_BRIDGE_RESOURCES; i < DEVICE_COUNT_RESOURCE; i++)
 		if (dev->resource[i].flags & flags)
 			bars |= (1 << i);
 
@@ -926,7 +957,7 @@ static int __pci_enable_device_flags(struct pci_dev *dev,
  */
 int pci_enable_device_io(struct pci_dev *dev)
 {
-	return __pci_enable_device_flags(dev, IORESOURCE_IO);
+	return pci_enable_device_flags(dev, IORESOURCE_IO);
 }
 
 /**
@@ -939,7 +970,7 @@ int pci_enable_device_io(struct pci_dev *dev)
  */
 int pci_enable_device_mem(struct pci_dev *dev)
 {
-	return __pci_enable_device_flags(dev, IORESOURCE_MEM);
+	return pci_enable_device_flags(dev, IORESOURCE_MEM);
 }
 
 /**
@@ -955,7 +986,7 @@ int pci_enable_device_mem(struct pci_dev *dev)
  */
 int pci_enable_device(struct pci_dev *dev)
 {
-	return __pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO);
+	return pci_enable_device_flags(dev, IORESOURCE_MEM | IORESOURCE_IO);
 }
 
 enum pcie_bus_config_types pcie_bus_config = PCIE_BUS_TUNE_OFF;
@@ -1058,6 +1089,19 @@ void pcim_pin_device(struct pci_dev *pdev)
 	WARN_ON(!dr || !dr->enabled);
 	if (dr)
 		dr->pinned = 1;
+}
+
+/*
+ * pcibios_add_device - provide arch specific hooks when adding device dev
+ * @dev: the PCI device being added
+ *
+ * Permits the platform to provide architecture specific functionality when
+ * devices are added. This is the default implementation. Architecture
+ * implementations can override this.
+ */
+int __weak pcibios_add_device (struct pci_dev *dev)
+{
+	return 0;
 }
 
 /**
@@ -1532,9 +1576,9 @@ void pci_enable_ido(struct pci_dev *dev, unsigned long type)
 	u16 ctrl = 0;
 
 	if (type & PCI_EXP_IDO_REQUEST)
-		ctrl |= PCI_EXP_IDO_REQ_EN;
+		ctrl |= PCI_EXP_DEVCTL2_IDO_REQ_EN;
 	if (type & PCI_EXP_IDO_COMPLETION)
-		ctrl |= PCI_EXP_IDO_CMP_EN;
+		ctrl |= PCI_EXP_DEVCTL2_IDO_CMP_EN;
 	if (ctrl)
 		pcie_capability_set_word(dev, PCI_EXP_DEVCTL2, ctrl);
 }
@@ -1550,9 +1594,9 @@ void pci_disable_ido(struct pci_dev *dev, unsigned long type)
 	u16 ctrl = 0;
 
 	if (type & PCI_EXP_IDO_REQUEST)
-		ctrl |= PCI_EXP_IDO_REQ_EN;
+		ctrl |= PCI_EXP_DEVCTL2_IDO_REQ_EN;
 	if (type & PCI_EXP_IDO_COMPLETION)
-		ctrl |= PCI_EXP_IDO_CMP_EN;
+		ctrl |= PCI_EXP_DEVCTL2_IDO_CMP_EN;
 	if (ctrl)
 		pcie_capability_clear_word(dev, PCI_EXP_DEVCTL2, ctrl);
 }
@@ -1584,7 +1628,7 @@ int pci_enable_obff(struct pci_dev *dev, enum pci_obff_signal_type type)
 	int ret;
 
 	pcie_capability_read_dword(dev, PCI_EXP_DEVCAP2, &cap);
-	if (!(cap & PCI_EXP_OBFF_MASK))
+	if (!(cap & PCI_EXP_DEVCAP2_OBFF_MASK))
 		return -ENOTSUPP; /* no OBFF support at all */
 
 	/* Make sure the topology supports OBFF as well */
@@ -1595,17 +1639,17 @@ int pci_enable_obff(struct pci_dev *dev, enum pci_obff_signal_type type)
 	}
 
 	pcie_capability_read_word(dev, PCI_EXP_DEVCTL2, &ctrl);
-	if (cap & PCI_EXP_OBFF_WAKE)
-		ctrl |= PCI_EXP_OBFF_WAKE_EN;
+	if (cap & PCI_EXP_DEVCAP2_OBFF_WAKE)
+		ctrl |= PCI_EXP_DEVCTL2_OBFF_WAKE_EN;
 	else {
 		switch (type) {
 		case PCI_EXP_OBFF_SIGNAL_L0:
-			if (!(ctrl & PCI_EXP_OBFF_WAKE_EN))
-				ctrl |= PCI_EXP_OBFF_MSGA_EN;
+			if (!(ctrl & PCI_EXP_DEVCTL2_OBFF_WAKE_EN))
+				ctrl |= PCI_EXP_DEVCTL2_OBFF_MSGA_EN;
 			break;
 		case PCI_EXP_OBFF_SIGNAL_ALWAYS:
-			ctrl &= ~PCI_EXP_OBFF_WAKE_EN;
-			ctrl |= PCI_EXP_OBFF_MSGB_EN;
+			ctrl &= ~PCI_EXP_DEVCTL2_OBFF_WAKE_EN;
+			ctrl |= PCI_EXP_DEVCTL2_OBFF_MSGB_EN;
 			break;
 		default:
 			WARN(1, "bad OBFF signal type\n");
@@ -1626,7 +1670,8 @@ EXPORT_SYMBOL(pci_enable_obff);
  */
 void pci_disable_obff(struct pci_dev *dev)
 {
-	pcie_capability_clear_word(dev, PCI_EXP_DEVCTL2, PCI_EXP_OBFF_WAKE_EN);
+	pcie_capability_clear_word(dev, PCI_EXP_DEVCTL2,
+				   PCI_EXP_DEVCTL2_OBFF_WAKE_EN);
 }
 EXPORT_SYMBOL(pci_disable_obff);
 
@@ -1675,7 +1720,8 @@ int pci_enable_ltr(struct pci_dev *dev)
 			return ret;
 	}
 
-	return pcie_capability_set_word(dev, PCI_EXP_DEVCTL2, PCI_EXP_LTR_EN);
+	return pcie_capability_set_word(dev, PCI_EXP_DEVCTL2,
+					PCI_EXP_DEVCTL2_LTR_EN);
 }
 EXPORT_SYMBOL(pci_enable_ltr);
 
@@ -1692,7 +1738,8 @@ void pci_disable_ltr(struct pci_dev *dev)
 	if (!pci_ltr_supported(dev))
 		return;
 
-	pcie_capability_clear_word(dev, PCI_EXP_DEVCTL2, PCI_EXP_LTR_EN);
+	pcie_capability_clear_word(dev, PCI_EXP_DEVCTL2,
+				   PCI_EXP_DEVCTL2_LTR_EN);
 }
 EXPORT_SYMBOL(pci_disable_ltr);
 
@@ -2463,11 +2510,25 @@ int pci_set_dma_seg_boundary(struct pci_dev *dev, unsigned long mask)
 EXPORT_SYMBOL(pci_set_dma_seg_boundary);
 #endif
 
+/**
+ * pci_wait_for_pending_transaction - waits for pending transaction
+ * @dev: the PCI device to operate on
+ *
+ * Return 0 if transaction is pending 1 otherwise.
+ */
+int pci_wait_for_pending_transaction(struct pci_dev *dev)
+{
+	if (!pci_is_pcie(dev))
+		return 1;
+
+	return pci_wait_for_pending(dev, pci_pcie_cap(dev) + PCI_EXP_DEVSTA,
+				    PCI_EXP_DEVSTA_TRPND);
+}
+EXPORT_SYMBOL(pci_wait_for_pending_transaction);
+
 static int pcie_flr(struct pci_dev *dev, int probe)
 {
-	int i;
 	u32 cap;
-	u16 status;
 
 	pcie_capability_read_dword(dev, PCI_EXP_DEVCAP, &cap);
 	if (!(cap & PCI_EXP_DEVCAP_FLR))
@@ -2476,33 +2537,18 @@ static int pcie_flr(struct pci_dev *dev, int probe)
 	if (probe)
 		return 0;
 
-	/* Wait for Transaction Pending bit clean */
-	for (i = 0; i < 4; i++) {
-		if (i)
-			msleep((1 << (i - 1)) * 100);
+	if (!pci_wait_for_pending_transaction(dev))
+		dev_err(&dev->dev, "timed out waiting for pending transaction; performing function level reset anyway\n");
 
-		pcie_capability_read_word(dev, PCI_EXP_DEVSTA, &status);
-		if (!(status & PCI_EXP_DEVSTA_TRPND))
-			goto clear;
-	}
-
-	dev_err(&dev->dev, "transaction is not cleared; "
-			"proceeding with reset anyway\n");
-
-clear:
 	pcie_capability_set_word(dev, PCI_EXP_DEVCTL, PCI_EXP_DEVCTL_BCR_FLR);
-
 	msleep(100);
-
 	return 0;
 }
 
 static int pci_af_flr(struct pci_dev *dev, int probe)
 {
-	int i;
 	int pos;
 	u8 cap;
-	u8 status;
 
 	pos = pci_find_capability(dev, PCI_CAP_ID_AF);
 	if (!pos)
@@ -2515,23 +2561,17 @@ static int pci_af_flr(struct pci_dev *dev, int probe)
 	if (probe)
 		return 0;
 
-	/* Wait for Transaction Pending bit clean */
-	for (i = 0; i < 4; i++) {
-		if (i)
-			msleep((1 << (i - 1)) * 100);
+	/*
+	 * Wait for Transaction Pending bit to clear.  A word-aligned test
+	 * is used, so we use the conrol offset rather than status and shift
+	 * the test bit to match.
+	 */
+	if (!pci_wait_for_pending(dev, pos + PCI_AF_CTRL,
+				 PCI_AF_STATUS_TP << 8))
+		dev_err(&dev->dev, "timed out waiting for pending transaction; performing AF function level reset anyway\n");
 
-		pci_read_config_byte(dev, pos + PCI_AF_STATUS, &status);
-		if (!(status & PCI_AF_STATUS_TP))
-			goto clear;
-	}
-
-	dev_err(&dev->dev, "transaction is not cleared; "
-			"proceeding with reset anyway\n");
-
-clear:
 	pci_write_config_byte(dev, pos + PCI_AF_CTRL, PCI_AF_CTRL_FLR);
 	msleep(100);
-
 	return 0;
 }
 
@@ -2873,6 +2913,7 @@ int pcie_get_mps(struct pci_dev *dev)
 
 	return 128 << ((ctl & PCI_EXP_DEVCTL_PAYLOAD) >> 5);
 }
+EXPORT_SYMBOL(pcie_get_mps);
 
 /**
  * pcie_set_mps - set PCI Express maximum payload size
@@ -2897,6 +2938,7 @@ int pcie_set_mps(struct pci_dev *dev, int mps)
 	return pcie_capability_clear_and_set_word(dev, PCI_EXP_DEVCTL,
 						  PCI_EXP_DEVCTL_PAYLOAD, v);
 }
+EXPORT_SYMBOL(pcie_set_mps);
 
 /**
  * pci_select_bars - Make BAR mask from the type of resource
@@ -3011,6 +3053,14 @@ int pci_set_vga_state(struct pci_dev *dev, bool decode,
 	}
 	return 0;
 }
+
+bool pci_device_is_present(struct pci_dev *pdev)
+{
+	u32 v;
+
+	return pci_bus_read_dev_vendor_id(pdev->bus, pdev->devfn, &v, 0);
+}
+EXPORT_SYMBOL_GPL(pci_device_is_present);
 
 #define RESOURCE_ALIGNMENT_PARAM_SIZE COMMAND_LINE_SIZE
 static char resource_alignment_param[RESOURCE_ALIGNMENT_PARAM_SIZE] = {0};
@@ -3227,8 +3277,10 @@ static int __init pci_setup(char *str)
 				pci_yes_msi();
 			} else if (!strcmp(str, "noaer")) {
 				pci_no_aer();
+			} else if (!strncmp(str, "realloc=", 8)) {
+				pci_realloc_get_opt(str + 8);
 			} else if (!strncmp(str, "realloc", 7)) {
-				pci_realloc();
+				pci_realloc_get_opt("on");
 			} else if (!strcmp(str, "nodomains")) {
 				pci_no_domains();
 			} else if (!strncmp(str, "noari", 5)) {

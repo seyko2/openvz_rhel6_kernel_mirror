@@ -616,27 +616,17 @@ static int
 venet_set_op(struct net_device *dev, u32 data,
 	     int (*fop)(struct net_device *, u32))
 {
-
-	struct ve_struct *ve;
+	struct net_device *nd;
+	struct net *net;
 	int ret = 0;
 
-	mutex_lock(&ve_list_lock);
-	for_each_ve(ve) {
-		struct ve_struct *ve_old;
-
-		ve_old = set_exec_env(ve);
-		read_lock(&dev_base_lock);
-		for_each_netdev(ve->ve_netns, dev) {
-			if (dev->netdev_ops == &venet_netdev_ops)
-				ret = fop(dev, data);
+	for_each_net(net) {
+		for_each_netdev(net, nd) {
+			if (nd->netdev_ops == &venet_netdev_ops)
+				ret |= fop(nd, data);
+				/* no rollback here! */
 		}
-		read_unlock(&dev_base_lock);
-		set_exec_env(ve_old);
-
-		if (ret < 0)
-			break;
 	}
-	mutex_unlock(&ve_list_lock);
 	return ret;
 }
 
@@ -715,8 +705,8 @@ static void venet_setup(struct net_device *dev)
 	 * No other features, as they are:
 	 *  - checksumming is required, and nobody else will done our job
 	 */
-	dev->features |= NETIF_F_VENET | NETIF_F_VIRTUAL | NETIF_F_LLTX |
-	       NETIF_F_HIGHDMA | NETIF_F_VLAN_CHALLENGED;
+	dev->features |= NETIF_F_LLTX | NETIF_F_HIGHDMA | NETIF_F_VLAN_CHALLENGED;
+	dev->vz_features |= NETIF_F_VENET | NETIF_F_VIRTUAL;
 
 	dev->netdev_ops = &venet_netdev_ops;
 	dev->destructor = venet_destructor;
@@ -994,9 +984,12 @@ static __net_init int venet_init_net(struct net *net)
 	int err;
 
 	env = get_exec_env();
+	if (env->ve_netns != NULL && net != env->ve_netns) {
+		/* Don't create venet-s in sub net namespaces */
+		return 0;
+	}
+
 	if (env->veip) {
-		if (ve_is_super(env))
-			return 0;
 		return -EEXIST;
 	}
 

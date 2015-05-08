@@ -54,7 +54,7 @@ static int sockstat_seq_show(struct seq_file *seq, void *v)
 	int orphans, sockets;
 
 	local_bh_disable();
-	orphans = percpu_counter_sum_positive(&get_exec_ub()->ub_orphan_count);
+	orphans = percpu_counter_sum_positive(&get_exec_ub_top()->ub_orphan_count);
 	sockets = percpu_counter_sum_positive(&tcp_sockets_allocated);
 	local_bh_enable();
 
@@ -252,6 +252,10 @@ static const struct snmp_mib snmp4_net_list[] = {
 	SNMP_MIB_ITEM("TCPMinTTLDrop", LINUX_MIB_TCPMINTTLDROP),
 	SNMP_MIB_ITEM("TCPChallengeACK", LINUX_MIB_TCPCHALLENGEACK),
 	SNMP_MIB_ITEM("TCPSYNChallenge", LINUX_MIB_TCPSYNCHALLENGE),
+	SNMP_MIB_ITEM("BusyPollRxPackets", LINUX_MIB_BUSYPOLLRXPACKETS),
+	SNMP_MIB_ITEM("TCPFromZeroWindowAdv", LINUX_MIB_TCPFROMZEROWINDOWADV),
+	SNMP_MIB_ITEM("TCPToZeroWindowAdv", LINUX_MIB_TCPTOZEROWINDOWADV),
+	SNMP_MIB_ITEM("TCPWantZeroWindowAdv", LINUX_MIB_TCPWANTZEROWINDOWADV),
 	SNMP_MIB_SENTINEL
 };
 

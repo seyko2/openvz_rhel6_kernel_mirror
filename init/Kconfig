@@ -610,7 +610,6 @@ config CGROUP_CPUACCT
 
 config RESOURCE_COUNTERS
 	bool "Resource counters"
-	depends on !BEANCOUNTERS
 	help
 	  This option enables controller independent resource accounting
 	  infrastructure that works with cgroups.
@@ -618,7 +617,7 @@ config RESOURCE_COUNTERS
 
 config CGROUP_MEM_RES_CTLR
 	bool "Memory Resource Controller for Control Groups"
-	depends on CGROUPS && RESOURCE_COUNTERS
+	depends on CGROUPS && RESOURCE_COUNTERS && !BEANCOUNTERS
 	select MM_OWNER
 	help
 	  Provides a memory resource controller that manages both anonymous

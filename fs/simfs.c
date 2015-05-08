@@ -102,6 +102,34 @@ static int sim_statfs(struct dentry *dentry, struct kstatfs *buf)
 	return 0;
 }
 
+static int sim_start_write(struct super_block *sb, int level, bool wait)
+{
+	struct super_block *root_sb = SIMFS_GET_LOWER_FS_SB(sb);
+
+	if (!__sb_start_write(root_sb, level, wait))
+		return 0;
+
+	if (!(current->trans_count++)) {
+		current->transaction_info = sb;
+		current->flags |= PF_FSTRANS;
+	} else
+		WARN_ONCE((current->transaction_info != sb), "Broken fs-transaction");
+	return 1;
+}
+
+static void sim_end_write(struct super_block *sb, int level)
+{
+	struct super_block *root_sb = SIMFS_GET_LOWER_FS_SB(sb);
+
+	WARN_ONCE((current->transaction_info != sb), "Broken fs-transaction");
+
+	if (!(--current->trans_count)) {
+		current->flags &= ~PF_FSTRANS;
+		current->transaction_info = NULL;
+	}
+	__sb_end_write(root_sb, level);
+}
+
 #ifdef CONFIG_QUOTA
 static struct inode *sim_quota_root(struct super_block *sb)
 {
@@ -182,6 +210,8 @@ static struct super_operations sim_super_ops = {
 	.get_quota_root	= &sim_quota_root,
 #endif
 	.statfs = sim_statfs,
+	.start_write	= &sim_start_write,
+	.end_write	= &sim_end_write,
 };
 
 #if defined(CONFIG_EXPORTFS) || defined(CONFIG_EXPORTFS_MODULE)
@@ -333,7 +363,7 @@ static struct file_system_type sim_fs_type = {
 	.name		= "simfs",
 	.get_sb		= sim_get_sb,
 	.kill_sb	= sim_kill_sb,
-	.fs_flags	= FS_MANGLE_PROC,
+	.fs_flags	= FS_MANGLE_PROC | FS_HAS_NEW_FREEZE,
 };
 
 static int __init init_simfs(void)

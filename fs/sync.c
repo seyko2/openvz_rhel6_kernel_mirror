@@ -255,7 +255,7 @@ SYSCALL_DEFINE0(sync)
 	struct user_beancounter *ub, *sync_ub = NULL;
 	struct ve_struct *ve;
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	ve = get_exec_env();
 	ub_percpu_inc(ub, sync);
 
@@ -352,7 +352,7 @@ SYSCALL_DEFINE1(syncfs, int, fd)
 	struct user_beancounter *ub, *sync_ub = NULL;
 	struct ve_struct *ve;
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	ve = get_exec_env();
 	ub_percpu_inc(ub, sync);
 
@@ -418,6 +418,7 @@ int vfs_fsync_range(struct file *file, struct dentry *dentry, loff_t start,
 	const struct file_operations *fop;
 	struct address_space *mapping;
 	int err, ret;
+	struct inode *inode = file->f_mapping->host;
 	struct user_beancounter *ub;
 
 	/*
@@ -438,13 +439,20 @@ int vfs_fsync_range(struct file *file, struct dentry *dentry, loff_t start,
 		goto out;
 	}
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (datasync)
 		ub_percpu_inc(ub, fdsync);
 	else
 		ub_percpu_inc(ub, fsync);
 
 	ret = filemap_write_and_wait_range(mapping, start, end);
+
+	if (!datasync && (inode->i_state & I_DIRTY_TIME)) {
+		spin_lock(&inode_lock);
+		inode->i_state &= ~I_DIRTY_TIME;
+		spin_unlock(&inode_lock);
+		mark_inode_dirty_sync(inode);
+	}
 
 	/*
 	 * We need to protect against concurrent writers, which could cause
@@ -679,7 +687,7 @@ int do_sync_mapping_range(struct address_space *mapping, loff_t offset,
 		goto out_noacct;
 	}
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	ub_percpu_inc(ub, frsync);
 
 	ret = 0;

@@ -392,7 +392,7 @@ static int __sock_charge(struct sock *sk, int res)
 	unsigned long added_reserv, added_forw;
 	unsigned long flags;
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (unlikely(ub == NULL))
 		return 0;
 

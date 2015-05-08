@@ -25,7 +25,7 @@ SYSCALL_DEFINE0(getluid)
 {
 	struct user_beancounter *ub;
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (ub == NULL)
 		return -EINVAL;
 
@@ -67,7 +67,7 @@ SYSCALL_DEFINE1(setluid, uid_t, uid)
 			ub, atomic_read(&ub->ub_refcount),
 			current->comm, current->pid);
 
-	error = set_task_exec_ub(current, ub);
+	error = ub_attach(ub);
 
 	put_beancounter_longterm(ub);
 out:

@@ -93,6 +93,8 @@ struct attribute_group {
 	.show	= _name##_show,					\
 }
 
+#define __ATTR_RW(_name) __ATTR(_name, 0644, _name##_show, _name##_store)
+
 #define __ATTR_NULL { .attr = { .name = NULL } }
 
 #define attr_name(_attr) (_attr).attr.name
@@ -199,6 +201,8 @@ struct sysfs_dirent {
 	ino_t			s_ino;
 	umode_t			s_mode;
 	struct sysfs_inode_attrs *s_iattr;
+
+	struct ve_struct	*owner_env;
 };
 
 #define SD_DEACTIVATED_BIAS		INT_MIN
@@ -227,9 +231,12 @@ int __must_check sysfs_move_dir(struct kobject *kobj,
 
 int __must_check sysfs_create_file(struct kobject *kobj,
 				   const struct attribute *attr);
+int __must_check sysfs_create_files(struct kobject *kobj,
+				   const struct attribute **attr);
 int __must_check sysfs_chmod_file(struct kobject *kobj, struct attribute *attr,
 				  mode_t mode);
 void sysfs_remove_file(struct kobject *kobj, const struct attribute *attr);
+void sysfs_remove_files(struct kobject *kobj, const struct attribute **attr);
 
 int __must_check sysfs_create_bin_file(struct kobject *kobj,
 				       struct bin_attribute *attr);
@@ -307,6 +314,12 @@ static inline int sysfs_create_file(struct kobject *kobj,
 	return 0;
 }
 
+static inline int sysfs_create_files(struct kobject *kobj,
+				    const struct attribute **attr)
+{
+	return 0;
+}
+
 static inline int sysfs_chmod_file(struct kobject *kobj,
 				   struct attribute *attr, mode_t mode)
 {
@@ -315,6 +328,11 @@ static inline int sysfs_chmod_file(struct kobject *kobj,
 
 static inline void sysfs_remove_file(struct kobject *kobj,
 				     const struct attribute *attr)
+{
+}
+
+static inline void sysfs_remove_files(struct kobject *kobj,
+				     const struct attribute **attr)
 {
 }
 

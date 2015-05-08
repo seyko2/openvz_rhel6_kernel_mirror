@@ -125,7 +125,7 @@ static void sysfs_unlink_sibling(struct sysfs_dirent *sd)
  */
 struct dentry *sysfs_get_dentry(struct sysfs_dirent *sd)
 {
-	struct dentry *dentry = dget(sysfs_sb->s_root);
+	struct dentry *dentry = dget(sd_sysfs_sb(sd)->s_root);
 
 	while (dentry->d_fsdata != sd) {
 		struct sysfs_dirent *cur;
@@ -370,6 +370,8 @@ struct sysfs_dirent *sysfs_new_dirent(const char *name, umode_t mode, int type)
 	sd->s_mode = mode;
 	sd->s_flags = type;
 
+	sd->owner_env = get_exec_env();
+
 	return sd;
 
  err_out2:
@@ -415,8 +417,8 @@ void sysfs_addrm_start(struct sysfs_addrm_cxt *acxt,
 	 */
 	mutex_lock(&sysfs_mutex);
 
-	inode = ilookup5(sysfs_sb, parent_sd->s_ino, sysfs_ilookup_test,
-			 parent_sd);
+	inode = ilookup5(sd_sysfs_sb(parent_sd), parent_sd->s_ino,
+			 sysfs_ilookup_test, parent_sd);
 	if (inode) {
 		WARN_ON(inode->i_state & I_NEW);
 
@@ -577,7 +579,7 @@ static void sysfs_drop_dentry(struct sysfs_dirent *sd)
 	if (!ve_sysfs_alowed())
 		return;
 
-	inode = ilookup(sysfs_sb, sd->s_ino);
+	inode = ilookup(sd_sysfs_sb(sd), sd->s_ino);
 	if (!inode)
 		return;
 
@@ -823,6 +825,7 @@ const struct inode_operations sysfs_dir_inode_operations = {
 	.lookup		= sysfs_lookup,
 	.setattr	= sysfs_setattr,
 	.setxattr	= sysfs_setxattr,
+	.getattr	= sysfs_getattr,
 };
 
 static void remove_dir(struct sysfs_dirent *sd)

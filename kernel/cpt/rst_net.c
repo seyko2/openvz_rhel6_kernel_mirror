@@ -323,7 +323,7 @@ static int rst_restore_netstats(loff_t pos, struct net_device *dev,
 	if (dev->netdev_ops->ndo_cpt == NULL) {
 		err = -ENODEV;
 		eprintk_ctx("Network device %s is not supported\n", dev->name);
-		goto out;
+		return err;
 	}
 
 	n = cpt_get_buf(ctx);
@@ -360,6 +360,30 @@ static int rst_restore_netstats(loff_t pos, struct net_device *dev,
 	stats->tx_compressed = n->cpt_tx_compressed;
 
 	preempt_enable();
+out:
+	cpt_release_buf(ctx);
+	return err;
+}
+
+static int rst_restore_idev_cnf(loff_t pos, struct net_device *dev,
+			struct cpt_context *ctx)
+{
+	struct cpt_idev_cnf_image *d;
+	struct in_device *in_dev;
+	int err;
+
+	d = cpt_get_buf(ctx);
+	err = rst_get_object(CPT_OBJ_NET_IDEV_CNF, pos, d, ctx);
+	if (err)
+		goto out;
+
+	if ((in_dev = __in_dev_get_rtnl(dev)) == NULL)
+		if ((in_dev = inetdev_init(dev)) == NULL) {
+			err = -ENOMEM;
+			goto out;
+		}
+
+	memcpy(in_dev->cnf.data, d->cpt_data, sizeof(d->cpt_data));
 out:
 	cpt_release_buf(ctx);
 	return err;
@@ -483,6 +507,13 @@ int rst_restore_netdev(struct cpt_context *ctx)
 					if (err) {
 						eprintk_ctx("rst stats %s: %d\n",
 								di.cpt_name, err);
+						goto out;
+					}
+				} else if (hdr.cpt_object == CPT_OBJ_NET_IDEV_CNF) {
+					err = rst_restore_idev_cnf(pos, dev, ctx);
+					if (err) {
+						eprintk_ctx("rst idev config %s: %d\n",
+						di.cpt_name, err);
 						goto out;
 					}
 				}

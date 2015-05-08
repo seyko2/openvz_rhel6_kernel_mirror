@@ -10,9 +10,32 @@
 
 #include <linux/pagemap.h>
 #include <linux/file.h>
-#include <linux/gfp.h>
 #include <linux/sched.h>
 #include <linux/namei.h>
+#include <linux/slab.h>
+
+static bool fuse_use_readdirplus(struct inode *dir, struct file *filp)
+{
+	struct fuse_conn *fc = get_fuse_conn(dir);
+	struct fuse_inode *fi = get_fuse_inode(dir);
+
+	if (!fc->do_readdirplus)
+		return false;
+	if (!fc->readdirplus_auto)
+		return true;
+	if (test_and_clear_bit(FUSE_I_ADVISE_RDPLUS, &fi->state))
+		return true;
+	if (filp->f_pos == 0)
+		return true;
+	return false;
+}
+
+static void fuse_advise_use_readdirplus(struct inode *dir)
+{
+	struct fuse_inode *fi = get_fuse_inode(dir);
+
+	set_bit(FUSE_I_ADVISE_RDPLUS, &fi->state);
+}
 
 #if BITS_PER_LONG >= 64
 static inline void fuse_dentry_settime(struct dentry *entry, u64 time)
@@ -157,6 +180,8 @@ u64 fuse_get_attr_version(struct fuse_conn *fc)
 static int fuse_dentry_revalidate(struct dentry *entry, struct nameidata *nd)
 {
 	struct inode *inode = entry->d_inode;
+	struct dentry *parent;
+	struct fuse_conn *fc;
 	int ret;
 
 	if (inode && is_bad_inode(inode))
@@ -164,10 +189,8 @@ static int fuse_dentry_revalidate(struct dentry *entry, struct nameidata *nd)
 	else if (1) {
 		int err;
 		struct fuse_entry_out outarg;
-		struct fuse_conn *fc;
 		struct fuse_req *req;
-		struct fuse_req *forget_req;
-		struct dentry *parent;
+		struct fuse_forget_link *forget;
 		u64 attr_version;
 
 		/* For negative dentries, always do a fresh lookup */
@@ -180,13 +203,12 @@ static int fuse_dentry_revalidate(struct dentry *entry, struct nameidata *nd)
 		if (IS_ERR(req))
 			goto out;
 
-		forget_req = fuse_get_req_nopages(fc);
-		if (IS_ERR(forget_req)) {
+		forget = fuse_alloc_forget();
+		if (!forget) {
 			fuse_put_request(fc, req);
 			ret = -ENOMEM;
 			goto out;
 		}
-		forget_req->background = 1;
 
 		attr_version = fuse_get_attr_version(fc);
 
@@ -203,15 +225,14 @@ static int fuse_dentry_revalidate(struct dentry *entry, struct nameidata *nd)
 		if (!err) {
 			struct fuse_inode *fi = get_fuse_inode(inode);
 			if (outarg.nodeid != get_node_id(inode)) {
-				fuse_send_forget(fc, forget_req,
-						 outarg.nodeid, 1);
+				fuse_queue_forget(fc, forget, outarg.nodeid, 1);
 				goto invalid;
 			}
 			spin_lock(&fc->lock);
 			fi->nlookup++;
 			spin_unlock(&fc->lock);
 		}
-		fuse_put_request(fc, forget_req);
+		kfree(forget);
 		if (err || (outarg.attr.mode ^ inode->i_mode) & S_IFMT)
 			goto invalid;
 
@@ -219,6 +240,13 @@ static int fuse_dentry_revalidate(struct dentry *entry, struct nameidata *nd)
 				       entry_attr_timeout(&outarg),
 				       attr_version);
 		fuse_change_entry_timeout(entry, &outarg);
+	} else if (inode) {
+		fc = get_fuse_conn(inode);
+		if (fc->readdirplus_auto) {
+			parent = dget_parent(entry);
+			fuse_advise_use_readdirplus(parent->d_inode);
+			dput(parent);
+		}
 	}
 	ret = 1;
 out:
@@ -226,12 +254,19 @@ out:
 
 invalid:
 	ret = 0;
-	if (inode && S_ISDIR(inode->i_mode)) {
-		if (have_submounts(entry)) {
-			ret = 1;
-			goto out;
+	if (inode) {
+		if (S_ISDIR(inode->i_mode)) {
+			if (have_submounts(entry)) {
+				ret = 1;
+				goto out;
+			}
+			shrink_dcache_parent(entry);
+		} else {
+			if (d_mountpoint(entry)) {
+				ret = 1;
+				goto out;
+			}
 		}
-		shrink_dcache_parent(entry);
 	}
 	d_drop(entry);
 	goto out;
@@ -257,7 +292,7 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
 {
 	struct fuse_conn *fc = get_fuse_conn_super(sb);
 	struct fuse_req *req;
-	struct fuse_req *forget_req;
+	struct fuse_forget_link *forget;
 	u64 attr_version;
 	int err;
 
@@ -271,13 +306,12 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
 	if (IS_ERR(req))
 		goto out;
 
-	forget_req = fuse_get_req_nopages(fc);
-	err = PTR_ERR(forget_req);
-	if (IS_ERR(forget_req)) {
+	forget = fuse_alloc_forget();
+	err = -ENOMEM;
+	if (!forget) {
 		fuse_put_request(fc, req);
 		goto out;
 	}
-	forget_req->background = 1;
 
 	attr_version = fuse_get_attr_version(fc);
 
@@ -300,13 +334,13 @@ int fuse_lookup_name(struct super_block *sb, u64 nodeid, struct qstr *name,
 			   attr_version, 0);
 	err = -ENOMEM;
 	if (!*inode) {
-		fuse_send_forget(fc, forget_req, outarg->nodeid, 1);
+		fuse_queue_forget(fc, forget, outarg->nodeid, 1);
 		goto out;
 	}
 	err = 0;
 
  out_put_forget:
-	fuse_put_request(fc, forget_req);
+	kfree(forget);
  out:
 	return err;
 }
@@ -363,6 +397,7 @@ static struct dentry *fuse_lookup(struct inode *dir, struct dentry *entry,
 	else
 		fuse_invalidate_entry_cache(entry);
 
+	fuse_advise_use_readdirplus(dir);
 	return newent;
 
  out_iput:
@@ -384,7 +419,7 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry, int mode,
 	struct inode *inode;
 	struct fuse_conn *fc = get_fuse_conn(dir);
 	struct fuse_req *req;
-	struct fuse_req *forget_req;
+	struct fuse_forget_link *forget;
 	struct fuse_create_in inarg;
 	struct fuse_open_out outopen;
 	struct fuse_entry_out outentry;
@@ -398,10 +433,9 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry, int mode,
 	if ((flags & O_DIRECT) && !(fc->flags & FUSE_ODIRECT))
 		return -EINVAL;
 
-	forget_req = fuse_get_req_nopages(fc);
-	if (IS_ERR(forget_req))
-		return PTR_ERR(forget_req);
-	forget_req->background = 1;
+	forget = fuse_alloc_forget();
+	if (!forget)
+		return -ENOMEM;
 
 	req = fuse_get_req_nopages(fc);
 	err = PTR_ERR(req);
@@ -459,10 +493,10 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry, int mode,
 	if (!inode) {
 		flags &= ~(O_CREAT | O_EXCL | O_TRUNC);
 		fuse_sync_release(ff, flags);
-		fuse_send_forget(fc, forget_req, outentry.nodeid, 1);
+		fuse_queue_forget(fc, forget, outentry.nodeid, 1);
 		return -ENOMEM;
 	}
-	fuse_put_request(fc, forget_req);
+	kfree(forget);
 	d_instantiate(entry, inode);
 	fuse_change_entry_timeout(entry, &outentry);
 	fuse_invalidate_attr(dir);
@@ -484,7 +518,7 @@ static int fuse_create_open(struct inode *dir, struct dentry *entry, int mode,
  out_put_request:
 	fuse_put_request(fc, req);
  out_put_forget_req:
-	fuse_put_request(fc, forget_req);
+	kfree(forget);
 	return err;
 }
 
@@ -498,14 +532,13 @@ static int create_new_entry(struct fuse_conn *fc, struct fuse_req *req,
 	struct fuse_entry_out outarg;
 	struct inode *inode;
 	int err;
-	struct fuse_req *forget_req;
+	struct fuse_forget_link *forget;
 
-	forget_req = fuse_get_req_nopages(fc);
-	if (IS_ERR(forget_req)) {
+	forget = fuse_alloc_forget();
+	if (!forget) {
 		fuse_put_request(fc, req);
-		return PTR_ERR(forget_req);
+		return -ENOMEM;
 	}
-	forget_req->background = 1;
 
 	memset(&outarg, 0, sizeof(outarg));
 	req->in.h.nodeid = get_node_id(dir);
@@ -531,10 +564,10 @@ static int create_new_entry(struct fuse_conn *fc, struct fuse_req *req,
 	inode = fuse_iget(dir->i_sb, outarg.nodeid, outarg.generation,
 			  &outarg.attr, entry_attr_timeout(&outarg), 0, 0);
 	if (!inode) {
-		fuse_send_forget(fc, forget_req, outarg.nodeid, 1);
+		fuse_queue_forget(fc, forget, outarg.nodeid, 1);
 		return -ENOMEM;
 	}
-	fuse_put_request(fc, forget_req);
+	kfree(forget);
 
 	if (S_ISDIR(inode->i_mode)) {
 		struct dentry *alias;
@@ -557,7 +590,7 @@ static int create_new_entry(struct fuse_conn *fc, struct fuse_req *req,
 	return 0;
 
  out_put_forget_req:
-	fuse_put_request(fc, forget_req);
+	kfree(forget);
 	return err;
 }
 
@@ -658,13 +691,12 @@ static int fuse_unlink(struct inode *dir, struct dentry *entry)
 	fuse_put_request(fc, req);
 	if (!err) {
 		struct inode *inode = entry->d_inode;
+		struct fuse_inode *fi = get_fuse_inode(inode);
 
-		/*
-		 * Set nlink to zero so the inode can be cleared, if the inode
-		 * does have more links this will be discovered at the next
-		 * lookup/getattr.
-		 */
-		clear_nlink(inode);
+		spin_lock(&fc->lock);
+		fi->attr_version = ++fc->attr_version;
+		drop_nlink(inode);
+		spin_unlock(&fc->lock);
 		fuse_invalidate_attr(inode);
 		fuse_invalidate_attr(dir);
 		fuse_invalidate_entry_cache(entry);
@@ -775,8 +807,17 @@ static int fuse_link(struct dentry *entry, struct inode *newdir,
 	   will reflect changes in the backing inode (link count,
 	   etc.)
 	*/
-	if (!err || err == -EINTR)
+	if (!err) {
+		struct fuse_inode *fi = get_fuse_inode(inode);
+
+		spin_lock(&fc->lock);
+		fi->attr_version = ++fc->attr_version;
+		inc_nlink(inode);
+		spin_unlock(&fc->lock);
 		fuse_invalidate_attr(inode);
+	} else if (err == -EINTR) {
+		fuse_invalidate_attr(inode);
+	}
 	return err;
 }
 
@@ -881,7 +922,7 @@ int fuse_update_attributes(struct inode *inode, struct kstat *stat,
 	int err;
 	bool r;
 
-	if (fi->i_time < get_jiffies_64()) {
+	if (time_before64(fi->i_time, get_jiffies_64())) {
 		r = true;
 		err = fuse_do_getattr(inode, stat, file, 0);
 	} else {
@@ -1074,6 +1115,8 @@ static int parse_dirfile(char *buf, size_t nbytes, struct file *file,
 			return -EIO;
 		if (reclen > nbytes)
 			break;
+		if (memchr(dirent->name, '/', dirent->namelen) != NULL)
+			return -EIO;
 
 		over = filldir(dstbuf, dirent->name, dirent->namelen,
 			       file->f_pos, dirent->ino, dirent->type);
@@ -1214,6 +1257,8 @@ static int parse_dirplusfile(char *buf, size_t nbytes, struct file *file,
 			return -EIO;
 		if (reclen > nbytes)
 			break;
+		if (memchr(dirent->name, '/', dirent->namelen) != NULL)
+			return -EIO;
 
 		if (!over) {
 			/* We fill entries into dstbuf only as much as
@@ -1241,7 +1286,7 @@ static int parse_dirplusfile(char *buf, size_t nbytes, struct file *file,
 
 static int fuse_readdir(struct file *file, void *dstbuf, filldir_t filldir)
 {
-	int err;
+	int plus, err;
 	size_t nbytes;
 	struct page *page;
 	struct inode *inode = file->f_path.dentry->d_inode;
@@ -1261,11 +1306,13 @@ static int fuse_readdir(struct file *file, void *dstbuf, filldir_t filldir)
 		fuse_put_request(fc, req);
 		return -ENOMEM;
 	}
+
+	plus = fuse_use_readdirplus(inode, file);
 	req->out.argpages = 1;
 	req->num_pages = 1;
 	req->pages[0] = page;
 	req->page_descs[0].length = PAGE_SIZE;
-	if (fc->do_readdirplus) {
+	if (plus) {
 		attr_version = fuse_get_attr_version(fc);
 		fuse_read_fill(req, file, file->f_pos, PAGE_SIZE,
 			       FUSE_READDIRPLUS);
@@ -1278,7 +1325,7 @@ static int fuse_readdir(struct file *file, void *dstbuf, filldir_t filldir)
 	err = req->out.h.error;
 	fuse_put_request(fc, req);
 	if (!err) {
-		if (fc->do_readdirplus) {
+		if (plus) {
 			err = parse_dirplusfile(page_address(page), nbytes,
 						file, dstbuf, filldir,
 						attr_version);
@@ -1459,6 +1506,7 @@ int fuse_do_setattr(struct inode *inode, struct iattr *attr,
 		    struct file *file)
 {
 	struct fuse_conn *fc = get_fuse_conn(inode);
+	struct fuse_inode *fi = get_fuse_inode(inode);
 	struct fuse_req *req;
 	struct fuse_setattr_in inarg;
 	struct fuse_attr_out outarg;
@@ -1487,8 +1535,10 @@ int fuse_do_setattr(struct inode *inode, struct iattr *attr,
 	if (IS_ERR(req))
 		return PTR_ERR(req);
 
-	if (is_truncate)
+	if (is_truncate) {
 		fuse_set_nowrite(inode);
+		set_bit(FUSE_I_SIZE_UNSTABLE, &fi->state);
+	}
 
 	memset(&inarg, 0, sizeof(inarg));
 	memset(&outarg, 0, sizeof(outarg));
@@ -1552,12 +1602,14 @@ int fuse_do_setattr(struct inode *inode, struct iattr *attr,
 		invalidate_inode_pages2(inode->i_mapping);
 	}
 
+	clear_bit(FUSE_I_SIZE_UNSTABLE, &fi->state);
 	return 0;
 
 error:
 	if (is_truncate)
 		fuse_release_nowrite(inode);
 
+	clear_bit(FUSE_I_SIZE_UNSTABLE, &fi->state);
 	return err;
 }
 
@@ -1621,6 +1673,8 @@ static int fuse_setxattr(struct dentry *entry, const char *name,
 		fc->no_setxattr = 1;
 		err = -EOPNOTSUPP;
 	}
+	if (!err)
+		fuse_invalidate_attr(inode);
 	return err;
 }
 
@@ -1750,6 +1804,8 @@ static int fuse_removexattr(struct dentry *entry, const char *name)
 		fc->no_removexattr = 1;
 		err = -EOPNOTSUPP;
 	}
+	if (!err)
+		fuse_invalidate_attr(inode);
 	return err;
 }
 

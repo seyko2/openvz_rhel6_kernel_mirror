@@ -251,14 +251,17 @@ struct file * rst_open_tty(cpt_object_t *mntobj, char *name,
 	    ii->cpt_rdev == MKDEV(TTYAUX_MAJOR, 1) ||
 	    (ii->cpt_rdev == MKDEV(TTYAUX_MAJOR, 0) &&
 	     !strncmp(pi->cpt_name, "vtty", 4))) {
-		if (mntobj && (mntobj->o_flags & CPT_VFSMOUNT_DELAYFS))
-		       return ERR_PTR(-ENOTSUPP);
+		if (mntobj && (mntobj->o_flags & CPT_VFSMOUNT_DELAYFS)) {
+			cpt_release_buf(ctx);
+			return ERR_PTR(-ENOTSUPP);
+		}
 		master = rst_open_file(mntobj, name, fi,
 				flags|O_NONBLOCK|O_NOCTTY, ctx);
 		if (IS_ERR(master)) {
 			eprintk_ctx("rst_open_tty: %s %Ld %ld\n",
 					name, (long long)fi->cpt_priv,
 					PTR_ERR(master));
+			cpt_release_buf(ctx);
 			return master;
 		}
 
@@ -382,12 +385,11 @@ int rst_tty_jobcontrol(struct cpt_context *ctx)
 		if (obj) {
 			struct tty_struct *stty = obj->o_obj;
 			if ((int)pibuf->cpt_pgrp > 0) {
-				stty->pgrp = alloc_vpid_safe(pibuf->cpt_pgrp);
+				stty->pgrp = rst_alloc_pid(pibuf->cpt_pgrp);
 				if (!stty->pgrp)
 					dprintk_ctx("unknown tty pgrp %d\n", pibuf->cpt_pgrp);
 			} else if (pibuf->cpt_pgrp) {
-				stty->pgrp = alloc_pid(current->nsproxy->pid_ns,
-							0);
+				stty->pgrp = rst_alloc_pid(0);
 				if (!stty->pgrp) {
 					eprintk_ctx("cannot allocate stray tty->pgr\n");
 					cpt_release_buf(ctx);
@@ -395,7 +397,7 @@ int rst_tty_jobcontrol(struct cpt_context *ctx)
 				}
 			}
 			if ((int)pibuf->cpt_session > 0) {
-				stty->session = alloc_vpid_safe(pibuf->cpt_session);
+				stty->session = rst_alloc_pid(pibuf->cpt_session);
 				if (!stty->session)
 					dprintk_ctx("unknown tty session %d\n", pibuf->cpt_session);
 			}

@@ -236,6 +236,10 @@ static int unix_bind_to_mntref(struct sock *sk, char *name,
 		bi.i_mode = si->cpt_i_mode;
 	bi.uid = si->cpt_peer_uid;
 	bi.gid = si->cpt_peer_gid;
+	if (cpt_object_has(si, cpt_i_uid) && cpt_object_has(si, cpt_i_gid)) {
+		bi.uid = si->cpt_i_uid;
+		bi.gid = si->cpt_i_gid;
+	}
 	bi.next = NULL;
 
 	return rebind_unix_socket(mntobj->o_obj, &bi, LOOKUP_DIVE);
@@ -512,14 +516,23 @@ static int open_socket(cpt_object_t *obj, struct cpt_sock_image *si,
 		struct sockaddr_ll *ll = (struct sockaddr_ll *)&si->cpt_laddr;
 		if (ll->sll_protocol || ll->sll_ifindex) {
 			int alen = si->cpt_laddrlen;
-			if (alen < sizeof(struct sockaddr_ll))
-				alen = sizeof(struct sockaddr_ll);
+			if (sock->type != SOCK_PACKET)
+				if (alen < sizeof(struct sockaddr_ll))
+					alen = sizeof(struct sockaddr_ll);
 			err = sock->ops->bind(sock, (struct sockaddr *)&si->cpt_laddr, alen);
 			if (err) {
 				eprintk_ctx("AF_PACKET binding failed: %d\n", err);
 			}
 		}
 		generic_restore_queues(sock->sk, si, obj->o_pos, ctx);
+	} else if (sock->sk->sk_family == AF_UNIX) {
+		/*
+		 * We can have a pipe with a pending data, which second end is closed.
+		 * In this case open_socket_pair() is not called above and sk_state
+		 * is not restored.
+		 */
+		if (!si->cpt_socketpair)
+			sock->sk->sk_state = si->cpt_state;
 	}
 
 	err = fixup_unix_address(sock, si, ctx);
@@ -892,18 +905,37 @@ static int
 rst_sock_attr_packet(loff_t *pos_p, struct sock *sk, cpt_context_t *ctx)
 {
 	int err;
-	loff_t pos = *pos_p;
+	loff_t pos, endpos;
 	struct cpt_sock_packet_image v;
+	struct cpt_sock_packet_mc_image mi;
 
-	err = rst_get_object(CPT_OBJ_SOCK_PACKET, pos, &v, ctx);
+	err = rst_get_object(CPT_OBJ_SOCK_PACKET, *pos_p, &v, ctx);
 	if (err)
 		return err;
 
 	if (sk->sk_family != AF_PACKET)
 		return -EINVAL;
 
-	*pos_p += v.cpt_next;
-	return sock_packet_rst_attr(sk, &v);
+	err = sock_packet_rst_attr(sk, &v);
+	if (err)
+		return err;
+
+	pos = *pos_p + v.cpt_hdrlen;
+	endpos = *pos_p + v.cpt_next;
+	while (pos < endpos) {
+		err = rst_get_object(CPT_OBJ_SOCK_PACKET_MC, pos, &mi, ctx);
+		if (err)
+			return err;
+
+		err = sock_packet_rst_one_mc(sk, &mi);
+		if (err)
+			return err;
+
+		pos += mi.cpt_next;
+	}
+
+	*pos_p = endpos;
+	return 0;
 }
 
 /*
@@ -1049,11 +1081,7 @@ static void rst_unix_skb_cb(struct cpt_skb_image *v, struct sk_buff *skb,
 	if (ucred->pid) {
 		struct pid *pid;
 
-		/*
-		 * The process that issued the message might be dead already,
-		 * in which case we need a detached pid.
-		 */
-		pid = alloc_dummy_vpid(ucred->pid);
+		pid = rst_alloc_pid(ucred->pid);
 		if (!pid)
 			wprintk_ctx("failed to restore unix skb pid\n");
 		UNIXCB(skb).pid = pid;
@@ -1219,9 +1247,12 @@ static int restore_unix_rqueue(struct sock *sk, struct cpt_sock_image *si,
 			owner_sk = pobj->o_obj;
 		}
 		if (owner_sk == NULL) {
+			/*
+			 * Pipe with closed second end? Pass sk as an owner
+			 * to allow userspace to receive pending data.
+			 */
 			dprintk_ctx("orphan af_unix skb 2?\n");
-			kfree_skb(skb);
-			continue;
+			owner_sk = sk;
 		}
 		skb_set_owner_w(skb, owner_sk);
 		skb->destructor = unix_destruct_scm;
@@ -1418,7 +1449,7 @@ int rst_sockets_complete(struct cpt_context *ctx)
 		if (sk->sk_peercred.pid) {
 			struct pid *pid;
 
-			pid = alloc_dummy_vpid(sk->sk_peercred.pid);
+			pid = rst_alloc_pid(sk->sk_peercred.pid);
 			if (pid) {
 				put_pid(sk_extended(sk)->sk_peer_pid);
 				sk_extended(sk)->sk_peer_pid = pid;

@@ -141,7 +141,7 @@ static int ve_device_add_symlink(struct kobject *kobj, const char *name, \
 	if (!ve_link)
 		goto out;
 
-	ve_link->name = kstrdup(dev_name(ve_dev->dev), GFP_KERNEL);
+	ve_link->name = kstrdup(name, GFP_KERNEL);
 	if (!ve_link->name)
 		goto out_free;
 
@@ -150,7 +150,7 @@ static int ve_device_add_symlink(struct kobject *kobj, const char *name, \
 	else
 		dev_kobj = &ve_dev->dev->kobj;
 
-	ret = sysfs_create_link(ve_kobj, dev_kobj, name);
+	ret = sysfs_create_link(ve_kobj, dev_kobj, ve_link->name);
 	if (ret)
 		goto out_free_name;
 
@@ -290,6 +290,17 @@ static int ve_device_link_class(struct ve_device *ve_dev)
 	}
 
 	return ret;
+}
+
+static int ve_device_link_dev_block(struct ve_device *ve_dev)
+{
+	struct device *dev = ve_dev->dev;
+	char dev_nums[20];
+
+	snprintf(dev_nums, sizeof(dev_nums), "%d:%d", MAJOR(dev->devt),
+			MINOR(dev->devt));
+	return ve_device_add_symlink(ve_dev->ve->dev_block_kobj, dev_nums,
+					ve_dev);
 }
 
 static void ve_device_del_link(struct ve_device *ve_dev)
@@ -462,6 +473,48 @@ static int ve_device_add(struct device *dev, struct ve_struct *ve,
 	ret = ve_device_link_class(ve_dev);
 	if (ret)
 		goto err;
+
+	/*
+	 * Need some(see below) symlinks for block devices
+	 * for lsblk to be able work in ve
+	 */
+	if (dev->class == &block_class) {
+
+		/*
+		 * There is a creation of "/sys/block" kobject for ve != ve0
+		 * Note that for ve0 this kobject already created at init stage
+		 * in function genhd_device_init()(/block/genhd.c)
+		 */
+		if ((ve->block_kobj == NULL) && !ve_is_super(ve)) {
+			struct ve_struct *old_ve = set_exec_env(ve);
+
+			/* ve_sysfs_block_kobj is ve->block_kobj here */
+			ve_sysfs_block_kobj = kobject_create_and_add("block", NULL);
+			set_exec_env(old_ve);
+
+			if (ve->block_kobj == NULL) {
+				ret = -ENOMEM;
+				goto err;
+			}
+		}
+
+		/*
+		 * Make link /sys/block/devName ->
+		 * ../devices/virtual/block/devName
+		 */
+		ret = ve_device_add_symlink(ve_dev->ve->block_kobj,
+				dev_name(ve_dev->dev), ve_dev);
+		if (ret)
+			goto err;
+
+		/*
+		 * Make link /sys/dev/block/devMAJOR:devMINOR ->
+		 * ../devices/virtual/block/devName
+		 */
+		ret = ve_device_link_dev_block(ve_dev);
+		if (ret)
+			goto err;
+	}
 
 	if (MAJOR(dev->devt)) {
 		unsigned type = dev->class == &block_class ? S_IFBLK : S_IFCHR;
@@ -715,8 +768,11 @@ static struct kobject *netdev_get_phy(struct device *dev)
 	struct sysfs_dirent *sd, *link;
 	struct kobject *target = NULL;
 
-	sd = sysfs_get_dirent(dev->kobj.sd, "device");
+	/* netdev_register_kobject doesn't call device_add for non-ve namespaces */
+	if (!dev->parent)
+		return NULL;
 
+	sd = sysfs_get_dirent(dev->kobj.sd, "device");
 	if (!sd)
 		return NULL;
 

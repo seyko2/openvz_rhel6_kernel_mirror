@@ -2192,6 +2192,8 @@ nfs_compare_remount_data(struct nfs_server *nfss,
 	if (data->flags != nfss->flags ||
 	    data->rsize != nfss->rsize ||
 	    data->wsize != nfss->wsize ||
+	    data->version != nfss->nfs_client->rpc_ops->version ||
+	    data->minorversion != nfss->nfs_client->cl_minorversion ||
 	    data->retrans != nfss->client->cl_timeout->to_retries ||
 	    data->auth_flavors[0] != nfss->client->cl_auth->au_flavor ||
 	    data->acregmin != nfss->acregmin / HZ ||
@@ -2247,12 +2249,14 @@ nfs_remount(struct super_block *sb, int *flags, char *raw_data)
 	data->timeo = 10U * nfss->client->cl_timeout->to_initval / HZ;
 	data->nfs_server.port = nfss->port;
 	data->nfs_server.addrlen = nfss->nfs_client->cl_addrlen;
+	data->version = nfsvers;
+	data->minorversion = nfss->nfs_client->cl_minorversion;
 	memcpy(&data->nfs_server.address, &nfss->nfs_client->cl_addr,
 		data->nfs_server.addrlen);
 
 	/* overwrite those values with any that were specified */
-	error = nfs_parse_mount_options((char *)options, data);
-	if (error < 0)
+	error = -EINVAL;
+	if (!nfs_parse_mount_options((char *)options, data))
 		goto out;
 
 	/*
@@ -3417,5 +3421,12 @@ out:
 			error != 0 ? " [error]" : "");
 	return error;
 }
+
+bool recover_lost_locks = false;
+module_param(recover_lost_locks, bool, 0644);
+MODULE_PARM_DESC(recover_lost_locks,
+		 "If the server reports that a lock might be lost, "
+		 "try to recover it risking data corruption.");
+
 
 #endif /* CONFIG_NFS_V4 */

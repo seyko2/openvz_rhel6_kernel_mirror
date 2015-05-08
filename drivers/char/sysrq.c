@@ -324,7 +324,7 @@ static void sysrq_handle_showmem(int key, struct tty_struct *tty)
 	struct user_beancounter *ub;
 
 	rcu_read_lock();
-	for_each_beancounter(ub)
+	for_each_top_beancounter(ub)
 		show_ub_mem(ub);
 	rcu_read_unlock();
 

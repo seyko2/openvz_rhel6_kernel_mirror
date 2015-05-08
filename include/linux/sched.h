@@ -623,6 +623,18 @@ struct signal_struct {
 	int			group_stop_count;
 	unsigned int		flags; /* see SIGNAL_* flags below */
 
+	/*
+	 * PR_SET_CHILD_SUBREAPER marks a process, like a service
+	 * manager, to re-parent orphan (double-forking) child processes
+	 * to this process instead of 'init'. The service manager is
+	 * able to receive SIGCHLD signals and is able to investigate
+	 * the process until it calls wait(). All children of this
+	 * process will inherit a flag if they should look for a
+	 * child_subreaper process at exit.
+	 */
+	unsigned int		is_child_subreaper:1;
+	unsigned int		has_child_subreaper:1;
+
 	/* POSIX.1b Interval Timers */
 	struct list_head posix_timers;
 
@@ -1060,6 +1072,11 @@ struct sched_domain {
 
 	u64 last_update;
 
+#ifndef __GENKSYMS__
+	/* idle_balance() stats */
+	u64 max_newidle_lb_cost;
+	unsigned long next_decay_max_lb_cost;
+#endif
 #ifdef CONFIG_SCHEDSTATS
 	/* load_balance() stats */
 	unsigned int lb_count[CPU_MAX_IDLE_TYPES];
@@ -1172,6 +1189,7 @@ struct sched_domain;
 #define ENQUEUE_BOOST		8
 
 #define DEQUEUE_SLEEP		1
+#define DEQUEUE_TASK_SLEEP	2
 
 struct sched_class {
 	const struct sched_class *next;
@@ -1444,12 +1462,18 @@ struct task_struct {
 	unsigned in_iowait:1;
 	unsigned did_ve_enter:1;
 
-
 	/* Revert to default priority/policy when forking */
 	unsigned sched_reset_on_fork:1;
 
 	unsigned woken_while_running:1;
 	unsigned may_throttle:1;
+
+	unsigned in_ub_memcg_attach:1;
+
+#ifndef __GENKSYMS__
+	/* task may not gain privileges */
+	unsigned no_new_privs:1;
+#endif
 
 	pid_t pid;
 	pid_t tgid;
@@ -1547,6 +1571,8 @@ struct task_struct {
 	int (*notifier)(void *priv);
 	void *notifier_data;
 	sigset_t *notifier_mask;
+	struct hlist_head task_works;
+
 	struct audit_context *audit_context;
 #ifdef CONFIG_AUDITSYSCALL
 	uid_t loginuid;
@@ -1738,9 +1764,13 @@ struct task_struct {
 #ifdef CONFIG_VE
 	struct ve_task_info ve_task_info;
 #endif
-	/* reserved for Red Hat */
+#ifdef __GENKSYMS__
+	/* padding reserved by Red Hat for non-kABI breaking extensions */
 	unsigned long rh_reserved[2];
-#ifndef __GENKSYMS__
+#else
+	unsigned long atomic_flags;
+	unsigned long rh_reserved[1];
+
 	struct perf_event_context *perf_event_ctxp[perf_nr_task_contexts];
 #ifdef CONFIG_CGROUP_MEM_RES_CTLR /* memcg uses this to do batch job */
 	struct memcg_batch_info {
@@ -1750,7 +1780,17 @@ struct task_struct {
 		unsigned long memsw_bytes; /* uncharged mem+swap usage */
 	} memcg_batch;
 #endif
+#ifdef CONFIG_NUMA
+	short pref_node_fork;
 #endif
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+	struct memcg_oom_info {
+		struct mem_cgroup *memcg;
+		gfp_t gfp_mask;
+		unsigned int may_oom:1;
+	} memcg_oom;
+#endif
+#endif /* __GENKYSMS__ */
 };
 
 /* Future-safe accessor for struct task_struct's cpus_allowed. */
@@ -1989,8 +2029,6 @@ static inline void clear_stop_state(struct task_struct *tsk)
 #define PF_KTHREAD	0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE	0x00400000	/* randomize virtual address space */
 #define PF_SWAPWRITE	0x00800000	/* Allowed to write to swap */
-#define PF_SPREAD_PAGE	0x01000000	/* Spread page cache over cpuset */
-#define PF_SPREAD_SLAB	0x02000000	/* Spread some slab caches over cpuset */
 #define PF_THREAD_BOUND	0x04000000	/* Thread bound to specific cpu */
 #define PF_MCE_EARLY    0x08000000      /* Early kill for mce process policy */
 #define PF_MEMPOLICY	0x10000000	/* Non-default NUMA mempolicy */
@@ -2022,6 +2060,28 @@ static inline void clear_stop_state(struct task_struct *tsk)
 /* NOTE: this will return 0 or PF_USED_MATH, it will never return 1 */
 #define tsk_used_math(p) ((p)->flags & PF_USED_MATH)
 #define used_math() tsk_used_math(current)
+
+/* Per-process atomic flags. */
+#define PFA_SPREAD_PAGE  1      /* Spread page cache over cpuset */
+#define PFA_SPREAD_SLAB  2      /* Spread some slab caches over cpuset */
+
+#define TASK_PFA_TEST(name, func)                                      \
+       static inline bool task_##func(struct task_struct *p)           \
+       { return test_bit(PFA_##name, &p->atomic_flags); }
+#define TASK_PFA_SET(name, func)                                       \
+       static inline void task_set_##func(struct task_struct *p)       \
+       { set_bit(PFA_##name, &p->atomic_flags); }
+#define TASK_PFA_CLEAR(name, func)                                     \
+       static inline void task_clear_##func(struct task_struct *p)     \
+       { clear_bit(PFA_##name, &p->atomic_flags); }
+
+TASK_PFA_TEST(SPREAD_PAGE, spread_page)
+TASK_PFA_SET(SPREAD_PAGE, spread_page)
+TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
+
+TASK_PFA_TEST(SPREAD_SLAB, spread_slab)
+TASK_PFA_SET(SPREAD_SLAB, spread_slab)
+TASK_PFA_CLEAR(SPREAD_SLAB, spread_slab)
 
 #ifdef CONFIG_TREE_PREEMPT_RCU
 
@@ -2511,14 +2571,8 @@ int same_thread_group(struct task_struct *p1, struct task_struct *p2)
 
 static inline struct task_struct *next_thread(const struct task_struct *p)
 {
-	struct task_struct *tsk;
-	tsk = list_entry_rcu(p->thread_group.next,
+	return list_entry_rcu(p->thread_group.next,
 			      struct task_struct, thread_group);
-#ifdef CONFIG_VE
-	/* all threads should belong to ONE ve! */
-	BUG_ON(VE_TASK_INFO(tsk)->owner_env != VE_TASK_INFO(p)->owner_env);
-#endif
-	return tsk;
 }
 
 static inline int thread_group_empty(struct task_struct *p)

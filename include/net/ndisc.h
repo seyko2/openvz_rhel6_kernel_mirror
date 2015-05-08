@@ -95,7 +95,9 @@ static inline u32 ndisc_hashfn(const void *pkey, const struct net_device *dev, _
 }
 
 extern int			ndisc_init(void);
+extern int			ndisc_late_init(void);
 
+extern void			ndisc_late_cleanup(void);
 extern void			ndisc_cleanup(void);
 
 extern int			ndisc_rcv(struct sk_buff *skb);

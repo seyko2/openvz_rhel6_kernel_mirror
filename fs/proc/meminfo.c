@@ -21,19 +21,38 @@ void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
 }
 
+/*
+ * RHEL6 bz1032702
+ * It was backported from upstream a new entry for /proc/meminfo
+ * in order to report an estimate of available memory for starting
+ * applications without risking an overcommitment & swapping scenario.
+ * In order to keep backward compatibility with legacy 2.6.32 layout,
+ * we're making this new entry appearance conditional to explicitly
+ * disabling the following sysctl by user.
+ */
+unsigned int sysctl_meminfo_legacy_layout __read_mostly = 1;
+int meminfo_legacy_layout_sysctl_handler(ctl_table *table, int write,
+			void __user *buffer, size_t *length, loff_t *ppos)
+{
+        return proc_dointvec(table, write, buffer, length, ppos);
+}
+
 #define K(x) ((x) << (PAGE_SHIFT - 10))
 
 void hugetlb_meminfo_mi(struct seq_file *m, struct meminfo *mi)
 {
 	struct hstate *h = &default_hstate;
 	unsigned long total, used, free;
+	struct user_beancounter *iter;
 
 	if (!h->nr_huge_pages)
 		return;
 
 	total = min(mi->ub->ub_parms[UB_LOCKEDPAGES].limit >> h->order,
 		    h->nr_huge_pages);
-	used = mi->ub->ub_hugetlb_pages >> h->order;
+	used = 0;
+	for_each_beancounter_tree(iter, mi->ub)
+		used += mi->ub->ub_hugetlb_pages >> h->order;
 	free = min(total > used ? total - used : 0ul, h->free_huge_pages);
 
 	seq_printf(m,
@@ -135,10 +154,13 @@ int meminfo_proc_show_ub(struct seq_file *m, void *v,
 	struct sysinfo i;
 	struct meminfo mi;
 	unsigned long committed;
-	unsigned long allowed;
 	struct vmalloc_info vmi;
 	long cached;
+	long available;
+	unsigned long pagecache;
+	unsigned long wmark_low = 0;
 	unsigned long pages[NR_LRU_LISTS];
+	struct zone *zone;
 	int lru;
 
 	si_meminfo(&i);
@@ -159,8 +181,6 @@ int meminfo_proc_show_ub(struct seq_file *m, void *v,
  * display in kilobytes.
  */
 	committed = percpu_counter_read_positive(&vm_committed_as);
-	allowed = ((totalram_pages - hugetlb_total_pages())
-		* sysctl_overcommit_ratio / 100) + total_swap_pages;
 
 	cached = global_page_state(NR_FILE_PAGES) -
 			total_swapcache_pages - i.bufferram;
@@ -171,6 +191,37 @@ int meminfo_proc_show_ub(struct seq_file *m, void *v,
 
 	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
 		pages[lru] = global_page_state(NR_LRU_BASE + lru);
+
+	for_each_zone(zone)
+		wmark_low += zone->watermark[WMARK_LOW];
+
+	/*
+	 * Estimate the amount of memory available for userspace allocations,
+	 * without causing swapping.
+	 *
+	 * Free memory cannot be taken below the low watermark, before the
+	 * system starts swapping.
+	 */
+	available = i.freeram - wmark_low;
+
+	/*
+	 * Not all the page cache can be freed, otherwise the system will
+	 * start swapping. Assume at least half of the page cache, or the
+	 * low watermark worth of cache, needs to stay.
+	 */
+	pagecache = pages[LRU_ACTIVE_FILE] + pages[LRU_INACTIVE_FILE];
+	pagecache -= min(pagecache / 2, wmark_low);
+	available += pagecache;
+
+	/*
+	 * Part of the reclaimable swap consists of items that are in use,
+	 * and cannot be freed. Cap this estimate at the low watermark.
+	 */
+	available += global_page_state(NR_SLAB_RECLAIMABLE) -
+		     min(global_page_state(NR_SLAB_RECLAIMABLE) / 2, wmark_low);
+
+	if (available < 0)
+		available = 0;
 
 	/*
 	 * Tagged format, for easy grepping and expansion.
@@ -286,7 +337,7 @@ int meminfo_proc_show_ub(struct seq_file *m, void *v,
 		K(global_page_state(NR_UNSTABLE_NFS)),
 		K(global_page_state(NR_BOUNCE)),
 		K(global_page_state(NR_WRITEBACK_TEMP)),
-		K(allowed),
+		K(vm_commit_limit()),
 		K(committed),
 		(unsigned long)VMALLOC_TOTAL >> 10,
 		vmi.used >> 10,
@@ -304,13 +355,21 @@ int meminfo_proc_show_ub(struct seq_file *m, void *v,
 
 	arch_report_meminfo(m);
 
+	/*
+	 * RHEL6 bz1032702
+	 * if backwards compatibility with legacy meminfo interface layout
+	 * is not required, include the new entries at the end of report
+	 */
+	if (!sysctl_meminfo_legacy_layout)
+		seq_printf(m, "MemAvailable:   %8lu kB\n", K(available));
+
 	return 0;
 #undef K
 }
 
 static int meminfo_proc_show(struct seq_file *m, void *v)
 {
-	return meminfo_proc_show_ub(m, v, current->mm->mm_ub,
+	return meminfo_proc_show_ub(m, v, mm_ub_top(current->mm),
 			get_exec_env()->meminfo_val);
 }
 

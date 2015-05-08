@@ -14,12 +14,14 @@
 #ifndef CONFIG_VE
 extern struct vfsmount *sysfs_mount;
 extern struct super_block *sysfs_sb;
+#define sd_sysfs_sb(sd) sysfs_sb
 #define ve_sysfs_alowed()	1
 #else
 #include <linux/sched.h>
 #include <linux/ve.h>
 #define sysfs_mount		(get_exec_env()->sysfs_mnt)
-#define sysfs_sb		(get_exec_env()->sysfs_sb)
+#define sysfs_sb		(get_exec_env()->_sysfs_sb)
+#define sd_sysfs_sb(sd)		((sd)->owner_env->_sysfs_sb)
 #define ve_sysfs_alowed()	(sysfs_sb != NULL)
 #endif
 
@@ -114,6 +116,8 @@ void sysfs_delete_inode(struct inode *inode);
 int sysfs_setattr(struct dentry *dentry, struct iattr *iattr);
 int sysfs_setxattr(struct dentry *dentry, const char *name, const void *value,
 		size_t size, int flags);
+int sysfs_getattr(struct vfsmount *mnt, struct dentry *dentry,
+		struct kstat *stat);
 int sysfs_hash_and_remove(struct sysfs_dirent *dir_sd, const char *name);
 int sysfs_inode_init(void);
 

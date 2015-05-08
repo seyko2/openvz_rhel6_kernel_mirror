@@ -59,19 +59,19 @@ static int bc_iostat(struct seq_file *f, struct user_beancounter *bc)
 	struct blkio_group *blkg;
 	struct hlist_node *n;
 
-	seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu\n",
+	seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu %lu %lu\n",
 			"flush" ,
 			(unsigned)bc->ub_uid, '.',
 			0ul, 0ul, 0ul, 0, 0,
 			ub_stat_get_exact(bc, wb_requests),
-			ub_stat_get_exact(bc, wb_sectors));
+			ub_stat_get_exact(bc, wb_sectors), 0ul, 0ul);
 
-	seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu\n",
+	seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu %lu %lu\n",
 			"fuse" ,
 			(unsigned)bc->ub_uid, '.',
 			0ul, 0ul, 0ul, 0, 0,
 			__ub_percpu_sum(bc, fuse_requests),
-			__ub_percpu_sum(bc, fuse_bytes) >> 9);
+			__ub_percpu_sum(bc, fuse_bytes) >> 9, 0ul, 0ul);
 
 	if (!bc->ub_cgroup)
 		return 0;
@@ -80,7 +80,7 @@ static int bc_iostat(struct seq_file *f, struct user_beancounter *bc)
 
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(blkg, n, &blkcg->blkg_list, blkcg_node) {
-		unsigned long queued, serviced, sectors;
+		unsigned long queued, rds, wrs, serviced, sectors;
 		unsigned int used_time, wait_time;
 		uint64_t tmp;
 
@@ -91,8 +91,10 @@ static int bc_iostat(struct seq_file *f, struct user_beancounter *bc)
 		stats = &blkg->stats;
 		queued    = stats->stat_arr[BLKIO_STAT_QUEUED][BLKIO_STAT_READ] +
 			    stats->stat_arr[BLKIO_STAT_QUEUED][BLKIO_STAT_WRITE];
-		serviced  = blkio_read_stat_cpu(blkg, BLKIO_STAT_CPU_SERVICED, BLKIO_STAT_READ);
-		serviced += blkio_read_stat_cpu(blkg, BLKIO_STAT_CPU_SERVICED, BLKIO_STAT_WRITE);
+		rds  = blkio_read_stat_cpu(blkg, BLKIO_STAT_CPU_SERVICED, BLKIO_STAT_READ);
+		wrs = blkio_read_stat_cpu(blkg, BLKIO_STAT_CPU_SERVICED, BLKIO_STAT_WRITE);
+		serviced = rds + wrs;
+
 		tmp	  = stats->stat_arr[BLKIO_STAT_WAIT_TIME][BLKIO_STAT_READ] +
 			    stats->stat_arr[BLKIO_STAT_WAIT_TIME][BLKIO_STAT_WRITE];
 		do_div(tmp, NSEC_PER_MSEC);
@@ -101,13 +103,12 @@ static int bc_iostat(struct seq_file *f, struct user_beancounter *bc)
 		used_time = jiffies_to_msecs(stats->time);
 		sectors   = blkio_read_stat_cpu(blkg, BLKIO_STAT_CPU_SECTORS, 0);
 		spin_unlock_irq(&blkg->stats_lock);
-
-		seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu\n",
+		seq_printf(f, "%s %u %c %lu %lu %lu %u %u %lu %lu %lu %lu\n",
 				blkg->dev_name ?: "none" ,
 				(unsigned)bc->ub_uid, '.',
 				queued, 0ul, 0ul,
 				wait_time, used_time,
-				serviced, sectors);
+				serviced, sectors, rds, wrs);
 	}
 	rcu_read_unlock();
 
@@ -130,7 +131,7 @@ static void *bc_iostat_start(struct seq_file *f, loff_t *ppos)
 	unsigned long pos = *ppos;
 
 	rcu_read_lock();
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		if (!pos--)
 			return ub;
 	}
@@ -143,7 +144,7 @@ static void *bc_iostat_next(struct seq_file *f, void *v, loff_t *ppos)
 	struct list_head *entry;
 
 	entry = &ub->ub_list;
-	list_for_each_continue_rcu(entry, &ub_list_head) {
+	list_for_each_continue_rcu(entry, &ub_top_list) {
 		ub = list_entry(entry, struct user_beancounter, ub_list);
 		(*ppos)++;
 		return ub;

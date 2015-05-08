@@ -490,8 +490,36 @@ extern int			tcp_disconnect(struct sock *sk, int flags);
 extern __u32 syncookie_secret[2][16-4+SHA_DIGEST_WORDS];
 extern struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb, 
 				    struct ip_options *opt);
+#ifdef CONFIG_SYN_COOKIES
+#include <linux/ktime.h>
+
+/* Syncookies use a monotonic timer which increments every 60 seconds.
+ * This counter is used both as a hash input and partially encoded into
+ * the cookie value.  A cookie is only validated further if the delta
+ * between the current counter value and the encoded one is less than this,
+ * i.e. a sent cookie is valid only at most for 2*60 seconds (or less if
+ * the counter advances immediately after a cookie is generated).
+ */
+#define MAX_SYNCOOKIE_AGE 2
+
+static inline u32 tcp_cookie_time(void)
+{
+	u64 val = get_jiffies_64();
+
+	do_div(val, 60 * HZ);
+	return val;
+}
+
 extern __u32 cookie_v4_init_sequence(struct sock *sk, struct sk_buff *skb, 
 				     __u16 *mss);
+#else
+static inline __u32 cookie_v4_init_sequence(struct sock *sk,
+					    struct sk_buff *skb,
+					    __u16 *mss)
+{
+	return 0;
+}
+#endif
 
 extern __u32 cookie_init_timestamp(struct request_sock *req);
 extern void cookie_check_timestamp(struct tcp_options_received *tcp_opt);
@@ -637,6 +665,17 @@ extern u32	__tcp_select_window(struct sock *sk);
 #define tcp_time_stamp		((__u32)(jiffies))
 #endif
 
+#define tcp_flag_byte(th) (((u_int8_t *)th)[13])
+
+#define TCPHDR_FIN 0x01
+#define TCPHDR_SYN 0x02
+#define TCPHDR_RST 0x04
+#define TCPHDR_PSH 0x08
+#define TCPHDR_ACK 0x10
+#define TCPHDR_URG 0x20
+#define TCPHDR_ECE 0x40
+#define TCPHDR_CWR 0x80
+
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission
  * code.  We also store the host-order sequence numbers in
@@ -654,26 +693,14 @@ struct tcp_skb_cb {
 	__u32		seq;		/* Starting sequence number	*/
 	__u32		end_seq;	/* SEQ + FIN + SYN + datalen	*/
 	__u32		when;		/* used to compute rtt's	*/
-	__u8		flags;		/* TCP header flags.		*/
-
-	/* NOTE: These must match up to the flags byte in a
-	 *       real TCP header.
-	 */
-#define TCPCB_FLAG_FIN		0x01
-#define TCPCB_FLAG_SYN		0x02
-#define TCPCB_FLAG_RST		0x04
-#define TCPCB_FLAG_PSH		0x08
-#define TCPCB_FLAG_ACK		0x10
-#define TCPCB_FLAG_URG		0x20
-#define TCPCB_FLAG_ECE		0x40
-#define TCPCB_FLAG_CWR		0x80
-
+	__u8		tcp_flags;	/* TCP header flags. (tcp[13])	*/
 	__u8		sacked;		/* State flags for SACK/FACK.	*/
 #define TCPCB_SACKED_ACKED	0x01	/* SKB ACK'd by a SACK block	*/
 #define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*/
 #define TCPCB_LOST		0x04	/* SKB is lost			*/
 #define TCPCB_TAGBITS		0x07	/* All tag bits			*/
-
+	__u8		ip_dsfield;	/* IPv4 tos or IPv6 dsfield	*/
+	/* 1 byte hole */
 #define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS)
 
@@ -982,7 +1009,13 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 
 		tp->ucopy.memory = 0;
 	} else if (skb_queue_len(&tp->ucopy.prequeue) == 1) {
-		wake_up_interruptible_poll(sk->sk_sleep,
+		/*
+		 * It's unclean how sk->sk_sleep might be nil here,
+		 * so to not panicing rather warn-on-once. psbm-27040.
+		 * 	-- cyrillos
+		 */
+		WARN_ON_ONCE(!sk->sk_sleep);
+		wake_up_interruptible_sync_poll(sk->sk_sleep,
 					   POLLIN | POLLRDNORM | POLLRDBAND);
 		if (!inet_csk_ack_scheduled(sk))
 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,

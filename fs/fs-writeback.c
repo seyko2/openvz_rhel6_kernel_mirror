@@ -222,21 +222,34 @@ static bool inode_dirtied_after(struct inode *inode, unsigned long t)
 	return ret;
 }
 
+#define EXPIRE_DIRTY_ATIME 0x0001
+
 /*
  * Move expired dirty inodes from @delaying_queue to @dispatch_queue.
  */
 static void move_expired_inodes(struct list_head *delaying_queue,
-			       struct list_head *dispatch_queue,
-				unsigned long *older_than_this)
+				struct list_head *dispatch_queue,
+				int flags,
+				struct writeback_control *wbc)
 {
+	unsigned long *older_than_this = NULL;
+	unsigned long expire_time;
 	LIST_HEAD(tmp);
 	struct list_head *pos, *node;
 	struct super_block *sb = NULL;
 	struct inode *inode;
 	int do_sb_sort = 0;
 
+	if ((flags & EXPIRE_DIRTY_ATIME) == 0)
+		older_than_this = wbc->older_than_this;
+	else if (!wbc->for_sync) {
+		expire_time = jiffies - (HZ * 86400);
+		older_than_this = &expire_time;
+	}
 	while (!list_empty(delaying_queue)) {
 		inode = list_entry(delaying_queue->prev, struct inode, i_list);
+		WARN_ON_ONCE((flags & EXPIRE_DIRTY_ATIME) &&
+			     inode->i_state & I_DIRTY);
 		if (older_than_this &&
 		    inode_dirtied_after(inode, *older_than_this))
 			break;
@@ -244,6 +257,8 @@ static void move_expired_inodes(struct list_head *delaying_queue,
 			do_sb_sort = 1;
 		sb = inode->i_sb;
 		list_move(&inode->i_list, &tmp);
+		if (flags & EXPIRE_DIRTY_ATIME)
+			set_bit(__I_DIRTY_TIME_EXPIRED, &inode->i_state);
 	}
 
 	/* just one sb in list, splice to dispatch_queue and we're done */
@@ -275,10 +290,12 @@ static void move_expired_inodes(struct list_head *delaying_queue,
  *                                           |
  *                                           +--> dequeue for IO
  */
-static void queue_io(struct bdi_writeback *wb, unsigned long *older_than_this)
+static void queue_io(struct bdi_writeback *wb, struct writeback_control *wbc)
 {
 	list_splice_init(&wb->b_more_io, &wb->b_io);
-	move_expired_inodes(&wb->b_dirty, &wb->b_io, older_than_this);
+	move_expired_inodes(&wb->b_dirty, &wb->b_io, 0, wbc);
+	move_expired_inodes(&wb->b_dirty_time, &wb->b_io,
+			    EXPIRE_DIRTY_ATIME, wbc);
 }
 
 static int write_inode(struct inode *inode, struct writeback_control *wbc)
@@ -348,8 +365,10 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 		 */
 		inode_wait_for_writeback(inode);
 	}
-
 	BUG_ON(inode->i_state & I_SYNC);
+
+	if (!(inode->i_state & I_DIRTY_ALL) &&(wbc->sync_mode != WB_SYNC_ALL))
+		return 0;
 
 	/* Set I_SYNC, reset I_DIRTY_PAGES */
 	inode->i_state |= I_SYNC;
@@ -376,8 +395,18 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 */
 	spin_lock(&inode_lock);
 	dirty = inode->i_state & I_DIRTY;
-	inode->i_state &= ~(I_DIRTY_SYNC | I_DIRTY_DATASYNC);
+	if (((dirty & (I_DIRTY_SYNC | I_DIRTY_DATASYNC)) &&
+	     (inode->i_state & I_DIRTY_TIME)) ||
+	    (inode->i_state & I_DIRTY_TIME_EXPIRED)) {
+		dirty |= I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED;
+		trace_writeback_lazytime(inode);
+	}
+	inode->i_state &= ~(dirty & ~I_DIRTY_PAGES);
 	spin_unlock(&inode_lock);
+	if (dirty & I_DIRTY_TIME)
+		mark_inode_dirty_sync(inode);
+
+
 	/* Don't write the inode if only I_DIRTY_PAGES was set */
 	if (dirty & (I_DIRTY_SYNC | I_DIRTY_DATASYNC)) {
 		int err = write_inode(inode, wbc);
@@ -388,6 +417,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	spin_lock(&inode_lock);
 	inode->i_state &= ~I_SYNC;
 	if (!(inode->i_state & (I_FREEING | I_CLEAR))) {
+		struct bdi_writeback *wb = &inode_to_bdi(inode)->wb;
 		if (mapping_tagged(mapping, PAGECACHE_TAG_DIRTY)) {
 			/*
 			 * We didn't write back all the pages.  nfs_writepages()
@@ -417,6 +447,8 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 			 * completion.
 			 */
 			redirty_tail(inode);
+		} else if (inode->i_state & I_DIRTY_TIME) {
+			list_move(&inode->i_list, &wb->b_dirty_time);
 		} else if (atomic_read(&inode->i_count)) {
 			/*
 			 * The inode is clean, inuse
@@ -439,7 +471,7 @@ writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	struct user_beancounter *ub = inode->i_mapping->dirtied_ub;
 	int ret;
 
-	if (likely(get_exec_ub() == ub || !ub))
+	if (likely(get_exec_ub_top() == ub) || !ub)
 		return __writeback_single_inode(inode, wbc);
 
 	ub = get_beancounter_rcu(ub) ? set_exec_ub(ub) : NULL;
@@ -565,7 +597,7 @@ void writeback_inodes_wb(struct bdi_writeback *wb,
 		wbc->wb_start = jiffies; /* livelock avoidance */
 	spin_lock(&inode_lock);
 	if (!wbc->for_kupdate || list_empty(&wb->b_io))
-		queue_io(wb, wbc->older_than_this);
+		queue_io(wb, wbc);
 
 	while (!list_empty(&wb->b_io)) {
 		struct inode *inode = list_entry(wb->b_io.prev,
@@ -593,7 +625,7 @@ static void __writeback_inodes_sb(struct super_block *sb,
 
 	spin_lock(&inode_lock);
 	if (!wbc->for_kupdate || list_empty(&wb->b_io))
-		queue_io(wb, wbc->older_than_this);
+		queue_io(wb, wbc);
 	writeback_sb_inodes(sb, wb, wbc, true);
 	spin_unlock(&inode_lock);
 }
@@ -953,18 +985,24 @@ static noinline void block_dump___mark_inode_dirty(struct inode *inode)
  * page->mapping->host, so the page-dirtying time is recorded in the internal
  * blockdev inode.
  */
+#define I_DIRTY_INODE (I_DIRTY_SYNC | I_DIRTY_DATASYNC)
 void __mark_inode_dirty(struct inode *inode, int flags)
 {
 	struct super_block *sb = inode->i_sb;
+	int dirtytime;
 
+	trace_writeback_mark_inode_dirty(inode, flags);
 	/*
 	 * Don't do this for I_DIRTY_PAGES - that doesn't actually
 	 * dirty the inode itself
 	 */
-	if (flags & (I_DIRTY_SYNC | I_DIRTY_DATASYNC)) {
+	if (flags & (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_TIME)) {
 		if (sb->s_op->dirty_inode)
-			sb->s_op->dirty_inode(inode);
+			sb->s_op->dirty_inode(inode, flags);
 	}
+	if (flags & I_DIRTY_INODE)
+		flags &= ~I_DIRTY_TIME;
+	dirtytime = flags & I_DIRTY_TIME;
 
 	/*
 	 * make sure that changes are seen by all cpus before we test i_state
@@ -973,16 +1011,22 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 	smp_mb();
 
 	/* avoid the locking if we can */
-	if ((inode->i_state & flags) == flags)
+	if (((inode->i_state & flags) == flags) ||
+	    (dirtytime && (inode->i_state & I_DIRTY_INODE)))
 		return;
 
 	if (unlikely(block_dump))
 		block_dump___mark_inode_dirty(inode);
 
 	spin_lock(&inode_lock);
+	if (dirtytime && (inode->i_state & I_DIRTY_INODE))
+		goto out;
+
 	if ((inode->i_state & flags) != flags) {
 		const int was_dirty = inode->i_state & I_DIRTY;
 
+		if (flags & I_DIRTY_INODE)
+			inode->i_state &= ~I_DIRTY_TIME;
 		inode->i_state |= flags;
 
 		/*
@@ -1020,7 +1064,9 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 			}
 
 			inode->dirtied_when = jiffies;
-			list_move(&inode->i_list, &wb->b_dirty);
+			list_move(&inode->i_list, dirtytime ?
+				  &wb->b_dirty_time : &wb->b_dirty);
+			trace_writeback_dirty_inode_enqueue(inode);
 		}
 	}
 out:

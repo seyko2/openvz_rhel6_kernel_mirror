@@ -45,86 +45,6 @@ struct veip_struct;
 struct ve_monitor;
 struct nsproxy;
 
-#if defined(CONFIG_VE) && defined(CONFIG_INET)
-struct fib_table;
-#ifdef CONFIG_VE_IPTABLES
-struct xt_table;
-struct nf_conn;
-
-#define FRAG6Q_HASHSZ   64
-
-struct ve_nf_conntrack {
-	struct hlist_head		*_bysource;
-	struct nf_nat_protocol		**_nf_nat_protos;
-	int				_nf_nat_vmalloced;
-	struct xt_table			*_nf_nat_table;
-	struct nf_conntrack_l3proto	*_nf_nat_l3proto;
-	atomic_t			_nf_conntrack_count;
-	int				_nf_conntrack_max;
-	struct hlist_head		*_nf_conntrack_hash;
-	int				_nf_conntrack_checksum;
-	int				_nf_conntrack_vmalloc;
-	struct hlist_head		_unconfirmed;
-	struct hlist_head		*_nf_ct_expect_hash;
-	unsigned int			_nf_ct_expect_vmalloc;
-	unsigned int			_nf_ct_expect_count;
-	unsigned int			_nf_ct_expect_max;
-	struct hlist_head		*_nf_ct_helper_hash;
-	unsigned int			_nf_ct_helper_vmalloc;
-#ifdef CONFIG_SYSCTL
-	/* l4 stuff: */
-	unsigned long			_nf_ct_icmp_timeout;
-	unsigned long			_nf_ct_icmpv6_timeout;
-	unsigned int			_nf_ct_udp_timeout;
-	unsigned int			_nf_ct_udp_timeout_stream;
-	unsigned int			_nf_ct_generic_timeout;
-	unsigned int			_nf_ct_log_invalid;
-	unsigned int			_nf_ct_tcp_timeout_max_retrans;
-	unsigned int			_nf_ct_tcp_timeout_unacknowledged;
-	int				_nf_ct_tcp_be_liberal;
-	int				_nf_ct_tcp_loose;
-	int				_nf_ct_tcp_max_retrans;
-	unsigned int			_nf_ct_tcp_timeouts[10];
-	struct ctl_table_header		*_icmp_sysctl_header;
-	unsigned int			_tcp_sysctl_table_users;
-	struct ctl_table_header		*_tcp_sysctl_header;
-	unsigned int			_udp_sysctl_table_users;
-	struct ctl_table_header		*_udp_sysctl_header;
-	struct ctl_table_header		*_icmpv6_sysctl_header;
-	struct ctl_table_header		*_generic_sysctl_header;
-#ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
-	struct ctl_table_header		*_icmp_compat_sysctl_header;
-	struct ctl_table_header		*_tcp_compat_sysctl_header;
-	struct ctl_table_header		*_udp_compat_sysctl_header;
-	struct ctl_table_header		*_generic_compat_sysctl_header;
-#endif
-	/* l4 protocols sysctl tables: */
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_icmp;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_tcp4;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_icmpv6;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_tcp6;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_udp4;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_udp6;
-	struct nf_conntrack_l4proto	*_nf_conntrack_l4proto_generic;
-	struct nf_conntrack_l4proto	**_nf_ct_protos[PF_MAX];
-	/* l3 protocols sysctl tables: */
-	struct nf_conntrack_l3proto	*_nf_conntrack_l3proto_ipv4;
-	struct nf_conntrack_l3proto	*_nf_conntrack_l3proto_ipv6;
-	struct nf_conntrack_l3proto	*_nf_ct_l3protos[AF_MAX];
-	/* sysctl standalone stuff: */
-	struct ctl_table_header		*_nf_ct_sysctl_header;
-	ctl_table			*_nf_ct_sysctl_table;
-	ctl_table			*_nf_ct_netfilter_table;
-	ctl_table			*_nf_ct_net_table;
-	ctl_table			*_ip_ct_netfilter_table;
-	struct ctl_table_header		*_ip_ct_sysctl_header;
-	int				_nf_ct_log_invalid_proto_min;
-	int				_nf_ct_log_invalid_proto_max;
-#endif /* CONFIG_SYSCTL */
-};
-#endif
-#endif
-
 struct ve_ipt_recent;
 struct ve_xt_hashlimit;
 struct svc_rqst;
@@ -183,7 +103,7 @@ struct ve_struct {
 #ifdef CONFIG_SYSFS
 	struct file_system_type *sysfs_fstype;
 	struct vfsmount		*sysfs_mnt;
-	struct super_block	*sysfs_sb;
+	struct super_block	*_sysfs_sb;
 	struct sysfs_dirent	*_sysfs_root;
 	struct kobject		*fs_kobj;
 	struct kobject		*cgroup_kobj;
@@ -199,6 +119,7 @@ struct ve_struct {
 	struct kobject		*dev_kobj;
 	struct kobject		*dev_char_kobj;
 	struct kobject		*dev_block_kobj;
+	struct kobject		*block_kobj;
 	struct class		*tty_class;
 	struct class		*mem_class;
 	struct list_head	devices;
@@ -226,7 +147,6 @@ struct ve_struct {
 #ifdef CONFIG_VE_IPTABLES
 /* core/netfilter.c virtualization */
 	__u64			ipt_mask;
-	__u64			_iptables_modules;
 	struct ve_ipt_recent	*_ipt_recent;
 	struct ve_xt_hashlimit	*_xt_hashlimit;
 #endif /* CONFIG_VE_IPTABLES */
@@ -301,6 +221,10 @@ struct ve_struct {
 	atomic_t		mnt_nr;
 
 	void			*lve;
+
+	spinlock_t		aio_nr_lock;
+	unsigned long		aio_nr;
+	unsigned long		aio_max_nr;
 };
 
 #define VE_MEMINFO_NR_SPECIAL	3	/* if above or equal treat at nr_pages */

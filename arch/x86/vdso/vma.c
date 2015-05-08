@@ -15,6 +15,10 @@
 #include <asm/proto.h>
 #include <asm/vdso.h>
 
+#include <linux/utsname.h>
+#include <linux/version.h>
+#include <linux/ve.h>
+
 #include "vextern.h"		/* Just for VMAGIC.  */
 #undef VEXTERN
 
@@ -66,6 +70,12 @@ static int __init init_vdso_vars(void)
 		printk("VDSO: I'm broken; not ELF\n");
 		vdso_enabled = 0;
 	}
+
+	init_uts_ns.vdso.addr		= vbase;
+	init_uts_ns.vdso.pages		= vdso_pages;
+	init_uts_ns.vdso.nr_pages	= npages;
+	init_uts_ns.vdso.size		= vdso_size;
+	init_uts_ns.vdso.version_off	= (unsigned long)VDSO64_SYMBOL(0, linux_version_code);
 
 #define VEXTERN(x) \
 	*(typeof(__ ## x) **) var_ref(VDSO64_SYMBOL(vbase, x), #x) = &__ ## x;
@@ -194,11 +204,118 @@ up_fail:
 	return ret;
 }
 
+static DEFINE_MUTEX(vdso_mutex);
+
+static int uts_arch_setup_additional_pages(struct linux_binprm *bprm,
+					   int uses_interp,
+					   unsigned long map_address)
+{
+	struct uts_namespace *uts_ns = current->nsproxy->uts_ns;
+	struct ve_struct *ve = get_exec_env();
+	int i, n1, n2, n3, new_version;
+	struct page **new_pages, **p;
+
+	/*
+	 * For node or in case we've not changed UTS simply
+	 * map preallocated original vDSO.
+	 *
+	 * In turn if we already allocated one for this UTS
+	 * simply reuse it. It improves speed significantly.
+	 */
+	if (uts_ns == &init_uts_ns)
+		goto map_init_uts;
+
+	/*
+	 * Dirty lockless hack. Strictly speaking
+	 * we need to return @p here if it's non-nil,
+	 * but since there only one trasition possible
+	 * { =0 ; !=0 } we simply return @uts_ns->vdso.pages
+	 */
+	p = ACCESS_ONCE(uts_ns->vdso.pages);
+	smp_read_barrier_depends();
+	if (p)
+		goto map_uts;
+
+	if (sscanf(uts_ns->name.release, "%d.%d.%d", &n1, &n2, &n3) == 3) {
+		/*
+		 * If there were no changes on version simply reuse
+		 * preallocated one.
+		 */
+		new_version = KERNEL_VERSION(n1, n2, n3);
+		if (new_version == LINUX_VERSION_CODE)
+			goto map_init_uts;
+	} else {
+		/*
+		 * If admin is passed malformed string here
+		 * lets warn him once but continue working
+		 * not using vDSO virtualization at all. It's
+		 * better than walk out with error.
+		 */
+		pr_warn_once("Wrong release uts name format detected."
+			     " Ignoring vDSO virtualization.\n");
+		goto map_init_uts;
+	}
+
+	mutex_lock(&vdso_mutex);
+	if (uts_ns->vdso.pages) {
+		mutex_unlock(&vdso_mutex);
+		goto map_uts;
+	}
+
+	uts_ns->vdso.nr_pages	= init_uts_ns.vdso.nr_pages;
+	uts_ns->vdso.size	= init_uts_ns.vdso.size;
+	uts_ns->vdso.version_off= init_uts_ns.vdso.version_off;
+	new_pages		= kmalloc(sizeof(struct page *) * init_uts_ns.vdso.nr_pages, GFP_KERNEL);
+	if (!new_pages) {
+		pr_err("Can't allocate vDSO pages array for VE %d\n", ve->veid);
+		goto out_unlock;
+	}
+
+	for (i = 0; i < uts_ns->vdso.nr_pages; i++) {
+		struct page *p = alloc_page(GFP_KERNEL);
+		if (!p) {
+			pr_err("Can't allocate page for VE %d\n", ve->veid);
+			for (; i > 0; i--)
+				put_page(new_pages[i - 1]);
+			kfree(new_pages);
+			goto out_unlock;
+		}
+		new_pages[i] = p;
+		copy_page(page_address(p), page_address(init_uts_ns.vdso.pages[i]));
+	}
+
+	uts_ns->vdso.addr = vmap(new_pages, uts_ns->vdso.nr_pages, 0, PAGE_KERNEL);
+	if (!uts_ns->vdso.addr) {
+		pr_err("Can't map vDSO pages for VE %d\n", ve->veid);
+		for (i = 0; i < uts_ns->vdso.nr_pages; i++)
+			put_page(new_pages[i]);
+		kfree(new_pages);
+		goto out_unlock;
+	}
+
+	*((int *)(uts_ns->vdso.addr + uts_ns->vdso.version_off)) = new_version;
+	smp_wmb();
+	uts_ns->vdso.pages = new_pages;
+	mutex_unlock(&vdso_mutex);
+
+	pr_debug("vDSO version transition %d -> %d for VE %d\n",
+		 LINUX_VERSION_CODE, new_version, ve->veid);
+
+map_uts:
+	return __arch_setup_additional_pages(bprm, uses_interp, map_address,
+					     uts_ns->vdso.pages, uts_ns->vdso.size);
+map_init_uts:
+	return __arch_setup_additional_pages(bprm, uses_interp, map_address,
+					     init_uts_ns.vdso.pages, init_uts_ns.vdso.size);
+out_unlock:
+	mutex_unlock(&vdso_mutex);
+	return -ENOMEM;
+}
+
 int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp,
 				unsigned long map_address)
 {
-	return __arch_setup_additional_pages(bprm, uses_interp, map_address,
-							vdso_pages, vdso_size);
+	return uts_arch_setup_additional_pages(bprm, uses_interp, map_address);
 }
 EXPORT_SYMBOL(arch_setup_additional_pages);
 

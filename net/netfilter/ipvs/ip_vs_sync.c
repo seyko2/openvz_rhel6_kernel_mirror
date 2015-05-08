@@ -851,6 +851,7 @@ static void ip_vs_proc_conn(struct ip_vs_conn_param *param,  unsigned flags,
 		kfree(param->pe_data);
 
 		dest = cp->dest;
+		spin_lock_bh(&cp->lock);
 		if ((cp->flags ^ flags) & IP_VS_CONN_F_INACTIVE &&
 		    !(flags & IP_VS_CONN_F_TEMPLATE) && dest) {
 			if (flags & IP_VS_CONN_F_INACTIVE) {
@@ -864,6 +865,7 @@ static void ip_vs_proc_conn(struct ip_vs_conn_param *param,  unsigned flags,
 		flags &= IP_VS_CONN_F_BACKUP_UPD_MASK;
 		flags |= cp->flags & ~IP_VS_CONN_F_BACKUP_UPD_MASK;
 		cp->flags = flags;
+		spin_unlock_bh(&cp->lock);
 		if (!dest) {
 			dest = ip_vs_try_bind_dest(cp);
 			if (dest)

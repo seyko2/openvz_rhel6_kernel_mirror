@@ -699,8 +699,9 @@ static void ext4_put_super(struct super_block *sb)
 	kobject_del(&sbi->s_kobj);
 
 	for (i = 0; i < sbi->s_gdb_count; i++)
-		brelse(sbi->s_group_desc[i]);
-	kfree(sbi->s_group_desc);
+		brelse(rcu_dereference_protected(sbi->s_group_desc, 1)->bh[i]);
+	kfree(rcu_dereference_protected(sbi->s_group_desc, 1));
+
 	if (is_vmalloc_addr(sbi->s_flex_groups))
 		vfree(sbi->s_flex_groups);
 	else
@@ -741,6 +742,8 @@ static void ext4_put_super(struct super_block *sb)
 		invalidate_bdev(sbi->journal_bdev);
 		ext4_blkdev_remove(sbi);
 	}
+	if (sbi->s_mmp_tsk)
+		kthread_stop(sbi->s_mmp_tsk);
 	sb->s_fs_info = NULL;
 	/*
 	 * Now that we are completely done shutting down the
@@ -789,10 +792,9 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 #endif
 	INIT_LIST_HEAD(&ei->i_aio_dio_complete_list);
 	spin_lock_init(&ei->i_completed_io_lock);
-	ei->cur_aio_dio = NULL;
 	ei->i_sync_tid = 0;
 	ei->i_datasync_tid = 0;
-	atomic_set(&ei->i_aiodio_unwritten, 0);
+	atomic_set(&ei->i_unwritten, 0);
 	atomic_set(&ei->i_ioend_count, 0);
 	atomic_set(&ei->i_flush_tag, 0);
 
@@ -965,7 +967,7 @@ static int ext4_show_options(struct seq_file *seq, struct vfsmount *vfs)
 	}
 	if (sbi->s_max_batch_time != EXT4_DEF_MAX_BATCH_TIME) {
 		seq_printf(seq, ",max_batch_time=%u",
-			   (unsigned) sbi->s_min_batch_time);
+			   (unsigned) sbi->s_max_batch_time);
 	}
 
 	/*
@@ -1227,6 +1229,7 @@ enum {
 	Opt_noquota, Opt_ignore, Opt_barrier, Opt_nobarrier, Opt_err,
 	Opt_resize, Opt_usrquota, Opt_grpquota, Opt_i_version,
 	Opt_stripe, Opt_delalloc, Opt_nodelalloc,
+	Opt_lazytime, Opt_nolazytime,
 	Opt_block_validity, Opt_noblock_validity,
 	Opt_inode_readahead_blks, Opt_journal_ioprio,
 	Opt_discard, Opt_nodiscard, Opt_balloon_ino,
@@ -1293,6 +1296,8 @@ static const match_table_t tokens = {
 	{Opt_resize, "resize"},
 	{Opt_delalloc, "delalloc"},
 	{Opt_nodelalloc, "nodelalloc"},
+	{Opt_lazytime, "lazytime"},
+	{Opt_nolazytime, "nolazytime"},
 	{Opt_block_validity, "block_validity"},
 	{Opt_noblock_validity, "noblock_validity"},
 	{Opt_inode_readahead_blks, "inode_readahead_blks=%u"},
@@ -1697,6 +1702,12 @@ set_qf_format:
 		case Opt_i_version:
 			set_opt(sbi->s_mount_opt, I_VERSION);
 			sb->s_flags |= MS_I_VERSION;
+			break;
+		case Opt_lazytime:
+			sb->s_flags |= MS_LAZYTIME;
+			break;
+		case Opt_nolazytime:
+			sb->s_flags &= ~MS_LAZYTIME;
 			break;
 		case Opt_nodelalloc:
 			clear_opt(sbi->s_mount_opt, DELALLOC);
@@ -2172,7 +2183,9 @@ static void ext4_orphan_cleanup(struct super_block *sb,
 				__func__, inode->i_ino, inode->i_size);
 			jbd_debug(2, "truncating inode %lu to %lld bytes\n",
 				  inode->i_ino, inode->i_size);
+			mutex_lock(&inode->i_mutex);
 			ext4_truncate(inode);
+			mutex_unlock(&inode->i_mutex);
 			nr_truncates++;
 		} else {
 			ext4_msg(sb, KERN_DEBUG,
@@ -3163,6 +3176,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	unsigned int journal_ioprio = DEFAULT_JOURNAL_IOPRIO;
 	unsigned long balloon_ino = 0;
 	ext4_group_t first_not_zeroed;
+	struct buffer_head **gdb_bh;
 
 	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
 	if (!sbi)
@@ -3486,9 +3500,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			(EXT4_MAX_BLOCK_FILE_PHYS / EXT4_BLOCKS_PER_GROUP(sb)));
 	db_count = (sbi->s_groups_count + EXT4_DESC_PER_BLOCK(sb) - 1) /
 		   EXT4_DESC_PER_BLOCK(sb);
-	sbi->s_group_desc = kmalloc(db_count * sizeof(struct buffer_head *),
-				    GFP_KERNEL);
-	if (sbi->s_group_desc == NULL) {
+	RCU_INIT_POINTER(sbi->s_group_desc,
+			 kmalloc(sizeof(struct ext4_gd_array) +
+				 db_count * sizeof(struct buffer_head *),
+				 GFP_KERNEL));
+	if (rcu_access_pointer(sbi->s_group_desc) == NULL) {
 		ext4_msg(sb, KERN_ERR, "not enough memory");
 		goto failed_mount;
 	}
@@ -3499,16 +3515,18 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 #endif
 
 	bgl_lock_init(sbi->s_blockgroup_lock);
-
+	gdb_bh = rcu_dereference_protected(sbi->s_group_desc, 1)->bh;
 	for (i = 0; i < db_count; i++) {
+		struct buffer_head *bh;
 		block = descriptor_loc(sb, logical_sb_block, i);
-		sbi->s_group_desc[i] = sb_bread(sb, block);
-		if (!sbi->s_group_desc[i]) {
+		bh = sb_bread(sb, block);
+		if (!bh) {
 			ext4_msg(sb, KERN_ERR,
 			       "can't read group descriptor %d", i);
 			db_count = i;
 			goto failed_mount2;
 		}
+		gdb_bh[i] = bh;
 	}
 	if (!ext4_check_descriptors(sb, &first_not_zeroed)) {
 		ext4_msg(sb, KERN_ERR, "group descriptors corrupted!");
@@ -3587,6 +3605,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	needs_recovery = (es->s_last_orphan != 0 ||
 			  EXT4_HAS_INCOMPAT_FEATURE(sb,
 				    EXT4_FEATURE_INCOMPAT_RECOVER));
+
+	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_MMP) &&
+	    !(sb->s_flags & MS_RDONLY))
+		if (ext4_multi_mount_protect(sb, le64_to_cpu(es->s_mmp_block)))
+			goto failed_mount3;
 
 	/*
 	 * The first inode we look at is the journal inode.  Don't try
@@ -3730,7 +3753,8 @@ no_journal:
 		goto failed_mount4;
 	}
 
-	ext4_setup_super(sb, es, sb->s_flags & MS_RDONLY);
+	if (ext4_setup_super(sb, es, sb->s_flags & MS_RDONLY))
+		sb->s_flags |= MS_RDONLY;
 
 	/* determine the minimum size of new large inodes, if present */
 	if (sbi->s_inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
@@ -3861,10 +3885,13 @@ failed_mount3:
 	percpu_counter_destroy(&sbi->s_csum_complete);
 	percpu_counter_destroy(&sbi->s_pfcache_peers);
 	percpu_counter_destroy(&sbi->s_fsync_counter);
+	if (sbi->s_mmp_tsk)
+		kthread_stop(sbi->s_mmp_tsk);
 failed_mount2:
 	for (i = 0; i < db_count; i++)
-		brelse(sbi->s_group_desc[i]);
-	kfree(sbi->s_group_desc);
+		brelse(gdb_bh[i]);
+	kfree(rcu_dereference_protected(sbi->s_group_desc, 1));
+
 failed_mount:
 	if (sbi->s_proc) {
 		remove_proc_entry(sb->s_id, ext4_proc_root);
@@ -4376,7 +4403,7 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	int enable_quota = 0;
 	ext4_group_t g;
 	unsigned int journal_ioprio = DEFAULT_JOURNAL_IOPRIO;
-	int err;
+	int err = 0;
 #ifdef CONFIG_QUOTA
 	int i;
 #endif
@@ -4506,9 +4533,17 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 				goto restore_opts;
 			if (!ext4_setup_super(sb, es, 0))
 				sb->s_flags &= ~MS_RDONLY;
+			if (EXT4_HAS_INCOMPAT_FEATURE(sb,
+						     EXT4_FEATURE_INCOMPAT_MMP))
+				if (ext4_multi_mount_protect(sb,
+						le64_to_cpu(es->s_mmp_block))) {
+					err = -EROFS;
+					goto restore_opts;
+				}
 			enable_quota = 1;
 		}
 	}
+	*flags = (*flags & ~MS_LAZYTIME) | (sb->s_flags & MS_LAZYTIME);
 
 	/*
 	 * Reinitialize lazy itable initialization thread based on
@@ -4521,7 +4556,6 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 		first_not_zeroed = ext4_has_uninit_itable(sb);
 		ext4_register_li_request(sb, first_not_zeroed);
 	}
-
 	ext4_setup_system_zone(sb);
 	if (sbi->s_journal == NULL)
 		ext4_commit_super(sb, 1);
@@ -4609,6 +4643,11 @@ static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
 		 * bitmap, and an inode table.
 		 */
 		overhead += ngroups * (2 + sbi->s_itb_per_group);
+
+		/* Add the internal journal blocks as well */
+		if (sbi->s_journal && !sbi->journal_bdev)
+			overhead += sbi->s_journal->j_maxlen;
+
 		sbi->s_overhead_last = overhead;
 		smp_wmb();
 		sbi->s_blocks_last = ext4_blocks_count(es);

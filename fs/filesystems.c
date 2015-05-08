@@ -151,8 +151,9 @@ int unregister_filesystem(struct file_system_type * fs)
 EXPORT_SYMBOL(unregister_filesystem);
 
 #ifdef CONFIG_VE
-int register_ve_fs_type_data(struct ve_struct *ve, struct file_system_type *template,
-		struct file_system_type **p_fs_type, struct vfsmount **p_mnt, void *data)
+int register_ve_fs_type_data_flags(struct ve_struct *ve, struct file_system_type *template,
+				   struct file_system_type **p_fs_type, struct vfsmount **p_mnt,
+				   void *data, int flags)
 {
 	struct vfsmount *mnt;
 	struct file_system_type *local_fs_type;
@@ -180,7 +181,7 @@ int register_ve_fs_type_data(struct ve_struct *ve, struct file_system_type *temp
 	if (p_mnt == NULL) 
 		goto done; 
 
-	mnt = vfs_kern_mount(local_fs_type, 0, local_fs_type->name, data);
+	mnt = vfs_kern_mount(local_fs_type, flags, local_fs_type->name, data);
 	if (IS_ERR(mnt))
 		goto mnt_err;
 
@@ -200,7 +201,13 @@ reg_err:
 	       "register_ve_fs_type(\"%s\") err=%d\n", template->name, ret);
 	return ret;
 }
+EXPORT_SYMBOL(register_ve_fs_type_data_flags);
 
+int register_ve_fs_type_data(struct ve_struct *ve, struct file_system_type *template,
+		struct file_system_type **p_fs_type, struct vfsmount **p_mnt, void *data)
+{
+	return register_ve_fs_type_data_flags(ve, template, p_fs_type, p_mnt, data, 0);
+}
 EXPORT_SYMBOL(register_ve_fs_type_data);
 
 void unregister_ve_fs_type(struct file_system_type *local_fs_type,

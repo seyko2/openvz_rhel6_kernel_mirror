@@ -67,6 +67,13 @@ static ssize_t profiling_store(struct kobject *kobj,
 {
 	int ret;
 
+	/*
+	 * We show /sys/kernel/profiling in CT for docker's sake but profiling
+	 * is system wide, so we don't allow to turn it on/off and do not
+	 * allow to create /proc/profile to get profiling info
+	 */
+	if (!ve_is_super(get_exec_env()))
+		return -ENOTSUPP;
 	if (prof_on)
 		return -EEXIST;
 	/*
@@ -188,6 +195,9 @@ static struct attribute * kernel_ve_attrs[] = {
 	&fscaps_attr.attr,
 #if defined(CONFIG_HOTPLUG)
 	&uevent_seqnum_attr.attr,
+#endif
+#ifdef CONFIG_PROFILING
+	&profiling_attr.attr,
 #endif
 	NULL
 };

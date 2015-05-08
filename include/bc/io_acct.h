@@ -31,9 +31,9 @@ static inline struct user_beancounter *get_io_ub(void)
 {
 	struct user_beancounter *ub;
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (unlikely(ub == NULL))
-		ub = get_task_ub(current);
+		ub = get_task_ub_top(current);
 
 	return ub;
 }
@@ -66,7 +66,7 @@ extern bool ub_should_skip_writeback(struct user_beancounter *ub,
 
 static inline void ub_writeback_io(unsigned long requests, unsigned long sectors)
 {
-	struct user_beancounter *ub = get_exec_ub();
+	struct user_beancounter *ub = get_exec_ub_top();
 	ub_stat_add(ub, wb_requests, requests);
 	ub_stat_add(ub, wb_sectors, sectors);
 }

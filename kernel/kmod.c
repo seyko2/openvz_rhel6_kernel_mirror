@@ -191,6 +191,7 @@ static struct {
 	{ "ip_tables",		VE_IP_IPTABLES	},
 	{ "ip6_tables",		VE_IP_IPTABLES6	},
 	{ "iptable_filter",	VE_IP_FILTER	},
+	{ "iptable_raw",	VE_IP_IPTABLES	},
 	{ "iptable_nat",	VE_IP_NAT	},
 	{ "iptable_mangle",	VE_IP_MANGLE	},
 	{ "ip6table_filter",	VE_IP_FILTER6	},
@@ -271,6 +272,12 @@ bool module_payload_allowed(const char *module)
 		if (!strcmp(ve0_am[i].name, module))
 			return mask_ipt_allow(permitted, ve0_am[i].perm);
 	}
+
+	/* ts_* algorithms are required for xt_string module */
+	if (!strcmp("ts_bm", module) || !strcmp("ts_fsm", module) ||
+	    !strcmp("ts_kmp", module))
+		return mask_ipt_allow(permitted, VE_IP_IPTABLES) ||
+		       mask_ipt_allow(permitted, VE_IP_IPTABLES6);
 
 	/* The rest of xt_* modules is allowed in both ipv4 and ipv6 modes */
 	if (!strncmp("xt_", module, 3))

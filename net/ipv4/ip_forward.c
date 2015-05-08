@@ -109,7 +109,7 @@ int ip_forward(struct sk_buff *skb)
 #ifdef CONFIG_IP_ROUTE_NAT			
 	    (rt->rt_flags & RTCF_NAT) == 0 &&	  /* no NAT mangling expected */
 #endif						  /* and */
-	    (skb->dev->features & NETIF_F_VENET)) /* src is VENET device */
+	    (skb->dev->vz_features & NETIF_F_VENET)) /* src is VENET device */
 		goto no_ttl_decr;
 
 	/* We are about to mangle packet. Copy it! */

@@ -46,7 +46,7 @@ static int ubstat_get_list(void __user *buf, long size)
 	end = page + PAGE_SIZE / sizeof(*ptr);
 
 	rcu_read_lock();
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		*ptr++ = ub->ub_uid;
 		if (ptr != end)
 			continue;
@@ -339,7 +339,7 @@ long do_ubstat(int func, unsigned long arg1, unsigned long arg2,
 		goto notify;
 	}
 
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (ub != NULL && ub->ub_uid == arg1)
 		get_beancounter_longterm(ub);
 	else /* FIXME must be if (ve_is_super) */
@@ -393,7 +393,7 @@ static void ubstat_save_statistics(void)
 	struct user_beancounter *ub;
 
 	local_irq_save(flags);
-	for_each_beancounter (ub)
+	for_each_top_beancounter(ub)
 		ubstat_save_onestat(ub);
 	local_irq_restore(flags);
 }

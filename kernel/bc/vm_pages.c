@@ -37,7 +37,7 @@ void __ub_update_oomguarpages(struct user_beancounter *ub)
 {
 	unsigned long pages[NR_LRU_LISTS];
 
-	gang_page_stat(get_ub_gs(ub), NULL, pages, NULL);
+	gang_page_stat(get_ub_gs(ub), true, NULL, pages, NULL);
 
 	ub->ub_parms[UB_OOMGUARPAGES].held =
 		pages[LRU_ACTIVE_ANON] +
@@ -102,7 +102,7 @@ int ub_memory_charge(struct mm_struct *mm, unsigned long size,
 {
 	struct user_beancounter *ub;
 
-	ub = mm->mm_ub;
+	ub = mm_ub_top(mm);
 	if (ub == NULL)
 		return 0;
 
@@ -134,7 +134,7 @@ void ub_memory_uncharge(struct mm_struct *mm, unsigned long size,
 {
 	struct user_beancounter *ub;
 
-	ub = mm->mm_ub;
+	ub = mm_ub_top(mm);
 	if (ub == NULL)
 		return;
 
@@ -150,7 +150,7 @@ int ub_locked_charge(struct mm_struct *mm, unsigned long size)
 {
 	struct user_beancounter *ub;
 
-	ub = mm->mm_ub;
+	ub = mm_ub_top(mm);
 	if (ub == NULL)
 		return 0;
 
@@ -162,7 +162,7 @@ void ub_locked_uncharge(struct mm_struct *mm, unsigned long size)
 {
 	struct user_beancounter *ub;
 
-	ub = mm->mm_ub;
+	ub = mm_ub_top(mm);
 	if (ub == NULL)
 		return;
 
@@ -173,19 +173,19 @@ int ub_lockedshm_charge(struct shmem_inode_info *shi, unsigned long size)
 {
 	struct user_beancounter *ub;
 
-	ub = shi->shmi_ub;
+	ub = top_beancounter(shi->shmi_ub);
 	if (ub == NULL)
 		return 0;
 
 	return charge_beancounter(ub, UB_LOCKEDPAGES,
-			size >> PAGE_SHIFT, UB_HARD);
+				  size >> PAGE_SHIFT, UB_HARD);
 }
 
 void ub_lockedshm_uncharge(struct shmem_inode_info *shi, unsigned long size)
 {
 	struct user_beancounter *ub;
 
-	ub = shi->shmi_ub;
+	ub = top_beancounter(shi->shmi_ub);
 	if (ub == NULL)
 		return;
 
@@ -262,31 +262,71 @@ nowarn:
 	return 0;
 }
 
-int __ub_phys_charge(struct user_beancounter *ub,
+static int __ub_phys_charge(struct user_beancounter *ub,
 		unsigned long pages, gfp_t gfp_mask)
 {
 	int strict = UB_SOFT | UB_TEST;
+	unsigned long flags;
 
-	if ((gfp_mask & __GFP_NOFAIL) || get_exec_ub() != ub)
+	if (gfp_mask & __GFP_NOFAIL)
 		strict = UB_FORCE;
 
 	ub_oom_start(&ub->oom_ctrl);
 
-	while (charge_beancounter_fast(ub, UB_PHYSPAGES, pages, strict)) {
+	local_irq_save(flags);
+	while (__charge_beancounter_fast(ub, UB_PHYSPAGES, pages, strict)) {
+		local_irq_restore(flags);
 		if (test_thread_flag(TIF_MEMDIE) ||
 		    fatal_signal_pending(current))
 			strict = UB_FORCE;
 		else if (ub_try_to_free_pages(ub, gfp_mask))
 			return -ENOMEM;
+		local_irq_save(flags);
 	}
+	local_irq_restore(flags);
 
 	return 0;
 }
-EXPORT_SYMBOL(__ub_phys_charge);
 
-int __ub_check_ram_limits(struct user_beancounter *ub, gfp_t gfp_mask, int size)
+int ub_phys_charge(struct user_beancounter *ub,
+		unsigned long pages, gfp_t gfp_mask)
 {
-	if ((gfp_mask & __GFP_NOFAIL) || get_exec_ub() != ub)
+	struct user_beancounter *p, *q, *exec_ub;
+	unsigned long flags;
+	bool force = false;
+	int retval;
+
+	exec_ub = get_exec_ub();
+	if (ub_is_descendant(ub, exec_ub))
+		force = true;
+
+	for (p = ub; p != NULL; p = p->parent) {
+		if (p == exec_ub)
+			force = false;
+
+		retval = __try_charge_beancounter_percpu(p,
+				ub_percpu(p, get_cpu()), UB_PHYSPAGES, pages);
+		put_cpu();
+		if (retval)
+			retval = __ub_phys_charge(p, pages,
+				force ? gfp_mask | __GFP_NOFAIL : gfp_mask);
+		if (retval)
+			goto unroll;
+	}
+	return 0;
+unroll:
+	local_irq_save(flags);
+	for (q = ub; q != p; q = q->parent)
+		__uncharge_beancounter_fast(q, UB_PHYSPAGES, pages);
+	local_irq_restore(flags);
+	return retval;
+}
+EXPORT_SYMBOL(ub_phys_charge);
+
+static int __ub_check_ram_limits_size(struct user_beancounter *ub,
+				      gfp_t gfp_mask, int size)
+{
+	if (gfp_mask & __GFP_NOFAIL)
 		return 0;
 
 	ub_oom_start(&ub->oom_ctrl);
@@ -301,7 +341,33 @@ int __ub_check_ram_limits(struct user_beancounter *ub, gfp_t gfp_mask, int size)
 
 	return 0;
 }
-EXPORT_SYMBOL(__ub_check_ram_limits);
+
+int ub_check_ram_limits_size(struct user_beancounter *ub,
+			     gfp_t gfp_mask, int size)
+{
+	struct user_beancounter *p, *exec_ub;
+	bool force = false;
+	int retval;
+
+	exec_ub = get_exec_ub();
+	if (ub_is_descendant(ub, exec_ub))
+		force = true;
+
+	for (p = ub; p != NULL; p = p->parent) {
+		if (p == exec_ub)
+			force = false;
+
+		if (likely(p->ub_parms[UB_PHYSPAGES].limit == UB_MAXVALUE ||
+		    !precharge_beancounter(p, UB_PHYSPAGES, size) || force))
+			continue;
+
+		retval = __ub_check_ram_limits_size(p, gfp_mask, size);
+		if (retval)
+			return retval;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(ub_check_ram_limits_size);
 
 #endif
 
@@ -309,19 +375,20 @@ EXPORT_SYMBOL(__ub_check_ram_limits);
 
 int ub_hugetlb_charge(struct user_beancounter *ub, struct page *page)
 {
+	struct user_beancounter *top_ub = top_beancounter(ub);
 	int numpages = 1 << compound_order(page);
 
 	if (ub_phys_charge(ub, numpages, GFP_KERNEL))
 		return -ENOMEM;
 
-	spin_lock_irq(&ub->ub_lock);
-	if (__charge_beancounter_locked(ub, UB_LOCKEDPAGES, numpages, UB_SOFT)) {
-		__uncharge_beancounter_locked(ub, UB_PHYSPAGES, numpages);
-		spin_unlock_irq(&ub->ub_lock);
+	spin_lock_irq(&top_ub->ub_lock);
+	if (__charge_beancounter_locked(top_ub, UB_LOCKEDPAGES, numpages, UB_SOFT)) {
+		spin_unlock_irq(&top_ub->ub_lock);
+		ub_phys_uncharge(ub, numpages);
 		return -ENOMEM;
 	}
 	ub->ub_hugetlb_pages += numpages;
-	spin_unlock_irq(&ub->ub_lock);
+	spin_unlock_irq(&top_ub->ub_lock);
 
 	BUG_ON(page->kmem_ub);
 	page->kmem_ub = ub;
@@ -332,16 +399,18 @@ int ub_hugetlb_charge(struct user_beancounter *ub, struct page *page)
 void ub_hugetlb_uncharge(struct page *page)
 {
 	struct user_beancounter *ub = page->kmem_ub;
+	struct user_beancounter *top_ub = top_beancounter(ub);
 	int numpages = 1 << compound_order(page);
 
 	if (!ub)
 		return;
 
-	spin_lock_irq(&ub->ub_lock);
-	__uncharge_beancounter_locked(ub, UB_LOCKEDPAGES, numpages);
-	__uncharge_beancounter_locked(ub, UB_PHYSPAGES, numpages);
+	ub_phys_uncharge(ub, numpages);
+
+	spin_lock_irq(&top_ub->ub_lock);
+	__uncharge_beancounter_locked(top_ub, UB_LOCKEDPAGES, numpages);
 	ub->ub_hugetlb_pages -= numpages;
-	spin_unlock_irq(&ub->ub_lock);
+	spin_unlock_irq(&top_ub->ub_lock);
 
 	page->kmem_ub = NULL;
 	put_beancounter(ub);
@@ -479,12 +548,9 @@ static int bc_fill_meminfo(struct user_beancounter *ub,
 	if (ret & NOTIFY_STOP_MASK)
 		goto out;
 
-	gang_page_stat(get_ub_gs(ub), NULL, mi->pages, mi->shadow);
-	gang_idle_page_stat(get_ub_gs(ub), NULL, &mi->idle_page_stats);
+	gang_page_stat(get_ub_gs(ub), true, NULL, mi->pages, mi->shadow);
+	gang_idle_page_stat(get_ub_gs(ub), true, NULL, &mi->idle_page_stats);
 
-	mi->cached = min(mi->si->totalram - mi->si->freeram,
-			mi->pages[LRU_INACTIVE_FILE] +
-			mi->pages[LRU_ACTIVE_FILE]);
 	mi->locked = ub->ub_parms[UB_LOCKEDPAGES].held;
 	mi->shmem = ub->ub_parms[UB_SHMPAGES].held;
 	dcache = ub->ub_parms[UB_DCACHESIZE].held;
@@ -507,6 +573,12 @@ static int bc_fill_meminfo(struct user_beancounter *ub,
 	mi->slab_reclaimable = DIV_ROUND_UP(max(0L, dcache), PAGE_SIZE);
 	mi->slab_unreclaimable =
 		DIV_ROUND_UP(max(0L, kmem - dcache), PAGE_SIZE);
+
+	mi->cached = min(mi->si->totalram - mi->si->freeram -
+			mi->slab_reclaimable - mi->slab_unreclaimable,
+			mi->pages[LRU_INACTIVE_FILE] +
+			mi->pages[LRU_ACTIVE_FILE] +
+			ub->ub_parms[UB_SHMPAGES].held);
 out:
 	return ret;
 }
@@ -537,10 +609,10 @@ static int bc_mem_notify(struct vnotifier_block *self,
 		return bc_fill_meminfo(mi->ub, mi->meminfo_val, mi);
 	}
 	case VIRTINFO_SYSINFO:
-		return bc_fill_sysinfo(get_exec_ub(),
+		return bc_fill_sysinfo(get_exec_ub_top(),
 				get_exec_env()->meminfo_val, arg);
 	case VIRTINFO_VMSTAT:
-		return bc_fill_vmstat(get_exec_ub(), arg);
+		return bc_fill_vmstat(get_exec_ub_top(), arg);
 	};
 
 	return old_ret;
@@ -598,9 +670,10 @@ void show_ub_mem(struct user_beancounter *ub)
 #ifdef CONFIG_PROC_FS
 static int bc_vmaux_show(struct seq_file *f, void *v)
 {
-	struct user_beancounter *ub;
+	struct user_beancounter *ub, *iter;
 	struct ub_percpu_struct *ub_pcpu;
 	unsigned long swapin, swapout, vswapin, vswapout, phys_pages;
+	unsigned long swapentries, tmpfs_respages, hugetlb_pages;
 	unsigned long shadow_pages;
 	int i;
 
@@ -619,11 +692,17 @@ static int bc_vmaux_show(struct seq_file *f, void *v)
 		shadow_pages -= ub_pcpu->precharge[UB_SHADOWPAGES];
 	}
 
+	swapentries = tmpfs_respages = hugetlb_pages = 0;
+	for_each_beancounter_tree(iter, ub) {
+		swapentries += iter->ub_swapentries;
+		tmpfs_respages += iter->ub_tmpfs_respages;
+		hugetlb_pages += iter->ub_hugetlb_pages;
+	}
+
 	phys_pages = max_t(long, 0, phys_pages);
 	shadow_pages = max_t(long, 0, shadow_pages);
 
-	seq_printf(f, bc_proc_lu_fmt, "tmpfs_respages",
-			ub->ub_tmpfs_respages);
+	seq_printf(f, bc_proc_lu_fmt, "tmpfs_respages", tmpfs_respages);
 
 	seq_printf(f, bc_proc_lu_fmt, "swapin", swapin);
 	seq_printf(f, bc_proc_lu_fmt, "swapout", swapout);
@@ -633,9 +712,9 @@ static int bc_vmaux_show(struct seq_file *f, void *v)
 
 	seq_printf(f, bc_proc_lu_fmt, "ram", phys_pages);
 	seq_printf(f, bc_proc_lu_fmt, "shadow", shadow_pages);
-	seq_printf(f, bc_proc_lu_fmt, "swap_entries", ub->ub_swapentries);
+	seq_printf(f, bc_proc_lu_fmt, "swap_entries", swapentries);
 
-	seq_printf(f, bc_proc_lu_fmt, "hugetlb", ub->ub_hugetlb_pages);
+	seq_printf(f, bc_proc_lu_fmt, "hugetlb", hugetlb_pages);
 
 	return 0;
 }

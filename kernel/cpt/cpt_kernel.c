@@ -99,20 +99,6 @@ int local_kernel_thread(int (*fn)(void *), void * arg, unsigned long flags, pid_
 	return ret;
 }
 
-static void get_cpu_caps(u32 *caps)
-{
-	unsigned int tmp1, tmp2;
-	int i;
-
-	bitmap_zero((unsigned long *)caps, 32*RHNCAPINTS);
-	for (i = 0; i < 32*RHNCAPINTS; i++)
-		if (boot_cpu_has(i))
-			set_bit(i, (unsigned long *)caps);
-
-	cpuid(0x00000001, &tmp1, &tmp2, &caps[4], &caps[0]);
-	cpuid(0x80000001, &tmp1, &tmp2, &caps[6], &caps[1]);
-}
-
 unsigned int test_cpu_caps_and_features(void)
 {
 #define has_cpu_cap(cap) test_bit((cap), (unsigned long *)caps)
@@ -121,7 +107,7 @@ unsigned int test_cpu_caps_and_features(void)
 	unsigned int flags = 0;
 
 #ifdef CONFIG_X86
-	get_cpu_caps(caps);
+	get_cpu_cap_masked(caps);
 
 	if (has_cpu_cap(X86_FEATURE_CMOV))
 		flags |= 1 << CPT_CPU_X86_CMOV;
@@ -167,6 +153,9 @@ unsigned int test_cpu_caps_and_features(void)
 
 	if (has_cpu_cap(X86_FEATURE_AES))
 		flags |= 1 << CPT_CPU_X86_AESNI;
+
+	if (has_cpu_cap(X86_FEATURE_RDRAND))
+		flags |= 1 << CPT_CPU_X86_RDRAND;
 
 #ifdef CONFIG_X86_64
 	flags |= 1 << CPT_CPU_X86_EMT64;

@@ -5,6 +5,7 @@ int cpt_dump_vm(struct cpt_context *ctx);
 __u32 rst_mm_flag(struct cpt_task_image *ti, struct cpt_context *ctx);
 int rst_mm_basic(cpt_object_t *obj, struct cpt_task_image *ti, struct cpt_context *ctx);
 int rst_mm_complete(struct cpt_task_image *ti, struct cpt_context *ctx);
+int set_mlock_creds(int cap);
 
 int cpt_iteration(cpt_context_t *ctx);
 int rst_iteration(cpt_context_t *ctx);

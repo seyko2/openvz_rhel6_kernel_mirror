@@ -82,7 +82,6 @@ struct ve_struct ve0 = {
 	.op_sem			= __RWSEM_INITIALIZER(ve0.op_sem),
 #ifdef CONFIG_VE_IPTABLES
 	.ipt_mask		= VE_IP_ALL,	/* everything is allowed */
-	._iptables_modules	= VE_IP_NONE,	/* but nothing yet loaded */
 #endif
 	.features		= -1,
 	.meminfo_val		= VE_MEMINFO_SYSTEM,
@@ -98,6 +97,8 @@ struct ve_struct ve0 = {
 	.fsync_enable		= FSYNC_FILTERED,
 	.sync_mutex		= __MUTEX_INITIALIZER(ve0.sync_mutex),
 	.mnt_nr			= ATOMIC_INIT(0),
+	.aio_nr			= 0,
+	.aio_max_nr		= AIO_MAX_NR_DEFAULT,
 };
 
 EXPORT_SYMBOL(ve0);
@@ -120,10 +121,19 @@ EXPORT_SYMBOL(__find_ve_by_id);
 struct ve_struct *get_ve_by_id(envid_t veid)
 {
 	struct ve_struct *ve;
+	/*
+	 * This is temporary hack to switch lockdep off:
+	 * https://jira.sw.ru/browse/PSBM-32194
+	 *
+	 * We will make this lockless using RCU in the
+	 * future.
+	 */
+	lockdep_off();
 	mutex_lock(&ve_list_lock);
 	ve = __find_ve_by_id(veid);
 	get_ve(ve);
 	mutex_unlock(&ve_list_lock);
+	lockdep_on();
 	return ve;
 }
 EXPORT_SYMBOL(get_ve_by_id);
@@ -148,6 +158,7 @@ void init_ve0(void)
 	ve->sched_lat_ve.cur = &per_cpu_var(ve0_lat_stats);
 	list_add(&ve->ve_list, &ve_list_head);
 	INIT_LIST_HEAD(&ve->_kthread_create_list);
+	spin_lock_init(&ve->aio_nr_lock);
 }
 
 void ve_cleanup_schedule(struct ve_struct *ve)

@@ -65,68 +65,6 @@ static void nlm_put_lockowner(struct nlm_lockowner *lockowner)
 	kfree(lockowner);
 }
 
-static int nlm_walk_reserved(uint32_t pid, int del)
-{
-	struct hlist_head *rsv_list;
-
-	rsv_list = &nlm_reserved_pids;
-	if (!hlist_empty(rsv_list)) {
-		struct nlm_reserved_pid *rp;
-		struct hlist_node *n;
-
-		spin_lock(&nlm_reserved_lock);
-		hlist_for_each_entry(rp, n, rsv_list, list)
-			if (rp->pid == pid)
-				break;
-
-		if (del && n) {
-			hlist_del(&rp->list);
-			kfree(rp);
-		}
-
-		spin_unlock(&nlm_reserved_lock);
-
-		if (n != NULL)
-			return -EBUSY;
-	}
-
-	return 0;
-}
-
-static inline int nlm_pid_reserved(uint32_t pid)
-{
-	return nlm_walk_reserved(pid, 0);
-}
-
-static inline void nlm_release_reserved(int pid)
-{
-	if (nlm_walk_reserved(pid, 1) == 0)
-		printk("%s: Recreated lockowner wasn't reserved! pid %d\n",
-				__func__, pid);
-}
-
-int nlmclnt_reserve_pid(int pid)
-{
-	struct nlm_reserved_pid *n, *rp;
-	struct hlist_node *tmp;
-
-	n = kmalloc(sizeof(*n), GFP_KERNEL);
-	if (n == NULL)
-		return -ENOMEM;
-
-	n->pid = pid;
-	spin_lock(&nlm_reserved_lock);
-
-	hlist_for_each_entry(rp, tmp, &nlm_reserved_pids, list)
-		BUG_ON(rp->pid == pid);
-
-	hlist_add_head(&n->list, &nlm_reserved_pids);
-	spin_unlock(&nlm_reserved_lock);
-
-	return 0;
-}
-EXPORT_SYMBOL(nlmclnt_reserve_pid);
-
 static inline int nlm_pidbusy(struct nlm_host *host, uint32_t pid)
 {
 	struct nlm_lockowner *lockowner;
@@ -134,7 +72,7 @@ static inline int nlm_pidbusy(struct nlm_host *host, uint32_t pid)
 		if (lockowner->pid == pid)
 			return -EBUSY;
 	}
-	return nlm_pid_reserved(pid);
+	return 0;
 }
 
 static inline uint32_t __nlm_alloc_pid(struct nlm_host *host)
@@ -210,7 +148,6 @@ int nlmclnt_set_lockowner(struct inode *inode, struct file_lock *fl, int svid)
 
 	nlmclnt_locks_init_private(fl, host, svid);
 	nlm_release_host(host);
-	nlm_release_reserved(svid);
 
 	return 0;
 }
@@ -660,9 +597,6 @@ again:
 		status = nlmclnt_block(block, req, NLMCLNT_POLL_TIMEOUT);
 		if (status < 0)
 			break;
-		/* Resend the blocking lock request after a server reboot */
-		if (resp->status ==  nlm_lck_denied_grace_period)
-			continue;
 		if (resp->status != nlm_lck_blocked)
 			break;
 	}

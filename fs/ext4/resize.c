@@ -16,6 +16,11 @@
 
 #include "ext4_jbd2.h"
 
+static inline bool resize_is_inprogress(struct super_block *sb)
+{
+	return test_bit(EXT4_RESIZING, &EXT4_SB(sb)->s_resize_flags);
+}
+
 int ext4_resize_begin(struct super_block *sb)
 {
 	int ret = 0;
@@ -450,9 +455,12 @@ static int setup_new_flex_group_blocks(struct super_block *sb,
 	group = group_data[0].group;
 	for (i = 0; i < flex_gd->count; i++, group++) {
 		unsigned long gdblocks;
+		struct ext4_gd_array *gd_arr;
 
 		gdblocks = ext4_bg_num_gdb(sb, group);
 		start = ext4_group_first_block_no(sb, group);
+		gd_arr = rcu_dereference_protected(sbi->s_group_desc,
+						   resize_is_inprogress(sb));
 
 		/* Copy all of the GDT blocks into the backup in this group */
 		for (j = 0, block = start + 1; j < gdblocks; j++, block++) {
@@ -474,8 +482,7 @@ static int setup_new_flex_group_blocks(struct super_block *sb,
 				brelse(gdb);
 				goto out;
 			}
-			memcpy(gdb->b_data, sbi->s_group_desc[j]->b_data,
-			       gdb->b_size);
+			memcpy(gdb->b_data, gd_arr->bh[j]->b_data, gdb->b_size);
 			set_buffer_uptodate(gdb);
 
 			err = ext4_handle_dirty_metadata(handle, NULL, gdb);
@@ -670,6 +677,14 @@ static int verify_reserved_gdb(struct super_block *sb,
 	return gdbackups;
 }
 
+static void group_desc_callback(struct rcu_head *head)
+{
+	struct ext4_gd_array *gd_ar;
+
+	gd_ar = container_of(head, struct ext4_gd_array, rcu);
+	kfree(gd_ar);
+}
+
 /*
  * Called when we need to bring a reserved group descriptor table block into
  * use from the resize inode.  The primary copy of the new GDT block currently
@@ -687,10 +702,11 @@ static int add_new_gdb(handle_t *handle, struct inode *inode,
 		       ext4_group_t group)
 {
 	struct super_block *sb = inode->i_sb;
-	struct ext4_super_block *es = EXT4_SB(sb)->s_es;
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	struct ext4_super_block *es = sbi->s_es;
 	unsigned long gdb_num = group / EXT4_DESC_PER_BLOCK(sb);
-	ext4_fsblk_t gdblock = EXT4_SB(sb)->s_sbh->b_blocknr + 1 + gdb_num;
-	struct buffer_head **o_group_desc, **n_group_desc;
+	ext4_fsblk_t gdblock = sbi->s_sbh->b_blocknr + 1 + gdb_num;
+	struct ext4_gd_array *o_group_desc, *n_group_desc;
 	struct buffer_head *dind;
 	struct buffer_head *gdb_bh;
 	int gdbackups;
@@ -708,10 +724,9 @@ static int add_new_gdb(handle_t *handle, struct inode *inode,
          * because the user tools have no way of handling this.  Probably a
          * bad time to do it anyways.
          */
-	if (EXT4_SB(sb)->s_sbh->b_blocknr !=
-	    le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block)) {
+	if (sbi->s_sbh->b_blocknr != le32_to_cpu(es->s_first_data_block)) {
 		ext4_warning(sb, "won't resize using backup superblock at %llu",
-			(unsigned long long)EXT4_SB(sb)->s_sbh->b_blocknr);
+			(unsigned long long)sbi->s_sbh->b_blocknr);
 		return -EPERM;
 	}
 
@@ -752,8 +767,10 @@ static int add_new_gdb(handle_t *handle, struct inode *inode,
 	if ((err = ext4_reserve_inode_write(handle, inode, &iloc)))
 		goto exit_dindj;
 
-	n_group_desc = kmalloc((gdb_num + 1) * sizeof(struct buffer_head *),
-			GFP_NOFS);
+	n_group_desc = kmalloc(sizeof(struct ext4_gd_array) +
+			       (gdb_num + 1) *
+			       sizeof(struct buffer_head *),
+			       GFP_NOFS);
 	if (!n_group_desc) {
 		err = -ENOMEM;
 		ext4_warning(sb,
@@ -778,14 +795,14 @@ static int add_new_gdb(handle_t *handle, struct inode *inode,
 	memset(gdb_bh->b_data, 0, sb->s_blocksize);
 	ext4_handle_dirty_metadata(handle, NULL, gdb_bh);
 
-	o_group_desc = EXT4_SB(sb)->s_group_desc;
-	memcpy(n_group_desc, o_group_desc,
-	       EXT4_SB(sb)->s_gdb_count * sizeof(struct buffer_head *));
-	n_group_desc[gdb_num] = gdb_bh;
-	EXT4_SB(sb)->s_group_desc = n_group_desc;
-	EXT4_SB(sb)->s_gdb_count++;
-	kfree(o_group_desc);
-
+	o_group_desc = rcu_dereference_protected(sbi->s_group_desc,
+						 resize_is_inprogress(sb));
+	memcpy(n_group_desc->bh, o_group_desc->bh,
+	       sbi->s_gdb_count * sizeof(struct buffer_head *));
+	n_group_desc->bh[gdb_num] = gdb_bh;
+	rcu_assign_pointer(sbi->s_group_desc, n_group_desc);
+	sbi->s_gdb_count++;
+	call_rcu(&o_group_desc->rcu, group_desc_callback);
 	le16_add_cpu(&es->s_reserved_gdt_blocks, -1);
 	ext4_handle_dirty_metadata(handle, NULL, EXT4_SB(sb)->s_sbh);
 
@@ -1031,9 +1048,12 @@ static int ext4_add_new_descs(handle_t *handle, struct super_block *sb,
 	for (i = 0; i < count; i++, group++) {
 		int reserved_gdb = ext4_bg_has_super(sb, group) ?
 			le16_to_cpu(es->s_reserved_gdt_blocks) : 0;
+		struct ext4_gd_array *gd_arr;
 
 		gdb_off = group % EXT4_DESC_PER_BLOCK(sb);
 		gdb_num = group / EXT4_DESC_PER_BLOCK(sb);
+		gd_arr = rcu_dereference_protected(sbi->s_group_desc,
+						   resize_is_inprogress(sb));
 
 		/*
 		 * We will only either add reserved group blocks to a backup group
@@ -1042,7 +1062,7 @@ static int ext4_add_new_descs(handle_t *handle, struct super_block *sb,
 		 * use non-sparse filesystems anymore.  This is already checked above.
 		 */
 		if (gdb_off) {
-			gdb_bh = sbi->s_group_desc[gdb_num];
+			gdb_bh = gd_arr->bh[gdb_num];
 			err = ext4_journal_get_write_access(handle, gdb_bh);
 
 			if (!err && reserved_gdb && ext4_bg_num_gdb(sb, group))
@@ -1065,12 +1085,14 @@ static int ext4_setup_new_descs(handle_t *handle, struct super_block *sb,
 	struct ext4_new_group_data	*group_data = flex_gd->groups;
 	struct ext4_group_desc		*gdp;
 	struct ext4_sb_info		*sbi = EXT4_SB(sb);
+	struct ext4_gd_array		*gd_arr;
 	struct buffer_head		*gdb_bh;
 	ext4_group_t			group;
 	__u16				*bg_flags = flex_gd->bg_flags;
 	int				i, gdb_off, gdb_num, err = 0;
-	
 
+	gd_arr = rcu_dereference_protected(sbi->s_group_desc,
+					   resize_is_inprogress(sb));
 	for (i = 0; i < flex_gd->count; i++, group_data++, bg_flags++) {
 		group = group_data->group;
 
@@ -1080,7 +1102,7 @@ static int ext4_setup_new_descs(handle_t *handle, struct super_block *sb,
 		/*
 		 * get_write_access() has been called on gdb_bh by ext4_add_new_desc().
 		 */
-		gdb_bh = sbi->s_group_desc[gdb_num];
+		gdb_bh = gd_arr->bh[gdb_num];
 		/* Update group descriptor block for new group */
 		gdp = (struct ext4_group_desc *)((char *)gdb_bh->b_data +
 						 gdb_off * EXT4_DESC_SIZE(sb));
@@ -1276,13 +1298,18 @@ exit_journal:
 
 	if (!err) {
 		int i;
+		struct ext4_gd_array *gd;
+		gd = rcu_dereference_protected(sbi->s_group_desc,
+					       resize_is_inprogress(sb));
+
 		update_backups(sb, sbi->s_sbh->b_blocknr, (char *)es,
 			       sizeof(struct ext4_super_block));
 		for (i = 0; i < flex_gd->count; i++, group++) {
 			struct buffer_head *gdb_bh;
 			int gdb_num;
+
 			gdb_num = group / EXT4_BLOCKS_PER_GROUP(sb);
-			gdb_bh = sbi->s_group_desc[gdb_num];
+			gdb_bh = gd->bh[gdb_num];
 			update_backups(sb, gdb_bh->b_blocknr, gdb_bh->b_data,
 				       gdb_bh->b_size);
 		}

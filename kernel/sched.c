@@ -497,7 +497,7 @@ struct cfs_rq {
 	struct rb_root tasks_timeline;
 	struct rb_node *rb_leftmost;
 
-	struct list_head tasks;
+	struct list_head entities;
 	struct list_head *balance_iterator;
 
 	/*
@@ -871,6 +871,11 @@ struct rq {
 	u64 age_stamp;
 	u64 idle_stamp;
 	u64 avg_idle;
+
+#ifndef __GENKSYMS__
+	/* This is used to determine avg_idle's max value */
+	u64 max_idle_balance_cost;
+#endif
 #endif
 
 #ifndef __GENKSYMS__
@@ -2941,12 +2946,13 @@ out_running:
 
 	if (unlikely(rq->idle_stamp)) {
 		u64 delta = rq->clock - rq->idle_stamp;
-		u64 max = 2*sysctl_sched_migration_cost;
+		u64 max = 2*rq->max_idle_balance_cost;
 
-		if (delta > max)
+		update_avg(&rq->avg_idle, delta);
+
+		if (rq->avg_idle > max)
 			rq->avg_idle = max;
-		else
-			update_avg(&rq->avg_idle, delta);
+
 		rq->idle_stamp = 0;
 	}
 #endif
@@ -3282,6 +3288,10 @@ static void finish_task_switch(struct rq *rq, struct task_struct *prev)
 		kprobe_flush_task(prev);
 		put_task_struct(prev);
 	}
+
+	/* kernel threads don't care about cpuid faulting */
+	if (current->mm)
+		set_cpuid_faulting(!ve_is_super(get_exec_env()));
 }
 
 static inline void task_scheduled(struct rq *rq, struct task_struct *p)
@@ -5313,6 +5323,7 @@ static void idle_balance(int this_cpu, struct rq *this_rq)
 	struct sched_domain *sd;
 	int pulled_task = 0;
 	unsigned long next_balance = jiffies + HZ;
+	u64 curr_cost = 0;
 
 	this_rq->idle_stamp = this_rq->clock;
 
@@ -5325,14 +5336,28 @@ static void idle_balance(int this_cpu, struct rq *this_rq)
 
 	for_each_domain(this_cpu, sd) {
 		unsigned long interval;
+		u64 t0, domain_cost;
 
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
 
-		if (sd->flags & SD_BALANCE_NEWIDLE)
+		if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
+			break;
+
+		if (sd->flags & SD_BALANCE_NEWIDLE) {
+			t0 = sched_clock_cpu(this_cpu);
+
 			/* If we've pulled tasks over stop searching: */
 			pulled_task = load_balance_newidle(this_cpu, this_rq,
 							   sd);
+
+			domain_cost = sched_clock_cpu(this_cpu) - t0;
+			if (domain_cost > sd->max_newidle_lb_cost)
+				sd->max_newidle_lb_cost = domain_cost;
+
+			curr_cost += domain_cost;
+		}
+
 
 		interval = msecs_to_jiffies(sd->balance_interval);
 		if (time_after(next_balance, sd->last_balance + interval))
@@ -5349,6 +5374,9 @@ static void idle_balance(int this_cpu, struct rq *this_rq)
 		 */
 		this_rq->next_balance = next_balance;
 	}
+
+	if (curr_cost > this_rq->max_idle_balance_cost)
+		this_rq->max_idle_balance_cost = curr_cost;
 }
 
 /*
@@ -5667,14 +5695,38 @@ static void rebalance_domains(int cpu, enum cpu_idle_type idle)
 	/* Earliest time when we have to do rebalance again */
 	unsigned long next_balance = jiffies + 60*HZ;
 	int update_next_balance = 0;
-	int need_serialize;
+	int need_serialize, need_decay = 0;
+	u64 max_cost = 0;
 	unsigned long balance_delegate = rq->balance_delegate;
 
 	update_shares(cpu);
 
 	for_each_domain(cpu, sd) {
+		/*
+		 * Decay the newidle max times here because this is a regular
+		 * visit to all the domains. Decay ~1% per second.
+		 */
+		if (time_after(jiffies, sd->next_decay_max_lb_cost)) {
+			sd->max_newidle_lb_cost =
+				(sd->max_newidle_lb_cost * 253) / 256;
+			sd->next_decay_max_lb_cost = jiffies + HZ;
+			need_decay = 1;
+		}
+		max_cost += sd->max_newidle_lb_cost;
+
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
+
+		/*
+		 * Stop the load balance at this level. There is another
+		 * CPU in our sched group which is doing load balancing more
+		 * actively.
+		 */
+		if (!balance) {
+			if (need_decay)
+				continue;
+			break;
+		}
 
 		interval = sd->balance_interval;
 		if (test_bit(sd->level, &balance_delegate))
@@ -5719,14 +5771,14 @@ out:
 		__clear_bit(sd->level, &balance_delegate);
 		if (balance_delegate)
 			balance = 1;
-
+	}
+	if (need_decay) {
 		/*
-		 * Stop the load balance at this level. There is another
-		 * CPU in our sched group which is doing load balancing more
-		 * actively.
+		 * Ensure the rq-side value also decays but keep it at a
+		 * reasonable floor to avoid funnies with rq->avg_idle.
 		 */
-		if (!balance)
-			break;
+		rq->max_idle_balance_cost =
+			max((u64)sysctl_sched_migration_cost, max_cost);
 	}
 
 	/*
@@ -8606,6 +8658,13 @@ void sched_idle_next(void)
 	activate_task(rq, p, 0);
 
 	spin_unlock_irqrestore(&rq->lock, flags);
+
+	/*
+	 * Disable cpuid faulting when a cpu goes offline. Note, it cannot be
+	 * re-enabled when switching to the idle task, because idle tasks do
+	 * not have mm (see finish_task_switch()).
+	 */
+	set_cpuid_faulting(false);
 }
 
 /*
@@ -8936,6 +8995,7 @@ migration_call(struct notifier_block *nfb, unsigned long action, void *hcpu)
 		break;
 
 	case CPU_POST_DEAD:
+	case CPU_POST_DEAD_FROZEN:
 		/*
 		 * Bring the migration thread down in CPU_POST_DEAD event,
 		 * since the timers should have got migrated by now and thus
@@ -10657,7 +10717,7 @@ int in_sched_functions(unsigned long addr)
 static void init_cfs_rq(struct cfs_rq *cfs_rq, struct rq *rq)
 {
 	cfs_rq->tasks_timeline = RB_ROOT;
-	INIT_LIST_HEAD(&cfs_rq->tasks);
+	INIT_LIST_HEAD(&cfs_rq->entities);
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	cfs_rq->rq = rq;
 	/* allow initial update_cfs_load() to truncate */
@@ -10947,6 +11007,7 @@ void __init sched_init(void)
 		rq->migration_thread = NULL;
 		rq->idle_stamp = 0;
 		rq->avg_idle = 2*sysctl_sched_migration_cost;
+		rq->max_idle_balance_cost = sysctl_sched_migration_cost;
 		INIT_LIST_HEAD(&rq->migration_queue);
 		rq_attach_root(rq, &def_root_domain);
 #ifdef CONFIG_NO_HZ
@@ -12560,6 +12621,7 @@ static void update_tg_vcpustat(struct task_group *tg)
 {
 	int i, j;
 	int nr_vcpus;
+	int vcpu_rate;
 	ktime_t now;
 	u64 abs_delta_ns, max_usage;
 	struct kernel_cpustat stat_delta, stat_rem;
@@ -12569,6 +12631,9 @@ static void update_tg_vcpustat(struct task_group *tg)
 
 	now = ktime_get();
 	nr_vcpus = tg->nr_cpus ?: num_online_cpus();
+	vcpu_rate = DIV_ROUND_UP(tg->cpu_rate, nr_vcpus);
+	if (!vcpu_rate || vcpu_rate > MAX_CPU_RATE)
+		vcpu_rate = MAX_CPU_RATE;
 
 	if (!ktime_to_ns(tg->vcpustat_last_update)) {
 		/* on the first read initialize vcpu i stat as a sum of stats
@@ -12587,6 +12652,7 @@ static void update_tg_vcpustat(struct task_group *tg)
 
 	abs_delta_ns = ktime_to_ns(ktime_sub(now, tg->vcpustat_last_update));
 	max_usage = div_u64(abs_delta_ns, TICK_NSEC);
+	max_usage = div_u64(max_usage * vcpu_rate, MAX_CPU_RATE);
 	/* don't allow to update stats too often to avoid calculation errors */
 	if (max_usage < 10)
 		goto out_unlock;
@@ -12661,8 +12727,20 @@ int cpu_cgroup_proc_stat(struct cgroup *cgrp, struct cftype *cft,
 	getboottime(&boottime);
 	jif = boottime.tv_sec + tg->start_time.tv_sec;
 
-	for_each_possible_cpu(i)
+	for_each_possible_cpu(i) {
 		cpu_cgroup_update_stat(tg, i);
+
+		/* root task group has autogrouping, so this doesn't hold */
+#ifdef CONFIG_FAIR_GROUP_SCHED
+		tg_nr_running += tg->cfs_rq[i]->nr_running;
+		tg_nr_iowait += tg->cfs_rq[i]->nr_iowait;
+		tg_nr_switches += tg->cfs_rq[i]->nr_switches;
+		tg_nr_forks += tg->cfs_rq[i]->nr_forks;
+#endif
+#ifdef CONFIG_RT_GROUP_SCHED
+		tg_nr_running += tg->rt_rq[i]->rt_nr_running;
+#endif
+	}
 
 	if (virt)
 		update_tg_vcpustat(tg);
@@ -12680,17 +12758,6 @@ int cpu_cgroup_proc_stat(struct cgroup *cgrp, struct cftype *cft,
 		idle += kcpustat->cpustat[IDLE];
 		iowait += kcpustat->cpustat[IOWAIT];
 		steal += kcpustat->cpustat[STEAL];
-
-		/* root task group has autogrouping, so this doesn't hold */
-#ifdef CONFIG_FAIR_GROUP_SCHED
-		tg_nr_running += tg->cfs_rq[i]->nr_running;
-		tg_nr_iowait += tg->cfs_rq[i]->nr_iowait;
-		tg_nr_switches += tg->cfs_rq[i]->nr_switches;
-		tg_nr_forks += tg->cfs_rq[i]->nr_forks;
-#endif
-#ifdef CONFIG_RT_GROUP_SCHED
-		tg_nr_running += tg->rt_rq[i]->rt_nr_running;
-#endif
 	}
 
 	if (virtual)
@@ -12748,19 +12815,18 @@ int cpu_cgroup_proc_stat(struct cgroup *cgrp, struct cftype *cft,
 
 void cpu_cgroup_get_stat(struct cgroup *cgrp, struct kernel_cpustat *kstat)
 {
-	int i, j;
 	struct task_group *tg = cgroup_tg(cgrp);
+	int nr_vcpus = tg->nr_cpus ?: num_online_cpus();
+	int i;
 
-	memset(kstat, 0, sizeof(struct kernel_cpustat));
-
-	for_each_possible_cpu(i) {
-		struct kernel_cpustat *st = per_cpu_ptr(tg->cpustat, i);
-
+	for_each_possible_cpu(i)
 		cpu_cgroup_update_stat(tg, i);
 
-		for (j = 0; j < NR_STATS; j++)
-			kstat->cpustat[j] += st->cpustat[j];
-	}
+	update_tg_vcpustat(tg);
+
+	kernel_cpustat_zero(kstat);
+	for (i = 0; i < nr_vcpus; i++)
+		kernel_cpustat_add(tg->vcpustat + i, kstat, kstat);
 }
 
 int cpu_cgroup_get_avenrun(struct cgroup *cgrp, unsigned long *avenrun)

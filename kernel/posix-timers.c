@@ -246,6 +246,13 @@ int posix_get_coarse_res(const clockid_t which_clock, struct timespec *tp)
 	*tp = ktime_to_timespec(KTIME_LOW_RES);
 	return 0;
 }
+
+static int posix_get_boottime(const clockid_t which_clock, struct timespec *tp)
+{
+	get_monotonic_boottime(tp);
+	return 0;
+}
+
 /*
  * Initialize everything, well, just everything in Posix clocks/timers ;)
  */
@@ -285,12 +292,23 @@ static __init int init_posix_timers(void)
 		.clock_getres	= posix_get_coarse_res,
 		.clock_get	= posix_get_monotonic_coarse,
 	};
+	struct k_clock clock_boottime = {
+		.clock_getres	= hrtimer_get_res,
+		.clock_get	= posix_get_boottime,
+		.nsleep		= common_nsleep,
+		.nsleep_restart	= hrtimer_nanosleep_restart,
+		.timer_create	= common_timer_create,
+		.timer_set	= common_timer_set,
+		.timer_get	= common_timer_get,
+		.timer_del	= common_timer_del,
+	};
 
 	posix_timers_register_clock(CLOCK_REALTIME, &clock_realtime);
 	posix_timers_register_clock(CLOCK_MONOTONIC, &clock_monotonic);
 	posix_timers_register_clock(CLOCK_MONOTONIC_RAW, &clock_monotonic_raw);
 	posix_timers_register_clock(CLOCK_REALTIME_COARSE, &clock_realtime_coarse);
 	posix_timers_register_clock(CLOCK_MONOTONIC_COARSE, &clock_monotonic_coarse);
+	posix_timers_register_clock(CLOCK_BOOTTIME, &clock_boottime);
 
 	posix_timers_cache = kmem_cache_create("posix_timers_cache",
 					sizeof (struct k_itimer), 0,
@@ -374,7 +392,7 @@ int posix_timer_event(struct k_itimer *timr, int si_private)
 		struct user_beancounter *ub;
 
 		ve = set_exec_env(task->ve_task_info.owner_env);
-		ub = set_exec_ub(task->task_bc.task_ub);
+		ub = set_exec_ub(get_task_ub(task));
 
 		shared = !(timr->it_sigev_notify & SIGEV_THREAD_ID);
 		ret = send_sigqueue(timr->sigq, task, shared);

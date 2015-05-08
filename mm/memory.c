@@ -714,7 +714,7 @@ out_set_pte:
 
 #define pte_ptrs(a)	(PTRS_PER_PTE - ((a >> PAGE_SHIFT)&(PTRS_PER_PTE - 1)))
 #ifdef CONFIG_BEANCOUNTERS
-#define same_ub(mm1, mm2)      ((mm1)->mm_ub == (mm2)->mm_ub)
+#define same_ub(mm1, mm2)      (mm_ub(mm1) == mm_ub(m2))
 #else
 #define same_ub(mm1, mm2)      1
 #endif
@@ -2073,6 +2073,53 @@ int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr,
 }
 EXPORT_SYMBOL(remap_pfn_range);
 
+/**
+ * vm_iomap_memory - remap memory to userspace
+ * @vma: user vma to map to
+ * @start: start of area
+ * @len: size of area
+ *
+ * This is a simplified io_remap_pfn_range() for common driver use. The
+ * driver just needs to give us the physical memory range to be mapped,
+ * we'll figure out the rest from the vma information.
+ *
+ * NOTE! Some drivers might want to tweak vma->vm_page_prot first to get
+ * whatever write-combining details or similar.
+ */
+int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len)
+{
+	unsigned long vm_len, pfn, pages;
+
+	/* Check that the physical memory area passed in looks valid */
+	if (start + len < start)
+		return -EINVAL;
+	/*
+	 * You *really* shouldn't map things that aren't page-aligned,
+	 * but we've historically allowed it because IO memory might
+	 * just have smaller alignment.
+	 */
+	len += start & ~PAGE_MASK;
+	pfn = start >> PAGE_SHIFT;
+	pages = (len + ~PAGE_MASK) >> PAGE_SHIFT;
+	if (pfn + pages < pfn)
+		return -EINVAL;
+
+	/* We start the mapping 'vm_pgoff' pages into the area */
+	if (vma->vm_pgoff > pages)
+		return -EINVAL;
+	pfn += vma->vm_pgoff;
+	pages -= vma->vm_pgoff;
+
+	/* Can we fit all of the mapping? */
+	vm_len = vma->vm_end - vma->vm_start;
+	if (vm_len >> PAGE_SHIFT > pages)
+		return -EINVAL;
+
+	/* Ok, let it rip */
+	return io_remap_pfn_range(vma, vma->vm_start, pfn, vm_len, vma->vm_page_prot);
+}
+EXPORT_SYMBOL(vm_iomap_memory);
+
 static int apply_to_pte_range(struct mm_struct *mm, pmd_t *pmd,
 				     unsigned long addr, unsigned long end,
 				     pte_fn_t fn, void *data)
@@ -2827,7 +2874,7 @@ static int do_vswap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte_unmap_unlock(page_table, ptl);
 
 	if (!page_mapped(page) && !page_in_gang(page, get_mm_gang(mm))) {
-		ub_percpu_inc(mm_ub(mm), vswapin);
+		ub_percpu_inc(mm_ub_top(mm), vswapin);
 		ub_reclaim_rate_limit(mm_ub(mm), 1, 1);
 		if (!isolate_lru_page(page)) {
 			if (gang_mod_user_page(page, get_mm_gang(mm), GFP_KERNEL))
@@ -2853,9 +2900,7 @@ static int do_vswap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	pte = mk_pte(page, vma->vm_page_prot);
 	if ((flags & FAULT_FLAG_WRITE) && is_write_vswap_entry(entry)) {
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
-#ifdef ClearPageCheckpointed
 		ClearPageCheckpointed(page);
-#endif
 		flags &= ~FAULT_FLAG_WRITE;
 	}
 	flush_icache_page(vma, page);
@@ -2958,7 +3003,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		delayacct_clear_flag(DELAYACCT_PF_SWAPIN);
 		goto out_release;
 	} else if (!page_mapped(page) && !page_in_gang(page, get_mm_gang(mm))) {
-		ub_percpu_inc(mm_ub(mm), vswapin);
+		ub_percpu_inc(mm_ub_top(mm), vswapin);
 		ub_reclaim_rate_limit(mm_ub(mm), 1, 1);
 		/*
 		 * move page into container after vswapin throttling
@@ -3047,7 +3092,7 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	mem_cgroup_commit_charge_swapin(page, ptr);
 
 	swap_free(entry);
-	if (vm_swap_full() || ub_swap_full(mm->mm_ub) ||
+	if (vm_swap_full() || ub_swap_full(mm_ub(mm)) ||
 			(vma->vm_flags & VM_LOCKED) || PageMlocked(page))
 		try_to_free_swap(page);
 	unlock_page(page);
@@ -3539,17 +3584,13 @@ unlock:
 /*
  * By the time we get here, we already hold the mm semaphore
  */
-int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
-		unsigned long address, unsigned int flags)
+static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
+			     unsigned long address, unsigned int flags)
 {
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
-
-	__set_current_state(TASK_RUNNING);
-
-	count_vm_event(PGFAULT);
 
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		return hugetlb_fault(mm, vma, address, flags);
@@ -3610,6 +3651,39 @@ retry:
 	pte = pte_offset_map(pmd, address);
 
 	return handle_pte_fault(mm, vma, address, pte, pmd, flags);
+}
+
+int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
+		    unsigned long address, unsigned int flags)
+{
+	int ret;
+
+	__set_current_state(TASK_RUNNING);
+
+	count_vm_event(PGFAULT);
+
+	/*
+	 * Enable the memcg OOM handling for faults triggered in user
+	 * space.  Kernel faults are handled more gracefully.
+	 */
+	if (flags & FAULT_FLAG_USER)
+		mem_cgroup_oom_enable();
+
+	ret = __handle_mm_fault(mm, vma, address, flags);
+
+	if (flags & FAULT_FLAG_USER) {
+		mem_cgroup_oom_disable();
+                /*
+                 * The task may have entered a memcg OOM situation but
+                 * if the allocation error was handled gracefully (no
+                 * VM_FAULT_OOM), there is no need to kill anything.
+                 * Just clean up the OOM state peacefully.
+                 */
+                if (task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM))
+                        mem_cgroup_oom_synchronize(false);
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL(handle_mm_fault);
 

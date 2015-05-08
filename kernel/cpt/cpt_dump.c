@@ -594,8 +594,8 @@ static void collect_task_ubc(struct task_struct *t, struct cpt_context *ctx)
 	struct task_beancounter *tbc;
 
 	tbc = &(t->task_bc);
-	cpt_add_ubc(tbc->exec_ub, ctx);
-	cpt_add_ubc(tbc->task_ub, ctx);
+	cpt_add_ubc(top_beancounter(tbc->exec_ub), ctx);
+	cpt_add_ubc(top_beancounter(tbc->task_ub), ctx);
 }
 #else
 static void inline collect_task_ubc(struct task_struct *t,
@@ -848,6 +848,8 @@ static int cpt_dump_veinfo(cpt_context_t *ctx)
 	i->last_pid = ve->ve_ns->pid_ns->last_pid;
 	i->rnd_va_space	= ve->_randomize_va_space + 1;
 	i->vpid_max = ve->ve_ns->pid_ns->pid_max;
+	i->aio_max_nr = ve->aio_max_nr;
+	memcpy(&i->cpt_ve_bcap, &get_exec_env()->ve_cap_bset, 8);
 
 	ctx->write(i, sizeof(*i), ctx);
 	cpt_release_buf(ctx);
@@ -936,8 +938,9 @@ static int cpt_dump_vsyscall(cpt_context_t *ctx)
 
 int cpt_dump(struct cpt_context *ctx)
 {
-	struct user_beancounter *bc = get_exec_ub();
+	struct user_beancounter *bc = get_exec_ub_top();
 	struct ve_struct *oldenv, *env;
+	cpt_object_t *obj;
 	struct nsproxy *old_ns;
 	int err, err2 = 0;
 
@@ -959,6 +962,24 @@ int cpt_dump(struct cpt_context *ctx)
 		printk(KERN_WARNING "CT: checkpointing not supported yet"
 				" for hidden pid namespaces.\n");
 		goto out_noenv;
+	}
+
+	err = -ENOTSUPP;
+	for_each_object(obj, CPT_OBJ_TASK) {
+		struct task_struct *tsk = obj->o_obj;
+		struct nsproxy *nsp = tsk->nsproxy;
+
+		if (!nsp)
+			continue;
+
+		if (nsp->uts_ns != env->ve_ns->uts_ns
+		    || nsp->ipc_ns != env->ve_ns->ipc_ns
+		    || nsp->pid_ns != env->ve_ns->pid_ns
+		    || nsp->net_ns != env->ve_ns->net_ns) {
+			printk(KERN_WARNING "CT: %d: checkpointing is not supported yet"
+			       " for nested namespaces.\n", env->veid);
+			goto out_noenv;
+		}
 	}
 
 	oldenv = set_exec_env(env);
@@ -1069,7 +1090,7 @@ int cpt_vps_suspend(struct cpt_context *ctx)
 	}
 
 #ifdef CONFIG_VE_IPTABLES
-	ctx->iptables_mask = env->_iptables_modules;
+	ctx->iptables_mask = env->ve_netns->_iptables_modules;
 #endif
 	ctx->features = env->features;
 
@@ -1170,7 +1191,8 @@ static void check_one_process(struct cpt_context *ctx, __u32 *caps,
 				(1<<CPT_CPU_X86_SSE4A) |
 				(1<<CPT_CPU_X86_XSAVE) |
 				(1<<CPT_CPU_X86_AVX) |
-				(1<<CPT_CPU_X86_AESNI));
+				(1<<CPT_CPU_X86_AESNI) |
+				(1<<CPT_CPU_X86_RDRAND));
 	}
 	/* This is not 100% true. VE could migrate with vdso using int80.
 	 * In this case we do not need SEP/SYSCALL32 caps. It is not so easy

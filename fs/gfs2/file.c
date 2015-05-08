@@ -24,6 +24,7 @@
 #include <asm/uaccess.h>
 #include <linux/dlm.h>
 #include <linux/dlm_plock.h>
+#include <linux/delay.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -602,14 +603,14 @@ static int gfs2_release(struct inode *inode, struct file *file)
 static int gfs2_fsync(struct file *file, struct dentry *dentry, int datasync)
 {
 	struct inode *inode = dentry->d_inode;
-	int sync_state = inode->i_state & I_DIRTY;
+	int sync_state = inode->i_state & I_DIRTY_ALL;
 	struct gfs2_inode *ip = GFS2_I(inode);
 	int ret;
 
 	if (!gfs2_is_jdata(ip))
 		sync_state &= ~I_DIRTY_PAGES;
 	if (datasync)
-		sync_state &= ~I_DIRTY_SYNC;
+		sync_state &= ~(I_DIRTY_SYNC|I_DIRTY_TIME);
 
 	if (sync_state) {
 		ret = sync_inode_metadata(inode, 1);
@@ -663,6 +664,23 @@ static ssize_t gfs2_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	}
 
 	return generic_file_aio_write(iocb, iov, nr_segs, pos);
+}
+
+static ssize_t gfs2_file_splice_write(struct pipe_inode_info *pipe,
+				      struct file *out, loff_t *ppos,
+				      size_t len, unsigned int flags)
+{
+	int error;
+	struct inode *inode = out->f_mapping->host;
+	struct gfs2_inode *ip = GFS2_I(inode);
+
+	error = gfs2_rs_alloc(ip);
+	if (error)
+		return (ssize_t)error;
+
+	gfs2_size_hint(inode, *ppos, len);
+
+	return generic_file_splice_write(pipe, out, ppos, len, flags);
 }
 
 #ifdef CONFIG_GFS2_FS_LOCKING_DLM
@@ -732,9 +750,10 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 	unsigned int state;
 	int flags;
 	int error = 0;
+	int sleeptime;
 
 	state = (fl->fl_type == F_WRLCK) ? LM_ST_EXCLUSIVE : LM_ST_SHARED;
-	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY) | GL_EXACT | GL_NOCACHE;
+	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY_1CB) | GL_EXACT;
 
 	mutex_lock(&fp->f_fl_mutex);
 
@@ -744,7 +763,7 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 			goto out;
 		flock_lock_file_wait(file,
 				     &(struct file_lock){.fl_type = F_UNLCK});
-		gfs2_glock_dq_wait(fl_gh);
+		gfs2_glock_dq(fl_gh);
 		gfs2_holder_reinit(state, flags, fl_gh);
 	} else {
 		error = gfs2_glock_get(GFS2_SB(&ip->i_inode), ip->i_no_addr,
@@ -754,7 +773,14 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 		gfs2_holder_init(gl, state, flags, fl_gh);
 		gfs2_glock_put(gl);
 	}
-	error = gfs2_glock_nq(fl_gh);
+	for (sleeptime = 1; sleeptime <= 4; sleeptime <<= 1) {
+		error = gfs2_glock_nq(fl_gh);
+		if (error != GLR_TRYFAILED)
+			break;
+		fl_gh->gh_flags = LM_FLAG_TRY | GL_EXACT;
+		fl_gh->gh_error = 0;
+		msleep(sleeptime);
+	}
 	if (error) {
 		gfs2_holder_uninit(fl_gh);
 		if (error == GLR_TRYFAILED)
@@ -777,7 +803,7 @@ static void do_unflock(struct file *file, struct file_lock *fl)
 	mutex_lock(&fp->f_fl_mutex);
 	flock_lock_file_wait(file, fl);
 	if (fl_gh->gh_gl) {
-		gfs2_glock_dq_wait(fl_gh);
+		gfs2_glock_dq(fl_gh);
 		gfs2_holder_uninit(fl_gh);
 	}
 	mutex_unlock(&fp->f_fl_mutex);
@@ -821,7 +847,7 @@ const struct file_operations gfs2_file_fops = {
 	.lock		= gfs2_lock,
 	.flock		= gfs2_flock,
 	.splice_read	= generic_file_splice_read,
-	.splice_write	= generic_file_splice_write,
+	.splice_write	= gfs2_file_splice_write,
 	.setlease	= gfs2_setlease,
 };
 
@@ -849,7 +875,7 @@ const struct file_operations gfs2_file_fops_nolock = {
 	.release	= gfs2_release,
 	.fsync		= gfs2_fsync,
 	.splice_read	= generic_file_splice_read,
-	.splice_write	= generic_file_splice_write,
+	.splice_write	= gfs2_file_splice_write,
 	.setlease	= generic_setlease,
 };
 

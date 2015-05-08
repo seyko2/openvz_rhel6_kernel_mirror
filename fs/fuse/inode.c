@@ -77,6 +77,11 @@ struct fuse_mount_data {
 	unsigned blksize;
 };
 
+struct fuse_forget_link *fuse_alloc_forget()
+{
+	return kzalloc(sizeof(struct fuse_forget_link), GFP_KERNEL);
+}
+
 static struct inode *fuse_alloc_inode(struct super_block *sb)
 {
 	struct inode *inode;
@@ -93,17 +98,17 @@ static struct inode *fuse_alloc_inode(struct super_block *sb)
 	fi->attr_version = 0;
 	fi->writectr = 0;
 	fi->orig_ino = 0;
+	fi->state = 0;
 	INIT_LIST_HEAD(&fi->write_files);
 	INIT_LIST_HEAD(&fi->rw_files);
 	INIT_LIST_HEAD(&fi->queued_writes);
 	INIT_LIST_HEAD(&fi->writepages);
 	init_waitqueue_head(&fi->page_waitq);
-	fi->forget_req = fuse_request_alloc(0);
-	if (!fi->forget_req) {
+	fi->forget = fuse_alloc_forget();
+	if (!fi->forget) {
 		kmem_cache_free(fuse_inode_cachep, inode);
 		return NULL;
 	}
-	fi->forget_req->background = 1;
 
 	return inode;
 }
@@ -114,22 +119,8 @@ static void fuse_destroy_inode(struct inode *inode)
 	BUG_ON(!list_empty(&fi->write_files));
 	BUG_ON(!list_empty(&fi->rw_files));
 	BUG_ON(!list_empty(&fi->queued_writes));
-	if (fi->forget_req)
-		fuse_request_free(fi->forget_req);
+	kfree(fi->forget);
 	kmem_cache_free(fuse_inode_cachep, inode);
-}
-
-void fuse_send_forget(struct fuse_conn *fc, struct fuse_req *req,
-		      u64 nodeid, u64 nlookup)
-{
-	struct fuse_forget_in *inarg = &req->misc.forget_in;
-	inarg->nlookup = nlookup;
-	req->in.h.opcode = FUSE_FORGET;
-	req->in.h.nodeid = nodeid;
-	req->in.numargs = 1;
-	req->in.args[0].size = sizeof(struct fuse_forget_in);
-	req->in.args[0].value = inarg;
-	fuse_request_send_noreply(fc, req);
 }
 
 static void fuse_clear_inode(struct inode *inode)
@@ -137,8 +128,8 @@ static void fuse_clear_inode(struct inode *inode)
 	if (inode->i_sb->s_flags & MS_ACTIVE) {
 		struct fuse_conn *fc = get_fuse_conn(inode);
 		struct fuse_inode *fi = get_fuse_inode(inode);
-		fuse_send_forget(fc, fi->forget_req, fi->nodeid, fi->nlookup);
-		fi->forget_req = NULL;
+		fuse_queue_forget(fc, fi->forget, fi->nodeid, fi->nlookup);
+		fi->forget = NULL;
 	}
 }
 
@@ -211,7 +202,8 @@ void fuse_change_attributes(struct inode *inode, struct fuse_attr *attr,
 	struct timespec old_mtime;
 
 	spin_lock(&fc->lock);
-	if (attr_version != 0 && fi->attr_version > attr_version) {
+	if ((attr_version != 0 && fi->attr_version > attr_version) ||
+	    test_bit(FUSE_I_SIZE_UNSTABLE, &fi->state)) {
 		spin_unlock(&fc->lock);
 		return;
 	}
@@ -398,6 +390,9 @@ int fuse_invalidate_files(struct fuse_conn *fc, u64 nodeid)
 	}
 	spin_unlock(&fc->lock);
 
+	/* let them see FUSE_S_FAIL_IMMEDIATELY */
+	wake_up_all(&fc->blocked_waitq);
+
 	err = filemap_write_and_wait(inode->i_mapping);
 	if (!err || err == -EIO) { /* AS_EIO might trigger -EIO */
 		spin_lock(&fc->lock);
@@ -430,6 +425,7 @@ static void fuse_send_destroy(struct fuse_conn *fc)
 		fc->destroy_req = NULL;
 		req->in.h.opcode = FUSE_DESTROY;
 		req->force = 1;
+		req->background = 0;
 		fuse_request_send(fc, req);
 		fuse_put_request(fc, req);
 	}
@@ -446,7 +442,7 @@ void fuse_conn_kill(struct fuse_conn *fc)
 	spin_lock(&fc->lock);
 	fc->connected = 0;
 	fc->blocked = 0;
-	fc->uninitialized = 0;
+	fc->initialized = 1;
 	spin_unlock(&fc->lock);
 	/* Flush all readers on this fs */
 	kill_fasync(&fc->fasync, SIGIO, POLL_IN);
@@ -700,14 +696,15 @@ void fuse_conn_init(struct fuse_conn *fc)
 	INIT_LIST_HEAD(&fc->bg_queue);
 	INIT_LIST_HEAD(&fc->entry);
 	INIT_LIST_HEAD(&fc->conn_files);
+	fc->forget_list_tail = &fc->forget_list_head;
 	atomic_set(&fc->num_waiting, 0);
 	fc->max_background = FUSE_DEFAULT_MAX_BACKGROUND;
 	fc->congestion_threshold = FUSE_DEFAULT_CONGESTION_THRESHOLD;
 	fc->khctr = 0;
 	fc->polled_files = RB_ROOT;
 	fc->reqctr = 0;
-	fc->blocked = 1;
-	fc->uninitialized = 1;
+	fc->blocked = 0;
+	fc->initialized = 0;
 	fc->attr_version = 1;
 	get_random_bytes(&fc->scramble_key, sizeof(fc->scramble_key));
 }
@@ -994,8 +991,11 @@ static void process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 				fc->dont_mask = 1;
 			if (arg->flags & FUSE_AUTO_INVAL_DATA)
 				fc->auto_inval_data = 1;
-			if (arg->flags & FUSE_DO_READDIRPLUS)
+			if (arg->flags & FUSE_DO_READDIRPLUS) {
 				fc->do_readdirplus = 1;
+				if (arg->flags & FUSE_READDIRPLUS_AUTO)
+					fc->readdirplus_auto = 1;
+			}
 			if (arg->flags & FUSE_ASYNC_DIO)
 				fc->async_dio = 1;
 		} else {
@@ -1009,8 +1009,7 @@ static void process_init_reply(struct fuse_conn *fc, struct fuse_req *req)
 		fc->max_write = max_t(unsigned, 4096, fc->max_write);
 		fc->conn_init = 1;
 	}
-	fc->blocked = 0;
-	fc->uninitialized = 0;
+	fc->initialized = 1;
 	wake_up_all(&fc->blocked_waitq);
 }
 
@@ -1023,7 +1022,8 @@ static void fuse_send_init(struct fuse_conn *fc, struct fuse_req *req)
 	arg->max_readahead = fc->bdi.ra_pages * PAGE_CACHE_SIZE;
 	arg->flags |= FUSE_ASYNC_READ | FUSE_POSIX_LOCKS | FUSE_ATOMIC_O_TRUNC |
 		FUSE_EXPORT_SUPPORT | FUSE_BIG_WRITES | FUSE_DONT_MASK |
-		FUSE_AUTO_INVAL_DATA | FUSE_DO_READDIRPLUS | FUSE_ASYNC_DIO;
+		FUSE_AUTO_INVAL_DATA | FUSE_DO_READDIRPLUS |
+		FUSE_READDIRPLUS_AUTO | FUSE_ASYNC_DIO;
 	req->in.h.opcode = FUSE_INIT;
 	req->in.numargs = 1;
 	req->in.args[0].size = sizeof(*arg);

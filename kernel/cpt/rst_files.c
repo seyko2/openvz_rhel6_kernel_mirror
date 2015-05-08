@@ -44,6 +44,7 @@
 #include <linux/cgroup.h>
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
+#include <linux/ve_proto.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -435,13 +436,45 @@ static struct file *open_special(cpt_object_t *mntobj, char *name,
 	return file;
 }
 
+#define for_each_lock(inode, lockp) \
+	for (lockp = &inode->i_flock; *lockp != NULL; lockp = &(*lockp)->fl_next)
+
+void fixup_lock_pid(struct inode *inode, unsigned int cpt_pid, struct ve_struct *ve)
+{
+	struct file_lock **loop;
+
+	BUG_ON(!ve);
+
+	lock_kernel();
+	for_each_lock(inode, loop) {
+		struct pid *pid = (*loop)->fl_nspid;
+
+		if (pid != task_tgid(current))
+			continue;
+
+		put_pid(pid);
+
+		rcu_read_lock();
+		pid = find_pid_ns(cpt_pid, ve->ve_ns->pid_ns);
+		(*loop)->fl_nspid = get_pid(pid);
+		(*loop)->fl_pid = cpt_pid;
+		rcu_read_unlock();
+	}
+
+	unlock_kernel();
+}
+
 static int restore_posix_lock(struct file *file, struct cpt_flock_image *fli,
 		cpt_context_t *ctx)
 {
 	struct file_lock lock;
 	cpt_object_t *obj;
+	struct ve_struct *ve;
+	int err;
 
-	if (fli->cpt_flags & CPT_FLOCK_DELAYED)
+	/* Deleted delayed files restore on root fs, not need to use delayed flock */
+	if ((fli->cpt_flags & CPT_FLOCK_DELAYED) &&
+	    file->f_dentry->d_op == &delay_dir_dops)
 		return rst_delay_flock(file, fli, ctx);
 
 	memset(&lock, 0, sizeof(lock));
@@ -455,7 +488,7 @@ static int restore_posix_lock(struct file *file, struct cpt_flock_image *fli,
 		return -EINVAL;
 	}
 	lock.fl_owner = obj->o_obj;
-	lock.fl_pid = vpid_to_pid(fli->cpt_pid);
+	lock.fl_pid = fli->cpt_pid;
 	if (lock.fl_pid < 0) {
 		eprintk_ctx("unknown lock pid %d\n", lock.fl_pid);
 		return -EINVAL;
@@ -464,15 +497,28 @@ static int restore_posix_lock(struct file *file, struct cpt_flock_image *fli,
 
 	if (lock.fl_owner == NULL)
 		eprintk_ctx("no lock owner\n");
-	return posix_lock_file(file, &lock, NULL);
+	err = posix_lock_file(file, &lock, NULL);
+	if (err < 0) {
+		eprintk_ctx("can't lock file\n");
+		return err;
+	}
+
+	ve = get_ve_by_id(ctx->ve_id);
+
+	fixup_lock_pid(file->f_path.dentry->d_inode, fli->cpt_pid, ve);
+	put_ve(ve);
+	return 0;
 }
 
 static int restore_flock(struct file *file, struct cpt_flock_image *fli,
 		cpt_context_t *ctx)
 {
 	int cmd, err, fd;
+	struct ve_struct *ve;
 
-	if (fli->cpt_flags & CPT_FLOCK_DELAYED)
+	/* Deleted delayed files restore on root fs, not need to use delayed flock */
+	if ((fli->cpt_flags & CPT_FLOCK_DELAYED) &&
+	    file->f_dentry->d_op == &delay_dir_dops)
 		return rst_delay_flock(file, fli, ctx);
 
 	fd = get_unused_fd();
@@ -482,7 +528,9 @@ static int restore_flock(struct file *file, struct cpt_flock_image *fli,
 	}
 	get_file(file);
 	fd_install(fd, file);
-	if (fli->cpt_type == F_RDLCK) {
+	if (fli->cpt_type & LOCK_MAND) {
+		cmd = fli->cpt_type;
+	} else if (fli->cpt_type == F_RDLCK) {
 		cmd = LOCK_SH;
 	} else if (fli->cpt_type == F_WRLCK) {
 		cmd = LOCK_EX;
@@ -494,9 +542,15 @@ static int restore_flock(struct file *file, struct cpt_flock_image *fli,
 
 	err = sc_flock(fd, LOCK_NB | cmd);
 	sc_close(fd);
-	return err;
-}
+	if (err)
+		return err;
 
+	ve = get_ve_by_id(ctx->ve_id);
+
+	fixup_lock_pid(file->f_path.dentry->d_inode, fli->cpt_pid, ve);
+	put_ve(ve);
+	return 0;
+}
 
 static int fixup_posix_locks(struct file *file,
 			     struct cpt_file_image *fi,
@@ -642,10 +696,8 @@ static int fixup_reg_data(struct file *file, loff_t pos, loff_t end,
 							   mntget(file->f_vfsmnt),
 							   O_WRONLY | O_LARGEFILE,
 							   current_cred());
-					if (IS_ERR(file)) {
-						__cpt_release_buf(ctx);
+					if (IS_ERR(file))
 						return PTR_ERR(file);
-					}
 				}
 				err = restore_reg_chunk(file, pos, &pgb, ctx); 
 				if (err)
@@ -1114,6 +1166,13 @@ struct file *rst_file(loff_t pos, int fd, struct cpt_context *ctx)
 		}
 	}
 
+	if ((fi.cpt_lflags & CPT_DENTRY_DELETED) &&
+	    !(fi.cpt_lflags & CPT_DENTRY_SILLYRENAME) &&
+	    mntobj && (mntobj->o_flags & CPT_VFSMOUNT_DELAYFS)) {
+		sprintf(name, "/tmp/rst.%lu", jiffies);
+		mntobj = NULL;
+	}
+
 	/* Easy way, inode has been already open. */
 	if (fi.cpt_inode != CPT_NULL &&
 	    !(fi.cpt_lflags & CPT_DENTRY_CLONING) &&
@@ -1168,6 +1227,7 @@ struct file *rst_file(loff_t pos, int fd, struct cpt_context *ctx)
 						goto err_out;
 					}
 				}
+
 				if ((fi.cpt_lflags & CPT_DENTRY_HARDLINKED) &&
 				    !ctx->hardlinked_on) {
 					eprintk_ctx("Open hardlinked is off\n");
@@ -1175,9 +1235,13 @@ struct file *rst_file(loff_t pos, int fd, struct cpt_context *ctx)
 					goto err_out;
 				}
 
-				if (!(fi.cpt_lflags & CPT_DENTRY_SILLYRENAME) ||
-					(mntobj && (mntobj->o_flags & CPT_VFSMOUNT_DELAYFS)))
-					goto open_file;
+				if (!(fi.cpt_lflags & CPT_DENTRY_SILLYRENAME)) {
+					if (mntobj && (mntobj->o_flags & CPT_VFSMOUNT_DELAYFS)) {
+						sprintf(name, "/tmp/rst.%lu", jiffies);
+						mntobj = NULL;
+					} else
+						goto open_file;
+				}
 				/*
 				 * We can be here ONLY is we are going to open
 				 * and unlink SILLY-RENAMED file on NFS
@@ -2149,6 +2213,7 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 		bool missed_ploop = false;
 		int is_cgroup;
 		int is_tmpfs = 0;
+		int is_ro_tmpfs = 0;
 		int data_type = 0;
 
 		if (!(mi->cpt_mntflags & CPT_MNT_PLOOP))
@@ -2324,13 +2389,19 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 			mnt = current->nsproxy->mnt_ns->root;
 			mnt = vfs_bind_mount(mnt, mnt->mnt_root);
 		} else {
-			unsigned sb_flags = mi->cpt_flags & ~MS_KERNMOUNT;
-
-			mnt = rst_kern_mount(mnttype, sb_flags, mntdev, NULL);
+			unsigned sb_flags;
 
 			if (!strcmp(mnttype, "tmpfs") ||
-			    !strcmp(mnttype, "devtmpfs"))
+			    !strcmp(mnttype, "devtmpfs")) {
 				is_tmpfs = 1;
+				if (mi->cpt_flags & MS_RDONLY) {
+					/* tar can't extract to R/O fs */
+					mi->cpt_flags &= ~MS_RDONLY;
+					is_ro_tmpfs = 1;
+				}
+			}
+			sb_flags = mi->cpt_flags & ~MS_KERNMOUNT;
+			mnt = rst_kern_mount(mnttype, sb_flags, mntdev, NULL);
 		}
 
 		if (IS_ERR_OR_NULL(mnt)) {
@@ -2360,11 +2431,13 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 
 			err = rst_path_lookup(parent, mntpnt, LOOKUP_FOLLOW, &nd);
 			if (err) {
-				eprintk_ctx("Failed ot lookup path '%s'\n", mntpnt);
+				eprintk_ctx("Failed to lookup path '%s'\n", mntpnt);
 				goto out_err;
 			}
 			mntflags = MNT_CPT | (mi->cpt_mntflags & ~(CPT_MNT_BIND |
 				   CPT_MNT_PLOOP | CPT_MNT_EXT | CPT_MNT_DELAYFS));
+			if (is_ro_tmpfs)
+				mntflags &= ~MNT_READONLY;
 			err = do_add_mount(mntget(mnt), &nd.path, mntflags, NULL);
 			path_put(&nd.path);
 			if (err)
@@ -2388,6 +2461,16 @@ int restore_one_vfsmount(struct cpt_vfsmount_image *mi, loff_t pos,
 				else
 					err = rst_restore_tmpfs(&pos, mnt, ctx);
 			}
+		}
+
+		if (!err && is_ro_tmpfs) {
+			struct path path = {	.mnt = mnt,
+						.dentry = mnt->mnt_root, };
+			/* We don't support fs-specific options, so last arg is NULL */
+			err = do_remount(&path, mnt->mnt_sb->s_flags | MS_RDONLY,
+					 mnt->mnt_flags | MNT_READONLY, NULL);
+			if (err)
+				eprintk_ctx("Can't remount fs read-only\n");
 		}
 out_err:
 		if (err)

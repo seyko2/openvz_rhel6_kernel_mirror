@@ -211,6 +211,7 @@ static int ipgre_rcv(struct sk_buff *skb, const struct tnl_ptk_info *tpi)
 				  iph->saddr, iph->daddr, tpi->key);
 
 	if (tunnel) {
+		skb_pop_mac_header(skb);
 		ip_tunnel_rcv(tunnel, skb, tpi, false);
 		return PACKET_RCVD;
 	}
@@ -374,13 +375,10 @@ static int ipgre_header(struct sk_buff *skb, struct net_device *dev,
 	/* Set the source hardware address. */
 	if (saddr)
 		memcpy(&iph->saddr, saddr, 4);
-
-	if (daddr) {
+	if (daddr)
 		memcpy(&iph->daddr, daddr, 4);
-		return t->hlen;
-	}
-	if (iph->daddr && !ipv4_is_multicast(iph->daddr))
-		return t->hlen;
+	if (iph->daddr)
+		return t->hlen + sizeof(*iph);
 
 	return -(t->hlen + sizeof(*iph));
 }
@@ -514,7 +512,7 @@ static void ipgre_tunnel_setup(struct net_device *dev)
 {
 	dev->netdev_ops		= &ipgre_netdev_ops;
 	ip_tunnel_setup(dev, ipgre_net_id);
-	dev->features |= NETIF_F_VIRTUAL;
+	dev->vz_features |= NETIF_F_VIRTUAL;
 }
 
 static int ipgre_rst(loff_t start, struct cpt_netdev_image *di,
@@ -756,7 +754,7 @@ static void ipgre_tap_setup(struct net_device *dev)
 	ether_setup(dev);
 	dev->netdev_ops		= &gre_tap_netdev_ops;
 	ip_tunnel_setup(dev, gre_tap_net_id);
-	dev->features |= NETIF_F_VIRTUAL;
+	dev->vz_features |= NETIF_F_VIRTUAL;
 }
 
 static int ipgre_newlink(struct net_device *dev,

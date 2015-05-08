@@ -534,9 +534,6 @@ module_param(nlm_max_connections, uint, 0644);
 #ifdef CONFIG_VE
 static void ve_nlm_init(struct ve_nlm_data *nlm_data)
 {
-	spin_lock_init(&nlm_data->_nlm_reserved_lock);
-	INIT_HLIST_HEAD(&nlm_data->_nlm_reserved_pids);
-
 	INIT_DELAYED_WORK(&nlm_data->_grace_period_end, grace_ender);
 	INIT_LIST_HEAD(&nlm_data->_grace_list);
 
@@ -561,14 +558,6 @@ static void ve_lockd_fini(void *data)
 	if (!ve->nlm_data)
 		return;
 
-	while (!hlist_empty(&ve->nlm_data->_nlm_reserved_pids)) {
-		struct nlm_reserved_pid *p;
-
-		p = hlist_entry(ve->nlm_data->_nlm_reserved_pids.first,
-				struct nlm_reserved_pid, list);
-		hlist_del(&p->list);
-		kfree(p);
-	}
 	kfree(ve->nlm_data);
 }
 

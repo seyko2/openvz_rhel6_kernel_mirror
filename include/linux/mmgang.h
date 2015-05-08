@@ -346,15 +346,15 @@ static inline int gangs_migration_pending(struct gang_set *gs,
 }
 #endif
 
-void gang_page_stat(struct gang_set *gs, nodemask_t *nodemask,
+void gang_page_stat(struct gang_set *gs, bool acct_hier, nodemask_t *nodemask,
 		    unsigned long *stat, unsigned long *shadow);
 void gang_show_state(struct gang_set *gs);
 
 #ifdef CONFIG_KSTALED
-void gang_idle_page_stat(struct gang_set *gs,
+void gang_idle_page_stat(struct gang_set *gs, bool acct_hier,
 		nodemask_t *nodemask, struct idle_page_stats *stats);
 #else
-static inline void gang_idle_page_stat(struct gang_set *gs,
+static inline void gang_idle_page_stat(struct gang_set *gs, bool acct_hier,
 		nodemask_t *nodemask, struct idle_page_stats *stats) { }
 #endif
 

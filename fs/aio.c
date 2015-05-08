@@ -48,16 +48,8 @@
 #define dprintk(x...)	do { ; } while (0)
 #endif
 
-/*------ sysctl variables----*/
-DEFINE_SPINLOCK(aio_nr_lock);
-EXPORT_SYMBOL(aio_nr_lock);
-unsigned long aio_nr;		/* current system wide number of aio requests */
-EXPORT_SYMBOL(aio_nr);
-unsigned long aio_max_nr = 0x10000; /* system wide maximum number of aio requests */
-/*----end sysctl variables---*/
-
 static struct kmem_cache	*kiocb_cachep;
-struct kmem_cache	*kioctx_cachep;
+struct kmem_cache		*kioctx_cachep;
 EXPORT_SYMBOL(kioctx_cachep);
 
 static struct workqueue_struct *aio_wq;
@@ -218,19 +210,41 @@ static int aio_setup_ring(struct kioctx *ctx)
 	aio_kunmap_atomic((void *)((unsigned long)__event & PAGE_MASK), km); \
 } while(0)
 
+static int aio_nr_charge(struct ve_struct *ve, unsigned nr_events)
+{
+	int err = 0;
+
+	spin_lock_bh(&ve->aio_nr_lock);
+	if (ve->aio_nr + nr_events > ve->aio_max_nr ||
+	    ve->aio_nr + nr_events < ve->aio_nr)
+		err = -EAGAIN;
+	else
+		ve->aio_nr += nr_events;
+	spin_unlock_bh(&ve->aio_nr_lock);
+
+	return err;
+}
+
+static void aio_nr_discharge(struct ve_struct *ve, unsigned nr_events)
+{
+	spin_lock(&ve->aio_nr_lock);
+	BUG_ON(ve->aio_nr - nr_events > ve->aio_nr);
+	ve->aio_nr -= nr_events;
+	spin_unlock(&ve->aio_nr_lock);
+}
+
 static void ctx_rcu_free(struct rcu_head *head)
 {
 	struct kioctx *ctx = container_of(head, struct kioctx, rcu_head);
+	struct ve_struct *ve = ctx->ve;
 	unsigned nr_events = ctx->max_reqs;
 
 	kmem_cache_free(kioctx_cachep, ctx);
 
 	if (nr_events) {
-		spin_lock(&aio_nr_lock);
-		BUG_ON(aio_nr - nr_events > aio_nr);
-		aio_nr -= nr_events;
-		spin_unlock(&aio_nr_lock);
+		aio_nr_discharge(ve, nr_events);
 	}
+	put_ve(ve);
 }
 
 /* __put_ioctx
@@ -270,6 +284,7 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 	struct mm_struct *mm;
 	struct kioctx *ctx;
 	int did_sync = 0;
+	struct ve_struct *ve = get_exec_env();
 
 	/* Prevent overflows */
 	if ((nr_events > (0x10000000U / sizeof(struct io_event))) ||
@@ -278,7 +293,7 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 		return ERR_PTR(-EINVAL);
 	}
 
-	if ((unsigned long)nr_events > aio_max_nr)
+	if ((unsigned long)nr_events > ve->aio_max_nr)
 		return ERR_PTR(-EAGAIN);
 
 	ctx = kmem_cache_zalloc(kioctx_cachep, GFP_KERNEL);
@@ -288,6 +303,7 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 	ctx->max_reqs = nr_events;
 	mm = ctx->mm = current->mm;
 	atomic_inc(&mm->mm_count);
+	ctx->ve = get_ve(ve);
 
 	atomic_set(&ctx->users, 2);
 	spin_lock_init(&ctx->ctx_lock);
@@ -303,13 +319,8 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 
 	/* limit the number of system wide aios */
 	do {
-		spin_lock_bh(&aio_nr_lock);
-		if (aio_nr + nr_events > aio_max_nr ||
-		    aio_nr + nr_events < aio_nr)
+		if (aio_nr_charge(ctx->ve, nr_events))
 			ctx->max_reqs = 0;
-		else
-			aio_nr += ctx->max_reqs;
-		spin_unlock_bh(&aio_nr_lock);
 		if (ctx->max_reqs || did_sync)
 			break;
 
@@ -336,6 +347,7 @@ out_cleanup:
 	return ERR_PTR(-EAGAIN);
 
 out_freectx:
+	put_ve(ctx->ve);
 	mmdrop(mm);
 	kmem_cache_free(kioctx_cachep, ctx);
 	ctx = ERR_PTR(-ENOMEM);

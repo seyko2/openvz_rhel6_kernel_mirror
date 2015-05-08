@@ -1080,6 +1080,51 @@ static int cgroup_show_options(struct seq_file *seq, struct vfsmount *vfs)
 	return 0;
 }
 
+/*
+ * Allow certain subsystems inside container for Docker sake.
+ */
+static int ve_valid_subsys_bits(unsigned long subsys_bits)
+{
+#define __CGROUP_SUBSYS_BIT(_bit) (1ul << _bit ##_subsys_id)
+	static unsigned long known_subsys[] = {
+#ifdef CONFIG_CPUSETS
+		__CGROUP_SUBSYS_BIT(cpuset)	|
+#endif
+#ifdef CONFIG_CGROUP_SCHED
+		__CGROUP_SUBSYS_BIT(cpu_cgroup)	|
+#endif
+#ifdef CONFIG_CGROUP_CPUACCT
+		__CGROUP_SUBSYS_BIT(cpuacct)	|
+#endif
+		0,
+
+#ifdef CONFIG_CGROUP_FREEZER
+		__CGROUP_SUBSYS_BIT(freezer)	|
+#endif
+#ifdef CONFIG_CGROUP_DEVICE
+		__CGROUP_SUBSYS_BIT(devices)	|
+#endif
+		0,
+#ifdef CONFIG_BLK_CGROUP
+		__CGROUP_SUBSYS_BIT(blkio)	|
+#endif
+		0,
+#ifdef CONFIG_BEANCOUNTERS
+		__CGROUP_SUBSYS_BIT(mem_cgroup)	|
+#endif
+		0,
+	};
+#undef __CGROUP_SUBSYS_BIT
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(known_subsys); i++) {
+		if ((subsys_bits & known_subsys[i]) == known_subsys[i])
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
 /* Convert a hierarchy specifier into a bitmask of subsystems and
  * flags. */
 static int parse_cgroupfs_options(char *data,
@@ -1116,7 +1161,7 @@ static int parse_cgroupfs_options(char *data,
 			if (opts->release_agent)
 				return -EINVAL;
 			opts->release_agent =
-				kstrndup(token + 14, PATH_MAX, GFP_KERNEL);
+				kstrndup(token + 14, PATH_MAX - 1, GFP_KERNEL);
 			if (!opts->release_agent)
 				return -ENOMEM;
 		} else if (!strncmp(token, "name=", 5)) {
@@ -1138,7 +1183,7 @@ static int parse_cgroupfs_options(char *data,
 			if (opts->name)
 				return -EINVAL;
 			opts->name = kstrndup(name,
-					      MAX_CGROUP_ROOT_NAMELEN,
+					      MAX_CGROUP_ROOT_NAMELEN - 1,
 					      GFP_KERNEL);
 			if (!opts->name)
 				return -ENOMEM;
@@ -1182,9 +1227,12 @@ static int parse_cgroupfs_options(char *data,
 		return -EINVAL;
 
 	if (!ve_is_super(get_exec_env())) {
-		/* Forbid all subsystems inside container */
+		/*
+		 * Forbid all but known subsystems
+		 * inside the container.
+		 */
 		if (opts->subsys_bits)
-			return -ENOENT;
+			return ve_valid_subsys_bits(opts->subsys_bits);
 		/* Allow only one hierarchy: "systemd" */
 		if (strcmp(opts->name, "systemd"))
 			return -EPERM;
@@ -1462,6 +1510,16 @@ static int cgroup_get_sb(struct file_system_type *fs_type,
 
 		BUG_ON(sb->s_root != NULL);
 
+		/*
+		 * Don't allow to create new hierarchies in container,
+		 * we don't support it.
+		 */
+		if (!ve_is_super(get_exec_env()) && opts.subsys_bits) {
+			ret = -EACCES;
+			if (ret)
+				goto drop_new_super;
+		}
+
 		ret = cgroup_get_rootdir(sb);
 		if (ret)
 			goto drop_new_super;
@@ -1546,7 +1604,7 @@ static int cgroup_get_sb(struct file_system_type *fs_type,
 	}
 
 #ifdef CONFIG_VE
-	if (!root->subsys_bits) {
+	if (!ve_is_super(get_exec_env())) {
 		struct cgroup *top_cgrp;
 		char name[16];
 
@@ -1554,33 +1612,27 @@ static int cgroup_get_sb(struct file_system_type *fs_type,
 		 * Construct namespace for hierarchies without subsystems
 		 */
 		snprintf(name, sizeof name, "%d", get_exec_env()->veid);
-		top_cgrp = cgroup_kernel_open(&root->top_cgroup, 0, name);
+		top_cgrp = cgroup_kernel_open(&root->top_cgroup, CGRP_CREAT, name);
 		ret = PTR_ERR(top_cgrp);
 		if (IS_ERR(top_cgrp))
 			goto drop_new_super;
 
-		if (top_cgrp == NULL) {
-			top_cgrp = cgroup_kernel_open(&root->top_cgroup, CGRP_CREAT, name);
-			ret = PTR_ERR(top_cgrp);
-			if (IS_ERR(top_cgrp))
-				goto drop_new_super;
-
+		mutex_lock(&top_cgrp->dentry->d_inode->i_mutex);
+		mutex_lock(&cgroup_mutex);
+		mutex_lock(&cgroup_root_mutex);
+		if (top_cgrp->top_cgroup != top_cgrp) {
 			top_cgrp->khelper_wq = get_exec_env()->khelper_wq;
-
 			/*
 			 * Register independent release agent for this fake top cgroup
 			 */
-			mutex_lock(&top_cgrp->dentry->d_inode->i_mutex);
-			mutex_lock(&cgroup_mutex);
-			mutex_lock(&cgroup_root_mutex);
 			top_cgrp->release_agent = opts.release_agent;
 			opts.release_agent = NULL;
 			top_cgrp->top_cgroup = top_cgrp;
 			cgroup_populate_dir(top_cgrp);
-			mutex_unlock(&cgroup_root_mutex);
-			mutex_unlock(&cgroup_mutex);
-			mutex_unlock(&top_cgrp->dentry->d_inode->i_mutex);
 		}
+		mutex_unlock(&cgroup_root_mutex);
+		mutex_unlock(&cgroup_mutex);
+		mutex_unlock(&top_cgrp->dentry->d_inode->i_mutex);
 
 		/*
 		 * mount it as bindmount to fist-level fake top cgroup
@@ -1588,7 +1640,7 @@ static int cgroup_get_sb(struct file_system_type *fs_type,
 		mnt->mnt_sb = sb;
 		mnt->mnt_root = dget(top_cgrp->dentry);
 		cgroup_kernel_close(top_cgrp);
-		ub_dcache_set_owner(mnt->mnt_root, get_exec_ub());
+		ub_dcache_set_owner(mnt->mnt_root, get_exec_ub_top());
 	} else
 #endif /* CONFIG_VE */
 		simple_set_mnt(mnt, sb);
@@ -1709,7 +1761,6 @@ int cgroup_path(const struct cgroup *cgrp, char *buf, int buflen)
 		cgrp = cgrp->parent;
 		if (!cgrp)
 			break;
-		/* hide fake top-cgroup in path */
 		if (cgrp == cgrp->top_cgroup)
 			cgrp = &cgrp->root->top_cgroup;
 		dentry = rcu_dereference(cgrp->dentry);
@@ -2011,15 +2062,9 @@ int cgroup_attach_proc(struct cgroup *cgrp, struct task_struct *leader)
 			continue;
 		/* get old css_set pointer */
 		task_lock(tc->task);
-		if (tc->task->flags & PF_EXITING) {
-			/* ignore this task if it's going away */
-			task_unlock(tc->task);
-			continue;
-		}
 		oldcg = tc->task->cgroups;
 		get_css_set(oldcg);
 		task_unlock(tc->task);
-
 		tc->cg = find_css_set(tc->task->cgroups, cgrp);
 		put_css_set(oldcg);
 		if (!tc->cg) {
@@ -2318,6 +2363,8 @@ out:
 	return retval;
 }
 
+static bool ve_cgroup_file_write_allowed(struct cgroup *cgrp, struct cftype *cft);
+
 static ssize_t cgroup_file_write(struct file *file, const char __user *buf,
 						size_t nbytes, loff_t *ppos)
 {
@@ -2326,6 +2373,11 @@ static ssize_t cgroup_file_write(struct file *file, const char __user *buf,
 
 	if (cgroup_is_removed(cgrp))
 		return -ENODEV;
+
+	if (!ve_is_super(get_exec_env()) &&
+	    !ve_cgroup_file_write_allowed(cgrp, cft))
+		return -EACCES;
+
 	if (cft->write)
 		return cft->write(cgrp, cft, file, buf, nbytes, ppos);
 	if (cft->write_u64 || cft->write_s64)
@@ -2840,6 +2892,7 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 			return retval;
 	}
 
+	retval = 0;
  again:
 	/*
 	 * Scan tasks in the cgroup, using the scanner's "test_task" callback
@@ -2897,8 +2950,8 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 				latest_time = q->start_time;
 				latest_task = q;
 			}
-			/* Process the task per the caller's callback */
-			scan->process_task(q, scan);
+			if (!retval)
+				retval = scan->process_task(q, scan);
 			put_task_struct(q);
 		}
 		/*
@@ -2912,7 +2965,7 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 	}
 	if (heap == &tmp_heap)
 		heap_free(&tmp_heap);
-	return 0;
+	return retval;
 }
 EXPORT_SYMBOL_GPL(cgroup_scan_tasks);
 
@@ -3528,6 +3581,14 @@ static u64 cgroup_read_self_destruction(struct cgroup *cgrp,
 static int cgroup_write_self_destruction(struct cgroup *cgrp,
 		struct cftype *cft, u64 val)
 {
+#ifdef CONFIG_VE
+	/*
+	 * Don't allow to write toplevel @self_destruction from
+	 * inside of the container, we rely on its persistence.
+	 */
+	if (!ve_is_super(get_exec_env()) && cgrp == cgrp->top_cgroup)
+		return -EPERM;
+#endif
 	clear_bit(CGRP_RELEASABLE, &cgrp->flags);
 	if (val)
 		set_bit(CGRP_SELF_DESTRUCTION, &cgrp->flags);
@@ -3579,6 +3640,33 @@ static struct cftype cft_release_agent = {
 	.write_string = cgroup_release_agent_write,
 	.max_write_len = PATH_MAX,
 };
+
+static bool ve_cgroup_file_write_allowed(struct cgroup *cgrp,
+					 struct cftype *cft)
+{
+	size_t i;
+
+	/*
+	 * Allows to write into general files even
+	 * inside container's root cgroup. Any exception
+	 * should be handled in @write mothods if needed.
+	 */
+	for (i = 0; i < ARRAY_SIZE(files); i++) {
+		if (cft == &files[i])
+			return true;
+	}
+
+	if (cft == &cft_release_agent)
+		return true;
+
+	/*
+	 * Only allow to modify container's subgroups.
+	 */
+	if (cgrp != cgrp->top_cgroup)
+		return true;
+
+	return false;
+}
 
 static int cgroup_populate_dir(struct cgroup *cgrp)
 {
@@ -3691,9 +3779,6 @@ static long cgroup_create(struct cgroup *parent, struct dentry *dentry,
 
 	if (notify_on_release(parent))
 		set_bit(CGRP_NOTIFY_ON_RELEASE, &cgrp->flags);
-
-	if (test_bit(CGRP_SELF_DESTRUCTION, &parent->flags))
-		set_bit(CGRP_SELF_DESTRUCTION, &cgrp->flags);
 
 	for_each_subsys(root, ss) {
 		struct cgroup_subsys_state *css = ss->create(ss, cgrp);
@@ -3843,6 +3928,13 @@ static int cgroup_clear_css_refs(struct cgroup *cgrp)
 	return !failed;
 }
 
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+extern int mem_cgroup_force_empty_hack(struct cgroup *);
+#else
+#define mem_cgroup_force_empty_hack(p)  0
+#endif
+
+
 static int cgroup_rmdir(struct inode *unused_dir, struct dentry *dentry)
 {
 	struct cgroup *cgrp = dentry->d_fsdata;
@@ -3893,7 +3985,13 @@ again:
 		return -EBUSY;
 	}
 	prepare_to_wait(&cgroup_rmdir_waitq, &wait, TASK_INTERRUPTIBLE);
-	if (!cgroup_clear_css_refs(cgrp)) {
+	/*
+	 * Because of swap-out records, memcg charges can show up in
+	 * empty groups between pre_destroy and clear_css_refs.  We
+	 * would reparent them in destroy() but that callback can't
+	 * fail and reparenting can.  Catch these charges here:
+	 */
+	if (!cgroup_clear_css_refs(cgrp) || mem_cgroup_force_empty_hack(cgrp)) {
 		mutex_unlock(&cgroup_mutex);
 		/*
 		 * Because someone may call cgroup_wakeup_rmdir_waiter() before
@@ -4159,8 +4257,6 @@ static int proc_cgroupstats_show(struct seq_file *m, void *v)
 	int i;
 
 	seq_puts(m, "#subsys_name\thierarchy\tnum_cgroups\tenabled\n");
-	if (!ve_is_super(get_exec_env()))
-		return 0;
 	mutex_lock(&cgroup_mutex);
 	for (i = 0; i < CGROUP_SUBSYS_COUNT; i++) {
 		struct cgroup_subsys *ss = subsys[i];
@@ -5128,9 +5224,9 @@ EXPORT_SYMBOL(cgroup_kernel_close);
 
 #ifdef CONFIG_VE
 
-static int cgroup_genocide(struct cgroup *cgrp)
+static int cgroup_genocide(struct cgroup *cgrp, bool kill_cgrp)
 {
-	struct cgroup *orig_parent = cgrp->parent, *parent;
+	struct cgroup *orig_cgrp = cgrp, *parent;
 	struct inode *inode;
 	int ret = 0;
 
@@ -5153,9 +5249,9 @@ static int cgroup_genocide(struct cgroup *cgrp)
 		dput(cgrp->dentry);
 		cgroup_lock();
 		atomic_dec(&parent->count);
-		cgrp = parent;
-		if (parent == orig_parent)
+		if (cgrp == orig_cgrp)
 			break;
+		cgrp = parent;
 	} while (!ret);
 
 	return ret;
@@ -5179,8 +5275,6 @@ static void cgroup_ve_fini(void *data)
 
 	cgroup_lock();
 	for_each_active_root(root) {
-		if (root->subsys_bits)
-			continue;
 		atomic_inc(&root->sb->s_active);
 		cgroup_unlock();
 		if (prev)
@@ -5190,7 +5284,18 @@ static void cgroup_ve_fini(void *data)
 		cgroup_lock();
 		if (!IS_ERR_OR_NULL(cgrp)) {
 			cgroup_kernel_close(cgrp);
-			cgroup_genocide(cgrp);
+			/*
+			 * Toplevel cgroups have @subsys_bits nonzero
+			 * but when kernel cleans them up in VE's fini
+			 * methods it expects them to be empty so that
+			 * we're cleaning all subcgroups here leaving
+			 * top ones untouched. Same time we're providing
+			 * virtualization for systemd cgroups which should
+			 * be cleaned up completely before VE end working,
+			 * for such cgroups @subsys_bits are zero and they
+			 * are eliminated here.
+			 */
+			cgroup_genocide(cgrp, root->subsys_bits == 0);
 		}
 	}
 	cgroup_unlock();

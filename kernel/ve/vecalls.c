@@ -58,6 +58,7 @@
 #include <linux/mount.h>
 #include <linux/kthread.h>
 #include <linux/oom.h>
+#include <linux/aio.h>
 #include <linux/kthread.h>
 #include <linux/workqueue.h>
 #include <linux/audit.h>
@@ -385,10 +386,11 @@ static void fini_ve_devpts(struct ve_struct *ve)
 
 static int init_ve_shmem(struct ve_struct *ve)
 {
-	return register_ve_fs_type(ve,
-				   &shmem_fs_type,
-				   &ve->shmem_fstype,
-				   &ve->shmem_mnt);
+	return register_ve_fs_type_data_flags(ve,
+					      &shmem_fs_type,
+					      &ve->shmem_fstype,
+					      &ve->shmem_mnt,
+					      NULL, MS_NOUSER);
 }
 
 static void fini_ve_shmem(struct ve_struct *ve)
@@ -793,7 +795,7 @@ static inline int init_ve_namespaces(struct ve_struct *ve,
 	tsk = current;
 	cur = tsk->nsproxy;
 
-	err = copy_namespaces(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID,
+	err = copy_namespaces(CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID | CLONE_NEWNET,
 			tsk, 1);
 	if (err < 0)
 		return err;
@@ -829,23 +831,9 @@ static inline void fini_ve_namespaces(struct ve_struct *ve,
 	}
 }
 
-static int init_ve_netns(struct ve_struct *ve, struct nsproxy **old)
+static int init_ve_netns(struct ve_struct *ve)
 {
-	int err;
-	struct task_struct *tsk;
-	struct nsproxy *cur;
-
-	tsk = current;
-	cur = tsk->nsproxy;
-
-	err = copy_namespaces(CLONE_NEWNET, tsk, 1);
-	if (err < 0)
-		return err;
-
-	put_nsproxy(ve->ve_ns);
-	ve->ve_ns = get_nsproxy(tsk->nsproxy);
 	ve->ve_netns = get_net(ve->ve_ns->net_ns);
-	*old = cur;
 	return 0;
 }
 
@@ -855,6 +843,8 @@ static void fini_ve_netns(struct ve_struct *ve)
 	DECLARE_COMPLETION_ONSTACK(sysfs_completion);
 
 	net = ve->ve_netns;
+	if (!net)
+		return; /* it isn't initialized yet */
 	net->sysfs_completion = &sysfs_completion;
 	put_net(net);
 	wait_for_completion(&sysfs_completion);
@@ -929,6 +919,9 @@ static int init_ve_struct(struct ve_struct *ve, envid_t veid,
 
 	atomic_set(&ve->mnt_nr, 0);
 
+	spin_lock_init(&ve->aio_nr_lock);
+	ve->aio_nr = 0;
+	ve->aio_max_nr = AIO_MAX_NR_DEFAULT;
 	return 0;
 }
 
@@ -977,7 +970,7 @@ static void set_ve_root(struct ve_struct *ve, struct task_struct *tsk)
 {
 	get_fs_root(tsk->fs, &ve->root_path);
 	/* mark_tree_virtual(&ve->root_path); */
-	ub_dcache_set_owner(ve->root_path.dentry, get_exec_ub());
+	ub_dcache_set_owner(ve->root_path.dentry, get_exec_ub_top());
 }
 
 static void put_ve_root(struct ve_struct *ve)
@@ -1042,7 +1035,7 @@ static void ve_move_task(struct ve_struct *new)
 
 	/* this probihibts ptracing of task entered to VE from host system */
 	if (tsk->mm)
-		tsk->mm->vps_dumpable = 0;
+		tsk->mm->vps_dumpable = VD_VE_ENTER_TASK;
 	/* setup capabilities before enter */
 	if (commit_creds(get_new_cred(new->init_cred)))
 		BUG();
@@ -1053,6 +1046,9 @@ static void ve_move_task(struct ve_struct *new)
 
 	/* Reset loginuid */
 	audit_set_loginuid(current, (uid_t)-1);
+
+	/* Adjust cpuid faulting */
+	set_cpuid_faulting(!ve_is_super(new));
 
 	old = tsk->ve_task_info.owner_env;
 	tsk->ve_task_info.owner_env = new;
@@ -1227,7 +1223,7 @@ static int do_env_create(envid_t veid, unsigned int flags, u32 class_id,
 	struct ve_struct *ve;
  	__u64 init_mask;
 	int err;
-	struct nsproxy *old_ns, *old_ns_net;
+	struct nsproxy *old_ns;
 
 	tsk = current;
 	old = VE_TASK_INFO(tsk)->owner_env;
@@ -1322,7 +1318,7 @@ static int do_env_create(envid_t veid, unsigned int flags, u32 class_id,
 	if ((err = init_ve_proc(ve)))
 		goto err_proc;
 
-	if ((err = init_ve_netns(ve, &old_ns_net)))
+	if ((err = init_ve_netns(ve)))
 		goto err_netns;
 
 	if ((err = init_ve_tty_drivers(ve)) < 0)
@@ -1364,7 +1360,6 @@ static int do_env_create(envid_t veid, unsigned int flags, u32 class_id,
 		goto err_ve_hook;
 
 	put_nsproxy(old_ns);
-	put_nsproxy(old_ns_net);
 
 	ve->is_running = 1;
 	up_write(&ve->op_sem);
@@ -1393,9 +1388,6 @@ err_shmem:
 err_vtty:
 	fini_ve_tty_drivers(ve);
 err_tty:
-	fini_ve_namespaces(ve, old_ns_net);
-	put_nsproxy(old_ns_net);
-	fini_ve_netns(ve);
 err_netns:
 	/*
 	 * If process hasn't become VE's init, proc_mnt won't be put during
@@ -1408,6 +1400,7 @@ err_proc:
 	/* free_ve_utsname() is called inside real_put_ve() */
 	fini_ve_namespaces(ve, old_ns);
 	put_nsproxy(old_ns);
+	fini_ve_netns(ve);
 	/*
 	 * We need to compensate, because fini_ve_namespaces() assumes
 	 * ve->ve_ns will continue to be used after, but VE will be freed soon
@@ -1975,7 +1968,8 @@ static int ve_dev_add(envid_t veid, char *dev_name)
 	if (dev == NULL)
 		goto out_unlock;
 
-	err = __dev_change_net_namespace(dev, dst_net, dev_name, get_exec_ub());
+	err = __dev_change_net_namespace(dev, dst_net, dev_name,
+					 get_exec_ub_top());
 out_unlock:
 	rtnl_unlock();
 	real_put_ve(dst_ve);

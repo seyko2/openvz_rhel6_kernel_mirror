@@ -36,6 +36,7 @@ static struct kobject *dev_kobj;
 #define ve_dev_kobj	dev_kobj
 struct kobject *sysfs_dev_char_kobj;
 struct kobject *sysfs_dev_block_kobj;
+struct kobject *sysfs_block_kobj;
 #else
 #define ve_dev_kobj	(get_exec_env()->dev_kobj)
 #endif
@@ -1173,6 +1174,7 @@ void device_del(struct device *dev)
 	device_remove_file(dev, &ve_device_attr);
 	device_remove_attrs(dev);
 	bus_remove_device(dev);
+	driver_deferred_probe_del(dev);
 
 	/*
 	 * Some platform devices are driven without driver attached
@@ -1358,6 +1360,14 @@ EXPORT_SYMBOL_GPL(devices_init);
 
 void devices_fini(void)
 {
+	/*
+	 * Delete "/sys/block" kobj for ve != ve0 only
+	 * because kernel doesn't delete /sys/block for ve0
+	 */
+	if (!ve_is_super(get_exec_env())) {
+		kobject_put(ve_sysfs_block_kobj);
+		ve_sysfs_block_kobj = NULL;
+	}
 	kobject_put(ve_sysfs_dev_char_kobj);
 	kobject_put(ve_sysfs_dev_block_kobj);
 	kobject_put(ve_dev_kobj);
@@ -1819,3 +1829,67 @@ void device_shutdown(void)
 	}
 	async_synchronize_full();
 }
+
+/*
+ * Device logging functions
+ */
+
+#ifdef CONFIG_PRINTK
+
+static int __dev_printk(const char *level, const struct device *dev,
+			struct va_format *vaf)
+{
+	if (!dev)
+		return printk("%s(NULL device *): %pV", level, vaf);
+
+	return printk("%s%s %s: %pV",
+		      level, dev_driver_string(dev), dev_name(dev), vaf);
+}
+
+int dev_printk(const char *level, const struct device *dev,
+	       const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+	int r;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	r = __dev_printk(level, dev, &vaf);
+	va_end(args);
+
+	return r;
+}
+EXPORT_SYMBOL(dev_printk);
+
+#define define_dev_printk_level(func, kern_level)		\
+int func(const struct device *dev, const char *fmt, ...)	\
+{								\
+	struct va_format vaf;					\
+	va_list args;						\
+	int r;							\
+								\
+	va_start(args, fmt);					\
+								\
+	vaf.fmt = fmt;						\
+	vaf.va = &args;						\
+								\
+	r = __dev_printk(kern_level, dev, &vaf);		\
+	va_end(args);						\
+								\
+	return r;						\
+}								\
+EXPORT_SYMBOL(func);
+
+define_dev_printk_level(dev_emerg, KERN_EMERG);
+define_dev_printk_level(dev_alert, KERN_ALERT);
+define_dev_printk_level(dev_crit, KERN_CRIT);
+define_dev_printk_level(dev_err, KERN_ERR);
+define_dev_printk_level(dev_warn, KERN_WARNING);
+define_dev_printk_level(dev_notice, KERN_NOTICE);
+define_dev_printk_level(_dev_info, KERN_INFO);
+
+#endif

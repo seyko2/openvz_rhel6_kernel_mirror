@@ -59,6 +59,10 @@ static int decode_tuple(struct cpt_ipct_tuple *v,
 			 cpt_context_t *ctx)
 {
 	tuple->dst.u3.ip = v->cpt_dst;
+	tuple->dst.u3.all[1] = 0;
+	tuple->dst.u3.all[2] = 0;
+	tuple->dst.u3.all[3] = 0;
+
 	tuple->dst.u.all = v->cpt_dstport;
 	tuple->src.l3num = v->cpt_l3num;
 	tuple->dst.protonum = v->cpt_protonum;
@@ -75,6 +79,10 @@ static int decode_tuple(struct cpt_ipct_tuple *v,
 		tuple->src.l3num = v->cpt_l3num;
 
 	tuple->src.u3.ip = v->cpt_src;
+	tuple->src.u3.all[1] = 0;
+	tuple->src.u3.all[2] = 0;
+	tuple->src.u3.all[3] = 0;
+
 	tuple->src.u.all = v->cpt_srcport;
 	return 0;
 }
@@ -188,6 +196,7 @@ static int undump_expect_list(struct nf_conn *ct,
 		nf_conntrack_get(&ct->ct_general);
 		if (nf_ct_expect_related(exp)) {
 			nf_ct_expect_put(exp);
+			nf_ct_put(ct);
 			return -EINVAL;
 		}
 
@@ -224,6 +233,14 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 	struct nf_conntrack_tuple orig, repl;
 	struct nf_conn_nat *nat;
 
+	/*
+	 * We do not support ipv6 conntracks (we don't save dst.u3.all[1-3],
+	 * and they restore wrong).
+	 */
+	if (ctx->image_version >= CPT_VERSION_32 &&
+	    ci->cpt_tuple[0].cpt_l3num == AF_INET6)
+		return 0;
+
 	c = kmalloc(sizeof(struct ct_holder), GFP_KERNEL);
 	if (c == NULL)
 		return -ENOMEM;
@@ -235,7 +252,7 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 	}
 
 	ct = nf_conntrack_alloc(get_exec_env()->ve_netns, &orig, &repl,
-						get_exec_ub(), GFP_KERNEL);
+				get_exec_ub_top(), GFP_KERNEL);
 	if (!ct || IS_ERR(ct)) {
 		kfree(c);
 		return -ENOMEM;
@@ -288,17 +305,26 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 #endif
 	}
 
-	nf_conntrack_hash_insert(ct);
 	ct->timeout.expires = jiffies + ci->cpt_timeout;
+	err = nf_conntrack_hash_check_insert(ct);
 
-	if (err == 0 && ci->cpt_next > ci->cpt_hdrlen)
+	if (err < 0)
+		goto err2;
+
+	if (ci->cpt_next > ci->cpt_hdrlen)
 		err = undump_expect_list(ct, ci, pos, *ct_list, ctx);
         rcu_read_unlock();
+	/*
+	 * nf_conntrack_hash_check_insert() sets ct->ct_general.use into 2,
+	 * because it think that the caller holds a reference to this object
+	 * and will put it.
+	 */
+	nf_ct_put(ct);
 
 	return err;
 err2:
         rcu_read_unlock();
-        nf_ct_put(ct);
+        nf_conntrack_free(ct);
         return err;
 }
 
@@ -434,15 +460,15 @@ int rst_restore_ip_conntrack(struct cpt_context * ctx)
 			convert_conntrack_image(&ci);
 
 		err = undump_one_ct(&ci, sec, &ct_list, ctx);
-		if (err)
+		if (err) {
+			eprintk_ctx("Can't undump ct\n");
 			break;
+		}
 		sec += ci.cpt_next;
 	}
 
 	while ((c = ct_list) != NULL) {
 		ct_list = c->next;
-		if (c->ct)
-			add_timer(&c->ct->timeout);
 		kfree(c);
 	}
 

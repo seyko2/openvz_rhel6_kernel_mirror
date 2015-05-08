@@ -17,23 +17,59 @@
 #include <linux/netfilter_bridge.h>
 #include "br_private.h"
 
-static int br_pass_frame_up(struct net_bridge *br, struct sk_buff *skb)
+static struct sk_buff *br_vlan_workaround(struct sk_buff *skb)
 {
-	struct net_device *vlan_dev = NULL;
-	struct net_device *indev, *brdev, *master_dev = NULL;
+	if (!vlan_tx_tag_present(skb))
+		return skb;
 
-	brdev = BR_INPUT_SKB_CB(skb)->brdev;
-
-	brdev->stats.rx_packets++;
-	brdev->stats.rx_bytes += skb->len;
-
-	/* If this frame came in through a HW-acclerated port find
-	 * the vlan device it belongs to.
+	/* Since bridge is no longer a vlan accelerated device  any vlans
+	 * configured on top of the bridge will not  be propagated to hw.
+	 * Some drivers will pass vlan_tci  even if there we no vlan groups
+	 * configured.  This is  a workaround for those drivers.  We insert
+	 * the vlan header into the packet thus letting any vlans defined
+	 * on top of the bridge handle this packet.  This code can be
+	 * removed when we have a new vlan infrastructure.
 	 */
-	if (vlan_tx_tag_present(skb)) {
-		struct net_bridge *br = netdev_priv(brdev);
-		vlan_dev = vlan_hwaccel_dev(skb, br->vlgrp);
+	skb_push(skb, ETH_HLEN);
+	skb = __vlan_put_tag(skb, vlan_tx_tag_get(skb));
+	if (unlikely(!skb))
+		goto out;
+	skb->vlan_tci = 0;
+	skb_reset_mac_header(skb);
+	skb_pull(skb, ETH_HLEN);
+
+	if (skb->pkt_type == PACKET_OTHERHOST) {
+		/* Since this packet had vlan_tci set, it has passed
+		 * through the vlan layer and vlan layer has changed
+		 * the packet type.  If this is a multicast or
+		 * broadcast packet, we need to change the packet type
+		 * back since this packet will be going through the
+		 * vlan layer again and we want it delivered if we
+		 * find a matching vlan device.
+		 */
+		const unsigned char *dest = eth_hdr(skb)->h_dest;
+		if (is_multicast_ether_addr(dest)) {
+			if (is_broadcast_ether_addr(dest))
+				skb->pkt_type = PACKET_BROADCAST;
+			else
+				skb->pkt_type = PACKET_MULTICAST;
+		}
 	}
+out:
+	return skb;
+}
+
+static int br_pass_frame_up(struct sk_buff *skb)
+{
+	struct net_device *indev, *brdev = BR_INPUT_SKB_CB(skb)->brdev;
+	struct net_bridge *br = netdev_priv(brdev);
+	struct br_cpu_netstats *brstats = this_cpu_ptr(br->stats);
+	struct net_device *master_dev = NULL;
+
+	u64_stats_update_begin(&brstats->syncp);
+	brstats->rx_packets++;
+	brstats->rx_bytes += skb->len;
+	u64_stats_update_end(&brstats->syncp);
 
 	indev = skb->dev;
 
@@ -41,11 +77,15 @@ static int br_pass_frame_up(struct net_bridge *br, struct sk_buff *skb)
 		master_dev = rcu_dereference(br->master_dev);
 
 	if (!master_dev)
-		skb->dev = vlan_dev ? vlan_dev : brdev;
+		skb->dev = brdev;
 	else {
 		skb->brmark = BR_ALREADY_SEEN;
 		skb->dev = master_dev;
 	}
+
+	skb = br_vlan_workaround(skb);
+	if (!skb)
+		return NET_RX_DROP;
 
 	return NF_HOOK(PF_BRIDGE, NF_BR_LOCAL_IN, skb, indev, NULL,
 		       netif_receive_skb);
@@ -90,7 +130,8 @@ int br_handle_frame_finish(struct sk_buff *skb)
 		skb2 = skb;
 	else if (is_multicast_ether_addr(dest)) {
 		mdst = br_mdb_get(br, skb);
-		if (mdst || BR_INPUT_SKB_CB(skb)->mrouters_only) {
+		if ((mdst || BR_INPUT_SKB_CB(skb)->mrouters_only) &&
+		    br_multicast_querier_exists(br)) {
 			if ((mdst && mdst->mglist) ||
 			    br_multicast_is_router(br))
 				skb2 = skb;
@@ -112,7 +153,7 @@ int br_handle_frame_finish(struct sk_buff *skb)
 		skb2 = skb_clone(skb, GFP_ATOMIC);
 
 	if (skb2)
-		err = br_pass_frame_up(br, skb2);
+		err = br_pass_frame_up(skb2);
 
 	if (skb) {
 		if (dst)

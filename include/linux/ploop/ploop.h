@@ -350,6 +350,8 @@ struct ploop_device
 	struct bio		*bio_head;
 	struct bio		*bio_tail;
 	struct bio		*bio_sync;
+	struct bio_list		bio_discard_list;
+	int			bio_discard_qlen;
 	int			bio_qlen;
 	int			bio_total;
 
@@ -454,6 +456,9 @@ enum
 	PLOOP_REQ_ZERO,
 	PLOOP_REQ_DISCARD,
 	PLOOP_REQ_RSYNC,
+	PLOOP_REQ_FORCE_FUA,	/*force fua of req write I/O by engine */
+	PLOOP_REQ_FORCE_FLUSH,	/*force flush by engine */
+	PLOOP_REQ_KAIO_FSYNC,	/*force image fsync by KAIO module */
 };
 
 enum
@@ -575,7 +580,24 @@ void ploop_fail_request(struct ploop_request * preq, int err);
 void ploop_preq_drop(struct ploop_device * plo, struct list_head *drop_list,
 		      int keep_locked);
 
-static inline void ploop_set_error(struct ploop_request * preq, int err)
+
+static inline int ploop_req_delay_fua_possible(unsigned long rw,
+       struct ploop_request *preq)
+{
+	int delay_fua = 0;
+
+	/* In case of eng_state != COMPLETE, we'll do FUA in
+	 * ploop_index_update(). Otherwise, we should post
+	 * fua.
+	 */
+	if (rw & BIO_FUA) {
+		if (preq->eng_state != PLOOP_E_COMPLETE)
+			delay_fua = 1;
+	}
+	return delay_fua;
+}
+
+static inline void ploop_req_set_error(struct ploop_request * preq, int err)
 {
 	if (!preq->error) {
 		preq->error = err;
@@ -777,5 +799,39 @@ extern void ploop_msg_once(struct ploop_device *plo, const char *, ...)
 #else
 #define __TRACE(a...)  do { } while (0)
 #endif
+
+#define PLOOP_TRACE_ERROR 1
+#define PLOOP_TRACE_ERROR_DUMP_STACK_ON 1
+
+#if PLOOP_TRACE_ERROR_DUMP_STACK_ON
+#define PLOOP_TRACE_ERROR_DUMP_STACK()	dump_stack();
+#else
+#define PLOOP_TRACE_ERROR_DUMP_STACK()
+#endif
+
+#if PLOOP_TRACE_ERROR
+#define PLOOP_REQ_TRACE_ERROR(preq, err)					\
+	do {									\
+		if ((err)) {							\
+			printk("%s() %d ploop%d set error %d\n",		\
+			__FUNCTION__, __LINE__, (preq)->plo->index, (err));	\
+			PLOOP_TRACE_ERROR_DUMP_STACK();				\
+		}								\
+	} while (0);
+#else
+#define PLOOP_REQ_TRACE_ERROR(preq, err)
+#endif
+
+#define PLOOP_REQ_SET_ERROR(preq, err)			\
+	do {						\
+		PLOOP_REQ_TRACE_ERROR(preq, err);	\
+		ploop_req_set_error(preq, err);		\
+	} while (0);
+
+#define PLOOP_FAIL_REQUEST(preq, err)			\
+	do {						\
+		PLOOP_REQ_TRACE_ERROR(preq, err);	\
+		ploop_fail_request(preq, err);		\
+	} while (0);
 
 #endif /* _LINUX_PLOOP_H_ */

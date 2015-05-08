@@ -16,9 +16,9 @@ int rst_restore_process(struct cpt_context *ctx);
 int rst_process_linkage(struct cpt_context *ctx);
 
 int check_task_state(struct task_struct *tsk, struct cpt_context *ctx);
-struct pid *alloc_vpid_safe(pid_t vnr);
-struct pid *alloc_dummy_vpid(pid_t vnr);
 int cpt_skip_task(struct task_struct *tsk);
+
+struct pid *rst_alloc_pid(pid_t vnr);
 
 static inline pid_t cpt_pid_nr(struct pid *pid)
 {

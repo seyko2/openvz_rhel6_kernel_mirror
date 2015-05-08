@@ -766,7 +766,9 @@ struct dx_hash_info
 	u32		*seed;
 };
 
-#define EXT3_HTREE_EOF	0x7fffffff
+/* 32 and 64 bit signed EOF for dx directories */
+#define EXT3_HTREE_EOF_32BIT	((1UL  << (32 - 1)) - 1)
+#define EXT3_HTREE_EOF_64BIT	((1ULL << (64 - 1)) - 1)
 
 /*
  * Control parameters used by ext3_htree_next_block
@@ -892,7 +894,7 @@ extern int  ext3_setattr (struct dentry *, struct iattr *);
 extern void ext3_delete_inode (struct inode *);
 extern int  ext3_sync_inode (handle_t *, struct inode *);
 extern void ext3_discard_reservation (struct inode *);
-extern void ext3_dirty_inode(struct inode *);
+extern void ext3_dirty_inode(struct inode *, int flags);
 extern int ext3_change_inode_journal_flag(struct inode *, int);
 extern int ext3_get_inode_loc(struct inode *, struct ext3_iloc *);
 extern int ext3_can_truncate(struct inode *inode);

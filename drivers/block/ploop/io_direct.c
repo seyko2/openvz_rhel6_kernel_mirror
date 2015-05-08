@@ -51,7 +51,7 @@ DEFINE_BIO_CB(dio_endio_async)
 	if (!err && !bio_flagged(bio, BIO_UPTODATE))
 		err = -EIO;
 	if (err)
-		ploop_set_error(preq, err);
+		PLOOP_REQ_SET_ERROR(preq, err);
 
 	ploop_complete_io_request(preq);
 
@@ -84,20 +84,25 @@ dio_submit(struct ploop_io *io, struct ploop_request * preq,
 	int preflush;
 	int postfua = 0;
 	int write = !!(rw & (1<<BIO_RW));
+	int bio_num;
 
 	trace_submit(preq);
 
 	preflush = !!(rw & BIO_FLUSH);
-	rw &= ~BIO_FLUSH;
+	if (test_and_clear_bit(PLOOP_REQ_FORCE_FLUSH, &preq->state))
+		preflush = 1;
 
-	/* In case of eng_state != COMPLETE, we'll do FUA in
-	 * ploop_index_update(). Otherwise, we should mark
-	 * last bio as FUA here. */
-	if (rw & BIO_FUA) {
-		rw &= ~BIO_FUA;
-		if (preq->eng_state == PLOOP_E_COMPLETE)
-			postfua = 1;
-	}
+	if (test_and_clear_bit(PLOOP_REQ_FORCE_FUA, &preq->state))
+		postfua = 1;
+
+	if (!postfua && ploop_req_delay_fua_possible(rw, preq)) {
+
+		/* Mark req that delayed flush required */
+		set_bit(PLOOP_REQ_FORCE_FLUSH, &preq->state);
+	} else if (rw & BIO_FUA)
+		postfua = 1;
+
+	rw &= ~(BIO_FLUSH | BIO_FUA);
 
 	bio_list_init(&bl);
 
@@ -214,6 +219,7 @@ flush_bio:
 	}
 	extent_put(em);
 
+	bio_num = 0;
 	while (bl.head) {
 		struct bio * b = bl.head;
 		unsigned long rw2 = rw;
@@ -229,10 +235,11 @@ flush_bio:
 			preflush = 0;
 		}
 		if (unlikely(postfua && !bl.head))
-			rw2 |= BIO_FUA;
+			rw2 |= (BIO_FUA | ((bio_num) ? BIO_FLUSH : 0));
 
 		ploop_acc_ff_out(preq->plo, rw2 | b->bi_rw);
 		submit_bio(rw2 & ~(bl.head ? (1 << BIO_RW_UNPLUG) : 0), b);
+		bio_num++;
 	}
 
 	ploop_complete_io_request(preq);
@@ -268,7 +275,7 @@ out:
 	}
 
 	if (err)
-		ploop_fail_request(preq, err);
+		PLOOP_FAIL_REQUEST(preq, err);
 }
 
 struct bio_iter {
@@ -365,8 +372,7 @@ cached_submit(struct ploop_io *io, iblock_t iblk, struct ploop_request * preq,
 			if (prealloc > PLOOP_MAX_PREALLOC(plo))
 				prealloc = PLOOP_MAX_PREALLOC(plo);
 try_again:
-			err = io->files.inode->i_op->fallocate(io->files.inode,
-							       FALLOC_FL_KEEP_SIZE,
+			err = io->files.inode->i_op->fallocate(io->files.inode, 0,
 							       pos, prealloc);
 			if (err) {
 				if (err == -ENOSPC && prealloc != clu_siz) {
@@ -621,7 +627,7 @@ out:
 		b->bi_next = NULL;
 		bio_put(b);
 	}
-	ploop_fail_request(preq, err);
+	PLOOP_FAIL_REQUEST(preq, err);
 }
 
 static struct extent_map * dio_fallocate(struct ploop_io *io, u32 iblk, int nr)
@@ -649,7 +655,7 @@ dio_submit_alloc(struct ploop_io *io, struct ploop_request * preq,
 	trace_submit_alloc(preq);
 
 	if (!(io->files.file->f_mode & FMODE_WRITE)) {
-		ploop_fail_request(preq, -EBADF);
+		PLOOP_FAIL_REQUEST(preq, -EBADF);
 		return;
 	}
 
@@ -673,7 +679,7 @@ dio_submit_alloc(struct ploop_io *io, struct ploop_request * preq,
 
 		em = dio_fallocate(io, iblk, 1);
 		if (unlikely(IS_ERR(em))) {
-			ploop_fail_request(preq, PTR_ERR(em));
+			PLOOP_FAIL_REQUEST(preq, (int)PTR_ERR(em));
 			return;
 		}
 
@@ -688,7 +694,7 @@ dio_submit_alloc(struct ploop_io *io, struct ploop_request * preq,
 	if (err) {
 		if (err == -ENOSPC)
 			io->alloc_head--;
-		ploop_fail_request(preq, err);
+		PLOOP_FAIL_REQUEST(preq, err);
 	}
 	preq->eng_state = PLOOP_E_DATA_WBI;
 }
@@ -763,7 +769,7 @@ static int dio_fsync_thread(void * data)
 			preq = list_entry(list.next, struct ploop_request, list);
 			list_del(&preq->list);
 			if (err)
-				ploop_set_error(preq, err);
+				PLOOP_REQ_SET_ERROR(preq, err);
 			list_add_tail(&preq->list, &plo->ready_queue);
 			io->fsync_qlen--;
 		}
@@ -825,11 +831,35 @@ retry:
 	return err;
 }
 
+static int dio_truncate(struct ploop_io *, struct file *, __u32);
+
+static int dio_release_prealloced(struct ploop_io * io)
+{
+	int ret;
+
+	if (!io->prealloced_size)
+		return 0;
+
+	ret = dio_truncate(io, io->files.file, io->alloc_head);
+	if (ret)
+		printk("Can't release %llu prealloced bytes: "
+		       "truncate to %llu failed (%d)\n",
+		       io->prealloced_size,
+		       (loff_t)io->alloc_head << (io->plo->cluster_log + 9),
+		       ret);
+	else
+		io->prealloced_size = 0;
+
+	return ret;
+}
+
 static void dio_destroy(struct ploop_io * io)
 {
 	if (io->files.file) {
 		struct file * file;
 		struct ploop_delta * delta = container_of(io, struct ploop_delta, io);
+
+		(void)dio_release_prealloced(io);
 
 		if (io->files.em_tree) {
 			io->files.em_tree = NULL;
@@ -1322,9 +1352,12 @@ dio_io_page(struct ploop_io * io, unsigned long rw,
 	int err;
 	int off;
 	int postfua;
+	int bio_num;
+	int preflush;
 
+	preflush = !!(rw & BIO_FLUSH);
 	postfua = !!(rw & BIO_FUA);
-	rw &= ~BIO_FUA;
+	rw &= ~(BIO_FUA|BIO_FLUSH);
 
 	bio_list_init(&bl);
 	bio = NULL;
@@ -1377,13 +1410,19 @@ flush_bio:
 	if (em)
 		extent_put(em);
 
+	bio_num = 0;
 	while (bl.head) {
 		unsigned long rw2 = rw;
 		struct bio * b = bl.head;
 		bl.head = b->bi_next;
 
+		if (unlikely(preflush)) {
+			rw2 |= BIO_FLUSH;
+			preflush = 0;
+		}
+
 		if (unlikely(postfua && !bl.head))
-			rw2 |= BIO_FUA;
+			rw2 |= (BIO_FUA | ((bio_num) ? BIO_FLUSH : 0));
 
 		b->bi_next = NULL;
 		b->bi_end_io = dio_endio_async;
@@ -1391,6 +1430,7 @@ flush_bio:
 		atomic_inc(&preq->io_count);
 		ploop_acc_ff_out(preq->plo, rw2 | b->bi_rw);
 		submit_bio(rw2 | (bl.head ? 0 : (1<<BIO_RW_UNPLUG)), b);
+		bio_num++;
 	}
 
 	ploop_complete_io_request(preq);
@@ -1409,7 +1449,7 @@ out:
 		b->bi_next = NULL;
 		bio_put(b);
 	}
-	ploop_fail_request(preq, err);
+	PLOOP_FAIL_REQUEST(preq, err);
 }
 
 static void
@@ -1424,7 +1464,7 @@ dio_write_page(struct ploop_io * io, struct ploop_request * preq,
 	       struct page * page, sector_t sec, int fua)
 {
 	if (!(io->files.file->f_mode & FMODE_WRITE)) {
-		ploop_fail_request(preq, -EBADF);
+		PLOOP_FAIL_REQUEST(preq, -EBADF);
 		return;
 	}
 
@@ -1582,6 +1622,11 @@ static void dio_trim_prealloc(struct ploop_io * io, struct file * file)
 static int dio_complete_snapshot(struct ploop_io * io, struct ploop_snapdata *sd)
 {
 	struct file * file = io->files.file;
+	int ret;
+
+	ret = dio_release_prealloced(io);
+	if (ret)
+		return ret;
 
 	mutex_lock(&io->plo->sysfs_mutex);
 	io->files.file = sd->file;
@@ -1733,7 +1778,7 @@ static void dio_issue_flush(struct ploop_io * io, struct ploop_request *preq)
 
 	bio = bio_alloc(GFP_NOFS, 0);
 	if (unlikely(!bio)) {
-		ploop_fail_request(preq, -ENOMEM);
+		PLOOP_FAIL_REQUEST(preq, -ENOMEM);
 		return;
 	}
 

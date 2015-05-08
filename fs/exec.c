@@ -838,7 +838,7 @@ static int exec_mmap(struct linux_binprm *bprm)
 	}
 
 	mm = bprm->mm;
-	mm->vps_dumpable = 1;
+	mm->vps_dumpable = VD_PTRACE_COREDUMP;
 	task_lock(tsk);
 	active_mm = tsk->active_mm;
 	tsk->mm = mm;
@@ -1238,6 +1238,13 @@ int check_unsafe_exec(struct linux_binprm *bprm)
 
 	bprm->unsafe = tracehook_unsafe_exec(p);
 
+	/*
+	 * This isn't strictly necessary, but it makes it harder for LSMs to
+	 * mess up.
+	 */
+	if (current->no_new_privs)
+		bprm->unsafe |= LSM_UNSAFE_NO_NEW_PRIVS;
+
 	n_fs = 1;
 	spin_lock(&p->fs->lock);
 	rcu_read_lock();
@@ -1281,7 +1288,8 @@ int prepare_binprm(struct linux_binprm *bprm)
 	bprm->cred->euid = current_euid();
 	bprm->cred->egid = current_egid();
 
-	if (!(bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID)) {
+	if (!(bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID) &&
+	    !current->no_new_privs) {
 		/* Set-uid? */
 		if (mode & S_ISUID) {
 			bprm->per_clear |= PER_CLEAR_ON_SETID;
@@ -2091,7 +2099,8 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
 	/*
 	 * If another thread got here first, or we are not dumpable, bail out.
 	 */
-	if (mm->core_state || !get_dumpable(mm) || mm->vps_dumpable != 1) {
+	if (mm->core_state || !get_dumpable(mm) ||
+	    mm->vps_dumpable != VD_PTRACE_COREDUMP) {
 		up_write(&mm->mmap_sem);
 		put_cred(cred);
 		goto fail;

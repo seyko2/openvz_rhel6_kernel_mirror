@@ -64,6 +64,8 @@
 #define EXIT_REASON_APIC_ACCESS         44
 #define EXIT_REASON_EPT_VIOLATION       48
 #define EXIT_REASON_EPT_MISCONFIG       49
+#define EXIT_REASON_INVEPT              50
+#define EXIT_REASON_INVVPID             53
 #define EXIT_REASON_WBINVD              54
 #define EXIT_REASON_XSETBV              55
 #define EXIT_REASON_INVPCID             58
@@ -103,7 +105,9 @@
 	{ EXIT_REASON_APIC_ACCESS,           "APIC_ACCESS" }, \
 	{ EXIT_REASON_EPT_VIOLATION,         "EPT_VIOLATION" }, \
 	{ EXIT_REASON_EPT_MISCONFIG,         "EPT_MISCONFIG" }, \
-	{ EXIT_REASON_WBINVD,                "WBINVD" }
+	{ EXIT_REASON_WBINVD,                "WBINVD" }, \
+	{ EXIT_REASON_INVEPT,                "INVEPT" }, \
+	{ EXIT_REASON_INVVPID,               "INVVPID" }
 
 #ifdef __KERNEL__
 
@@ -427,6 +431,7 @@ enum vmcs_field {
 #define VMX_EPTP_UC_BIT				(1ull << 8)
 #define VMX_EPTP_WB_BIT				(1ull << 14)
 #define VMX_EPT_2MB_PAGE_BIT			(1ull << 16)
+#define VMX_EPT_1GB_PAGE_BIT			(1ull << 17)
 #define VMX_EPT_AD_BIT				(1ull << 21)
 #define VMX_EPT_EXTENT_INDIVIDUAL_BIT		(1ull << 24)
 #define VMX_EPT_EXTENT_CONTEXT_BIT		(1ull << 25)

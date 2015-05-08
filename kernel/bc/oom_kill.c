@@ -29,12 +29,16 @@ static inline int oom_ctrl_id(struct oom_control *ctrl)
 {
 	struct user_beancounter *ub = oom_ctrl_ub(ctrl);
 
-	return ub ? ub->ub_uid : -1;
+	return ub ? top_beancounter(ub)->ub_uid : -1;
 }
 
 static inline int oom_ctrl_ratelimit(struct oom_control *ctrl)
 {
 	struct user_beancounter *ub = oom_ctrl_ub(ctrl);
+
+	/* do not flood kernel log if oom occurred in a mem cgroup */
+	if (ub && ub->parent)
+		return 0;
 
 	return ub ? __ratelimit(&ub->ub_ratelimit) : printk_ratelimit();
 }
@@ -72,12 +76,11 @@ static void ub_release_oom_control(struct oom_control *oom_ctrl)
  */
 void ub_oom_mark_mm(struct mm_struct *mm, struct oom_control *oom_ctrl)
 {
-	mm_ub(mm)->ub_parms[UB_OOMGUARPAGES].failcnt++;
+	mm_ub_top(mm)->ub_parms[UB_OOMGUARPAGES].failcnt++;
 
-	if (oom_ctrl == &global_oom_ctrl)
-		mm->global_oom = 1;
-	else if (oom_ctrl == &mm->mm_ub->oom_ctrl)
-		mm->ub_oom = 1;
+	if (oom_ctrl == &global_oom_ctrl ||
+	    ub_is_descendant(mm_ub(mm), oom_ctrl_ub(oom_ctrl)))
+		mm->oom_ctrl = oom_ctrl;
 	else {
 		/*
 		 * Task can be killed when using either global oom ctl
@@ -107,9 +110,33 @@ static void ub_clear_oom(void)
 	struct user_beancounter *ub;
 
 	rcu_read_lock();
-	for_each_beancounter(ub)
+	for_each_top_beancounter(ub)
 		clear_bit(UB_OOM_NOPROC, &ub->ub_flags);
 	rcu_read_unlock();
+}
+
+static struct oom_control *parent_oom_ctrl(struct oom_control *oom_ctrl)
+{
+	struct user_beancounter *ub;
+
+	ub = oom_ctrl_ub(oom_ctrl);
+	if (!ub)
+		return NULL;
+	if (!ub->parent)
+		return &global_oom_ctrl;
+	return &ub->parent->oom_ctrl;
+}
+
+static int wait_parent_oom(struct oom_control *oom_ctrl)
+{
+	while ((oom_ctrl = parent_oom_ctrl(oom_ctrl)) != NULL) {
+		if (oom_ctrl->kill_counter) {
+			wait_event_killable(oom_ctrl->wq,
+					    oom_ctrl->kill_counter == 0);
+			return -EAGAIN;
+		}
+	}
+	return 0;
 }
 
 int ub_oom_lock(struct oom_control *oom_ctrl, gfp_t gfp_mask)
@@ -117,13 +144,11 @@ int ub_oom_lock(struct oom_control *oom_ctrl, gfp_t gfp_mask)
 	int timeout;
 	DEFINE_WAIT(oom_w);
 
-	if (oom_ctrl != &global_oom_ctrl && global_oom_ctrl.kill_counter) {
+	if (wait_parent_oom(oom_ctrl)) {
 		/*
 		 * Check if global OOM killeris on the way. If so -
 		 * let the senior handle the situation.
 		 */
-		wait_event_killable(global_oom_ctrl.wq,
-					global_oom_ctrl.kill_counter == 0);
 		return -EAGAIN;
 	}
 
@@ -209,11 +234,11 @@ int ub_oom_task_skip(struct user_beancounter *ub, struct task_struct *tsk)
 	if (tsk->mm == NULL)
 		mm_ub = NULL;
 	else
-		mm_ub = tsk->mm->mm_ub;
+		mm_ub = mm_ub(tsk->mm);
 
 	task_unlock(tsk);
 
-	return mm_ub != ub;
+	return !ub_is_descendant(mm_ub, ub);
 }
 
 struct user_beancounter *ub_oom_select_worst(void)
@@ -225,7 +250,7 @@ struct user_beancounter *ub_oom_select_worst(void)
 	ub = NULL;
 
 	rcu_read_lock();
-	for_each_beancounter (walkp) {
+	for_each_top_beancounter(walkp) {
 		long ub_overdraft;
 
 		if (test_bit(UB_OOM_NOPROC, &walkp->ub_flags))
@@ -257,15 +282,12 @@ void ub_oom_unlock(struct oom_control *oom_ctrl)
 
 void ub_oom_mm_dead(struct mm_struct *mm)
 {
-	if (mm->global_oom)
-		ub_release_oom_control(&global_oom_ctrl);
-
-	if (mm->ub_oom)
-		ub_release_oom_control(&mm_ub(mm)->oom_ctrl);
+	ub_release_oom_control(mm->oom_ctrl);
 }
 
 unsigned long ub_oom_total_pages(struct user_beancounter *ub)
 {
+	ub = top_beancounter(ub);
 	return min(totalram_pages, ub->ub_parms[UB_PHYSPAGES].limit) +
 	       min_t(unsigned long, total_swap_pages,
 			       ub->ub_parms[UB_SWAPPAGES].limit);
@@ -277,13 +299,15 @@ int out_of_memory_in_ub(struct user_beancounter *ub, gfp_t gfp_mask)
 	int res = 0;
 	unsigned long ub_mem_pages;
 	int points;
-	char message[32];
+	char message[48];
 
 	if (ub_oom_lock(&ub->oom_ctrl, gfp_mask))
 		goto out;
 
 	snprintf(message, sizeof(message),
-		 "Out of memory in UB %u", ub->ub_uid);
+		 "Out of memory in %sUB %u",
+		 ub->parent ? "mem cgroup inside " : "",
+		 top_beancounter(ub)->ub_uid);
 
 	ub_mem_pages = ub_oom_total_pages(ub);
 	read_lock(&tasklist_lock);

@@ -138,6 +138,12 @@ pid_t vpid_to_pid(pid_t nr)
 static void decode_siginfo(siginfo_t *info, struct cpt_siginfo_image *si)
 {
 	memset(info, 0, sizeof(*info));
+
+	if (cpt_object_has(si, cpt_sifields)) {
+		memcpy(&info->_sifields, si->cpt_sifields, sizeof(si->cpt_sifields));
+		goto fill_common;
+	}
+
 	switch(si->cpt_code & __SI_MASK) {
 	case __SI_TIMER:
 		info->si_tid = si->cpt_pid;
@@ -171,6 +177,8 @@ static void decode_siginfo(siginfo_t *info, struct cpt_siginfo_image *si)
 		info->si_ptr = cpt_ptr_import(si->cpt_sigval);
 		break;
 	}
+
+fill_common:
 	info->si_signo = si->cpt_signo;
 	info->si_errno = si->cpt_errno;
 	info->si_code = si->cpt_code;
@@ -199,6 +207,43 @@ static int restore_sigqueue(struct task_struct *tsk,
 	return 0;
 }
 
+static int fixup_task_pid(cpt_context_t *ctx, struct task_struct *tsk,
+			  enum pid_type type, pid_t vpid)
+{
+	static const char *pid_type_name[] = {
+		[PIDTYPE_PGID]	= "PGRP",
+		[PIDTYPE_SID]	= "SID",
+	};
+	struct pid *pid;
+
+	BUG_ON(type != PIDTYPE_PGID && type != PIDTYPE_SID);
+
+	if (__task_pid_nr_ns(tsk, type, NULL) == vpid)
+		return 0;
+
+	if (!thread_group_leader(tsk)) {
+		eprintk_ctx("lost thread group leader " CPT_FID "\n",
+			    CPT_TID(tsk));
+		return -EINVAL;
+	}
+
+	pid = find_get_pid(vpid);
+	if (!pid)
+		pid = alloc_pid(current->nsproxy->pid_ns, vpid);
+	if (!pid) {
+		eprintk_ctx("illegal %s " CPT_FID "\n",
+			    pid_type_name[type], CPT_TID(tsk));
+		return -EINVAL;
+	}
+
+	write_lock_irq(&tasklist_lock);
+	detach_pid(tsk, type);
+	attach_pid(tsk, type, pid);
+	write_unlock_irq(&tasklist_lock);
+
+	return 0;
+}
+
 int rst_process_linkage(cpt_context_t *ctx)
 {
 	cpt_object_t *obj;
@@ -206,56 +251,21 @@ int rst_process_linkage(cpt_context_t *ctx)
 	for_each_object(obj, CPT_OBJ_TASK) {
 		struct task_struct *tsk = obj->o_obj;
 		struct cpt_task_image *ti = obj->o_image;
+		int err;
 
 		if (tsk == NULL) {
 			eprintk_ctx("task %u(%s) is missing\n", ti->cpt_pid, ti->cpt_comm);
 			return -EINVAL;
 		}
 
-		if (task_pgrp_vnr(tsk) != ti->cpt_pgrp) {
-			struct pid *pid;
+		err = fixup_task_pid(ctx, tsk, PIDTYPE_PGID, ti->cpt_pgrp);
+		if (err)
+			return err;
 
-			pid = alloc_vpid_safe(ti->cpt_pgrp);
-			if (!pid) {
-				eprintk_ctx("illegal PGRP " CPT_FID "\n", CPT_TID(tsk));
-				return -EINVAL;
-			}
+		err = fixup_task_pid(ctx, tsk, PIDTYPE_SID, ti->cpt_session);
+		if (err)
+			return err;
 
-			write_lock_irq(&tasklist_lock);
-			detach_pid(tsk, PIDTYPE_PGID);
-			if (thread_group_leader(tsk))
-				attach_pid(tsk, PIDTYPE_PGID, pid);
-			else
-				put_pid(pid);
-			write_unlock_irq(&tasklist_lock);
-
-			if (task_pgrp_vnr(tsk) != pid_vnr(pid)) {
-				eprintk_ctx("cannot set PGRP " CPT_FID "\n", CPT_TID(tsk));
-				return -EINVAL;
-			}
-		}
-		if (task_session_vnr(tsk) != ti->cpt_session) {
-			struct pid *pid;
-
-			pid = alloc_vpid_safe(ti->cpt_session);
-			if (!pid) {
-				eprintk_ctx("illegal SID " CPT_FID "\n", CPT_TID(tsk));
-				return -EINVAL;
-			}
-
-			write_lock_irq(&tasklist_lock);
-			detach_pid(tsk, PIDTYPE_SID);
-			if (thread_group_leader(tsk))
-				attach_pid(tsk, PIDTYPE_SID, pid);
-			else
-				put_pid(pid);
-			write_unlock_irq(&tasklist_lock);
-
-			if (task_session_vnr(tsk) != pid_vnr(pid)) {
-				eprintk_ctx("cannot set SID " CPT_FID "\n", CPT_TID(tsk));
-				return -EINVAL;
-			}
-		}
 		if (ti->cpt_old_pgrp > 0 && !tsk->signal->tty_old_pgrp) {
 			struct pid *pid;
 
@@ -271,23 +281,14 @@ int rst_process_linkage(cpt_context_t *ctx)
 	return 0;
 }
 
-struct pid *alloc_vpid_safe(pid_t vnr)
+struct pid *rst_alloc_pid(pid_t vnr)
 {
 	struct pid *pid;
 
-	pid = alloc_pid(current->nsproxy->pid_ns, vnr);
-	if (!pid)
-		pid = find_get_pid(vnr);
-	return pid;
-}
-
-struct pid *alloc_dummy_vpid(pid_t vnr)
-{
-	struct pid *pid;
-
-	pid = find_get_pid(vnr);
+	pid = vnr ? find_get_pid(vnr) : NULL;
 	if (pid)
 		return pid;
+
 	/*
 	 * The pid belongs to a dead process. Allocate a new detached pid by
 	 * clearing any references to it in the pidmap after allocation.
@@ -356,8 +357,7 @@ int restore_signal_struct(struct cpt_task_image *ti, int *exiting, cpt_context_t
 	current->signal->tty_old_pgrp = NULL;
 	if ((int)si->cpt_old_pgrp > 0) {
 		if (si->cpt_old_pgrp_type == CPT_PGRP_STRAY) {
-			current->signal->tty_old_pgrp =
-					alloc_pid(current->nsproxy->pid_ns, 0);
+			current->signal->tty_old_pgrp = rst_alloc_pid(0);
 			if (!current->signal->tty_old_pgrp) {
 				eprintk_ctx("failed to allocate stray tty_old_pgrp\n");
 				cpt_release_buf(ctx);
@@ -366,7 +366,7 @@ int restore_signal_struct(struct cpt_task_image *ti, int *exiting, cpt_context_t
 		} else {
 			struct pid *pid;
 
-			pid = alloc_vpid_safe(si->cpt_old_pgrp);
+			pid = rst_alloc_pid(si->cpt_old_pgrp);
 			if (!pid)
 				dprintk_ctx("forward old tty PGID\n");
 			current->signal->tty_old_pgrp = pid;
@@ -439,6 +439,17 @@ int restore_signal_struct(struct cpt_task_image *ti, int *exiting, cpt_context_t
 		}
 	}
 	current->signal->flags = 0;
+	if (cpt_object_has(si, cpt_flags)) {
+		if (si->cpt_flags & CPT_SIGNAL_STOP_STOPPED)
+			current->signal->flags |= SIGNAL_STOP_STOPPED;
+		if (si->cpt_flags & CPT_SIGNAL_STOP_CONTINUED)
+			current->signal->flags |= SIGNAL_STOP_CONTINUED;
+		if (si->cpt_flags & CPT_SIGNAL_CLD_STOPPED)
+			current->signal->flags |= SIGNAL_CLD_STOPPED;
+		if (si->cpt_flags & CPT_SIGNAL_CLD_CONTINUED)
+			current->signal->flags |= SIGNAL_CLD_CONTINUED;
+	}
+
 	*exiting = si->cpt_group_exit;
 	current->signal->group_exit_code = si->cpt_group_exit_code;
 	if (si->cpt_group_exit_task) {
@@ -626,7 +637,8 @@ static int restore_posix_timer_list(struct cpt_object_hdr *tli, loff_t pos,
 			dump_time = ctx->start_time;
 
 		do_gettimespec(&delta_time);
-		if (which_clock == CLOCK_REALTIME) {
+		if (which_clock == CLOCK_REALTIME ||
+		    which_clock == CLOCK_BOOTTIME) {
 			delta_time = timespec_sub(delta_time, dump_time);
 		} else if (which_clock == CLOCK_MONOTONIC) {
 			/* delta_time = now - rst_start_time */
@@ -1302,23 +1314,13 @@ static int restore_task_fpu(struct task_struct *tsk,
 	switch(b->cpt_content)
 	{
 	case CPT_CONTENT_X86_XSAVE:
-		if (b->cpt_size != xstate_size) {
-			eprintk_ctx(KERN_ERR "FPU state size unsupported: %d"
-					" (current: %d)\n", b->cpt_size,
-					xstate_size);
-			goto fault;
-		}
-
-		size = xstate_size;
-		break;
 	case CPT_CONTENT_X86_FPUSTATE:
-		if (!cpu_has_fxsr) {
-			eprintk_ctx(KERN_ERR "CPU doesn't support FXSR\n");
+		if (!cpu_has_xsave && !cpu_has_fxsr) {
+			eprintk_ctx(KERN_ERR "CPU doesn't support XSAVE/FXSR\n");
 			goto fault;
 		}
 
-
-		size = sizeof(struct i387_fxsave_struct);
+		size = min_t(unsigned int, xstate_size, b->cpt_size);
 		break;
 #ifndef CONFIG_X86_64
 	case CPT_CONTENT_X86_FPUSTATE_OLD:
@@ -1340,6 +1342,13 @@ static int restore_task_fpu(struct task_struct *tsk,
 
 	memcpy(tsk->thread.xstate,
 		(void*)b + b->cpt_hdrlen, size);
+
+	/*
+	 * xrstor ignores x87 and SSE states unless the corresponding bits are
+	 * set in the xsave state component bitmap
+	 */
+	if (cpu_has_xsave && b->cpt_content != CPT_CONTENT_X86_XSAVE)
+		tsk->thread.xstate->xsave.xsave_hdr.xstate_bv = XSTATE_FPSSE;
 
 	if (b->cpt_content == CPT_CONTENT_X86_FPUSTATE)
 		rst_apply_mxcsr_mask(tsk);
@@ -1383,11 +1392,17 @@ int rst_restore_process(struct cpt_context *ctx)
 			return -EFAULT;
 		}
 
+		if ((ti->cpt_state == __TASK_STOPPED) &&
+				(ctx->image_version >= CPT_VERSION_18) &&
+				(ctx->image_version < CPT_VERSION_20)) {
+			ti->cpt_state = TASK_STOPPED;
+		}
+
 		wait_task_inactive(tsk, 0);
 #ifdef CONFIG_BEANCOUNTERS
 		tbc = &tsk->task_bc;
 		new_bc = rst_lookup_ubc(ti->cpt_exec_ub, ctx);
-		old_bc = tbc->exec_ub;
+		old_bc = top_beancounter(tbc->exec_ub);
 		put_beancounter(new_bc);
 #endif
 		regs = task_pt_regs(tsk);
@@ -1502,6 +1517,7 @@ int rst_restore_process(struct cpt_context *ctx)
 			tsk->signal->it_real_incr =
 			ktime_add_ns(tsk->signal->it_real_incr, ti->cpt_it_real_incr*TICK_NSEC);
 		}
+		memset(tsk->signal->it, 0, sizeof(tsk->signal->it));
 		tsk->signal->it[CPUCLOCK_PROF].incr = ti->cpt_it_prof_incr;
 		tsk->signal->it[CPUCLOCK_VIRT].incr = ti->cpt_it_virt_incr; 
 		tsk->signal->it[CPUCLOCK_PROF].expires = prof_exp = ti->cpt_it_prof_value;
@@ -1716,8 +1732,7 @@ int rst_restore_process(struct cpt_context *ctx)
 			 */
 			tsk->last_siginfo = &ri->last_siginfo;
 			ri->hooks |= (1<<HOOK_LSI);
-			if (lsi)
-				decode_siginfo(tsk->last_siginfo, lsi);
+			decode_siginfo(tsk->last_siginfo, lsi);
 		}
 
 		/* PF_FREEZING is set in hook() to prevent task from being
@@ -1752,8 +1767,15 @@ int rst_restore_process(struct cpt_context *ctx)
 		else if (ti->cpt_state & (EXIT_ZOMBIE|EXIT_DEAD)) {
 			tsk->signal->it[CPUCLOCK_VIRT].expires = 0;
 			tsk->signal->it[CPUCLOCK_PROF].expires = 0;
-			if (tsk->state != TASK_DEAD)
-				eprintk_ctx("oops, schedule() did not make us dead\n");
+			if (tsk->state != TASK_DEAD) {
+				eprintk_ctx("OVZ#3085 debug:\n"
+				"oops, schedule() did not make us dead\n"
+				"tsk %p pid %d state 0x%lx exit_state 0x%x "
+				"cpt_state 0x%llx\n",
+				tsk, tsk->pid, tsk->state, tsk->exit_state,
+				ti->cpt_state);
+				sched_show_task(tsk);
+			}
 		}
 
 		if (thread_group_leader(tsk) &&

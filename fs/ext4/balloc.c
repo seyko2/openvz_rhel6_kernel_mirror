@@ -204,6 +204,7 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 	unsigned int offset;
 	ext4_group_t ngroups = ext4_get_groups_count(sb);
 	struct ext4_group_desc *desc;
+	struct buffer_head *gd_bh;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
 	if (block_group >= ngroups) {
@@ -215,7 +216,10 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 
 	group_desc = block_group >> EXT4_DESC_PER_BLOCK_BITS(sb);
 	offset = block_group & (EXT4_DESC_PER_BLOCK(sb) - 1);
-	if (!sbi->s_group_desc[group_desc]) {
+	rcu_read_lock();
+	gd_bh = rcu_dereference(sbi->s_group_desc)->bh[group_desc];
+	rcu_read_unlock();
+	if (!gd_bh) {
 		ext4_error(sb, "Group descriptor not loaded - "
 			   "block_group = %u, group_desc = %u, desc = %u",
 			   block_group, group_desc, offset);
@@ -223,17 +227,17 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 	}
 
 	desc = (struct ext4_group_desc *)(
-		(__u8 *)sbi->s_group_desc[group_desc]->b_data +
-		offset * EXT4_DESC_SIZE(sb));
+		(__u8 *)gd_bh->b_data + offset * EXT4_DESC_SIZE(sb));
 	if (bh)
-		*bh = sbi->s_group_desc[group_desc];
+		*bh = gd_bh;
+
 	return desc;
 }
 EXPORT_SYMBOL(ext4_get_group_desc);
 
 static int ext4_valid_block_bitmap(struct super_block *sb,
 					struct ext4_group_desc *desc,
-					unsigned int block_group,
+					ext4_group_t block_group,
 					struct buffer_head *bh)
 {
 	ext4_grpblk_t offset;
@@ -311,12 +315,12 @@ ext4_read_block_bitmap(struct super_block *sb, ext4_group_t block_group)
 	}
 
 	if (bitmap_uptodate(bh))
-		return bh;
+		goto verify;
 
 	lock_buffer(bh);
 	if (bitmap_uptodate(bh)) {
 		unlock_buffer(bh);
-		return bh;
+		goto verify;
 	}
 	ext4_lock_group(sb, block_group);
 	if (desc->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)) {
@@ -335,7 +339,7 @@ ext4_read_block_bitmap(struct super_block *sb, ext4_group_t block_group)
 		 */
 		set_bitmap_uptodate(bh);
 		unlock_buffer(bh);
-		return bh;
+		goto verify;
 	}
 	/*
 	 * submit the buffer_head for read. We can
@@ -351,12 +355,16 @@ ext4_read_block_bitmap(struct super_block *sb, ext4_group_t block_group)
 			    block_group, bitmap_blk);
 		return NULL;
 	}
-	ext4_valid_block_bitmap(sb, desc, block_group, bh);
+verify:
+	if (ext4_valid_block_bitmap(sb, desc, block_group, bh))
+		return bh;
 	/*
 	 * file system mounted not to panic on error,
-	 * continue with corrupt bitmap
+	 * return NULL so that allocator try to use
+	 * different block group.
 	 */
-	return bh;
+	put_bh(bh);
+	return NULL;
 }
 
 /**

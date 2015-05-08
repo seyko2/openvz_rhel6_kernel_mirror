@@ -447,10 +447,10 @@ static struct request_sock *rst_reqsk_alloc(unsigned short family)
 	struct request_sock *req;
 
 	if (family == AF_INET)
-		req = reqsk_alloc(&tcp_request_sock_ops);
+		req = inet_reqsk_alloc(&tcp_request_sock_ops);
 	else
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
-		req = reqsk_alloc(&tcp6_request_sock_ops);
+		req = inet6_reqsk_alloc(&tcp6_request_sock_ops);
 #else
 		return ERR_PTR(-EINVAL);
 #endif

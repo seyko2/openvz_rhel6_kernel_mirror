@@ -22,9 +22,8 @@ struct task_beancounter {
 	unsigned long oom_generation;
 };
 
-extern int set_task_exec_ub(struct task_struct *, struct user_beancounter *);
-
-#define get_task_ub(__task)	((__task)->task_bc.task_ub)
+#define get_task_ub(p)		((p)->task_bc.task_ub)
+#define get_task_ub_top(p)	top_beancounter(get_task_ub(p))
 
 extern struct user_beancounter ub0;
 #define get_ub0()	(&ub0)
@@ -38,6 +37,7 @@ extern struct user_beancounter ub0;
 	} while (0)
 
 #define get_exec_ub()		(current->task_bc.exec_ub)
+#define get_exec_ub_top()	top_beancounter(get_exec_ub())
 #define set_exec_ub(__newub)		\
 ({					\
 	struct user_beancounter *old;	\
@@ -53,7 +53,9 @@ extern struct user_beancounter ub0;
 
 #define get_ub0()		(NULL)
 #define get_exec_ub()		(NULL)
+#define get_exec_ub_top()	(NULL)
 #define get_task_ub(task)	(NULL)
+#define get_task_ub_top(task)	(NULL)
 #define set_exec_ub(__ub)	(NULL)
 #define ub_save_context(t)	do { } while (0)
 #define ub_restore_context(t)	do { } while (0)

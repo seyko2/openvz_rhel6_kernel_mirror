@@ -147,26 +147,9 @@ int copy_namespaces(unsigned long flags, struct task_struct *tsk,
 				CLONE_NEWPID | CLONE_NEWNET)))
 		return 0;
 
-	if (!force_admin) {
-		if (!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN)) {
-			err = -EPERM;
-			goto out;
-		}
-
-		if (!capable(CAP_SYS_ADMIN) &&
-		    (flags & (CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWNET | CLONE_NEWPID))) {
-			err = -EPERM;
-			goto out;
-		}
-
-		/*
-		 * netns-vs-sysfs is deadly broken, thus new namespace
-		 * (even in ve0) can bring the node down
-		 */
-		if (flags & CLONE_NEWNET) {
-			err = -EINVAL;
-			goto out;
-		}
+	if (!force_admin && !capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN)) {
+		err = -EPERM;
+		goto out;
 	}
 
 	/*
@@ -241,11 +224,6 @@ int unshare_nsproxy_namespaces(unsigned long unshare_flags,
 	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN))
 		return -EPERM;
 
-	if (!capable(CAP_SYS_ADMIN) &&
-	    (unshare_flags & (CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWNET |
-			      CLONE_NEWPID)))
-		return -EPERM;
-
 	*new_nsp = create_new_namespaces(unshare_flags, current,
 				new_fs ? new_fs : current->fs);
 	if (IS_ERR(*new_nsp)) {
@@ -298,7 +276,7 @@ SYSCALL_DEFINE2(setns, int, fd, int, nstype)
 	struct file *file;
 	int err;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN))
 		return -EPERM;
 
 	file = proc_ns_fget(fd);

@@ -16,6 +16,9 @@
 #include <linux/mm.h>
 #include <linux/err.h>
 #include <linux/module.h>
+#include <linux/utsname.h>
+#include <linux/version.h>
+#include <linux/ve.h>
 
 #include <bc/vmpages.h>
 
@@ -309,6 +312,115 @@ int __init sysenter_setup(void)
 EXPORT_SYMBOL_GPL(VDSO32_SYSENTER_RETURN);
 EXPORT_SYMBOL_GPL(VDSO32_PRELINK);
 
+static DEFINE_MUTEX(vdso32_mutex);
+
+static struct page **uts_prep_vdso_pages_locked(int map)
+{
+	struct uts_namespace *uts_ns = current->nsproxy->uts_ns;
+	struct mm_struct *mm = current->mm;
+	struct ve_struct *ve = get_exec_env();
+	struct page **pages = vdso32_pages;
+	int n1, n2, n3, new_version;
+	struct page **new_pages, **p;
+	void *addr;
+
+	/*
+	 * Simply reuse vDSO pages if we can.
+	 */
+	if (uts_ns == &init_uts_ns)
+		return vdso32_pages;
+
+	/*
+	 * Dirty lockless hack. Strictly speaking
+	 * we need to return @p here if it's non-nil,
+	 * but since there only one trasition possible
+	 * { =0 ; !=0 } we simply return @uts_ns->vdso32.pages
+	 */
+	p = ACCESS_ONCE(uts_ns->vdso32.pages);
+	smp_read_barrier_depends();
+	if (p)
+		return uts_ns->vdso32.pages;
+
+	up_write(&mm->mmap_sem);
+
+	if (sscanf(uts_ns->name.release, "%d.%d.%d", &n1, &n2, &n3) == 3) {
+		/*
+		 * If there were no changes on version simply reuse
+		 * preallocated one.
+		 */
+		new_version = KERNEL_VERSION(n1, n2, n3);
+		if (new_version == LINUX_VERSION_CODE)
+			goto out;
+#ifdef CONFIG_X86_32
+		else {
+			/*
+			 * Native x86-32 mode requires vDSO runtime
+			 * relocations applied which is not supported
+			 * in the old vanilla kernels, moreover even
+			 * being ported we would break compatibility
+			 * with rhel5 vdso which has addresses hardcoded.
+			 * Thus simply warn about this problem and
+			 * continue execution without virtualization.
+			 * After all i686 is pretty outdated nowadays.
+			 */
+			pr_warn_once("x86-32 vDSO virtualization is not supported.");
+			goto out;
+		}
+#endif
+	} else {
+		/*
+		 * If admin is passed malformed string here
+		 * lets warn him once but continue working
+		 * not using vDSO virtualization at all. It's
+		 * better than walk out with error.
+		 */
+		pr_warn_once("Wrong release uts name format detected."
+			     " Ignoring vDSO virtualization.\n");
+		goto out;
+	}
+
+	mutex_lock(&vdso32_mutex);
+	if (uts_ns->vdso32.pages) {
+		pages = uts_ns->vdso32.pages;
+		goto out_unlock;
+	}
+
+	uts_ns->vdso32.nr_pages	= 1;
+	uts_ns->vdso32.size	= PAGE_SIZE;
+	uts_ns->vdso32.version_off= (unsigned long)VDSO32_SYMBOL(0, linux_version_code);
+	new_pages		= kmalloc(sizeof(struct page *), GFP_KERNEL);
+	if (!new_pages) {
+		pr_err("Can't allocate vDSO pages array for VE %d\n", ve->veid);
+		pages = ERR_PTR(-ENOMEM);
+		goto out_unlock;
+	}
+
+	new_pages[0] = alloc_page(GFP_KERNEL);
+	if (!new_pages[0]) {
+		pr_err("Can't allocate page for VE %d\n", ve->veid);
+		kfree(new_pages);
+		pages = ERR_PTR(-ENOMEM);
+		goto out_unlock;
+	}
+
+	copy_page(page_address(new_pages[0]), page_address(vdso32_pages[0]));
+
+	addr = page_address(new_pages[0]);
+	*((int *)(addr + uts_ns->vdso32.version_off)) = new_version;
+	smp_wmb();
+
+	pages = uts_ns->vdso32.pages = new_pages;
+
+	pr_debug("vDSO version transition %d -> %d for VE %d\n",
+		 LINUX_VERSION_CODE, new_version, ve->veid);
+
+out_unlock:
+	mutex_unlock(&vdso32_mutex);
+out:
+	down_write(&mm->mmap_sem);
+	return pages;
+}
+
 /* Setup a VMA at program startup for the vsyscall page */
 int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp,
 				unsigned long map_address)
@@ -351,13 +463,19 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp,
 	current->mm->context.vdso = (void *)addr;
 
 	if (compat_uses_vma || !compat || map_address) {
+		struct page **pages = uts_prep_vdso_pages_locked(compat);
+		if (IS_ERR(pages)) {
+			ret = PTR_ERR(pages);
+			goto up_fail;
+		}
+
 		/*
 		 * MAYWRITE to allow gdb to COW and set breakpoints
 		 */
 		ret = install_special_mapping(mm, addr, PAGE_SIZE,
 					      VM_READ|VM_EXEC|
 					      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
-					      vdso32_pages);
+					      pages);
 
 		if (ret)
 			goto up_fail;

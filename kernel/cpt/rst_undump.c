@@ -66,7 +66,7 @@ struct thr_context {
 
 static int rst_clone_children(cpt_object_t *obj, struct cpt_context *ctx);
 
-static int vps_rst_veinfo(struct cpt_context *ctx)
+static int vps_rst_veinfo(struct cpt_task_image *init_ti, struct cpt_context *ctx)
 {
 	int err;
 	struct cpt_veinfo_image *i;
@@ -127,6 +127,15 @@ static int vps_rst_veinfo(struct cpt_context *ctx)
 	if (i->vpid_max && i->vpid_max < PID_MAX_LIMIT)
 		ve->ve_ns->pid_ns->pid_max = i->vpid_max;
 
+	if (cpt_object_has(i, aio_max_nr))
+		ve->aio_max_nr = i->aio_max_nr;
+
+	if (cpt_object_has(i, cpt_ve_bcap))
+		memcpy(&get_exec_env()->ve_cap_bset, &i->cpt_ve_bcap,
+		       sizeof(kernel_cap_t));
+	else
+		memcpy(&get_exec_env()->ve_cap_bset, &init_ti->cpt_ecap,
+		       sizeof(kernel_cap_t));
 	err = 0;
 out_rel:
 	cpt_release_buf(ctx);
@@ -177,6 +186,25 @@ static int vps_rst_reparent_root(cpt_object_t *obj, struct cpt_context *ctx)
 	return err < 0 ? err : 0;
 }
 
+int set_mlock_creds(int cap)
+{
+	struct cred *cred;
+
+	cred = prepare_creds();
+	if (cred == NULL)
+		goto err_cred;
+
+	if (cap)
+		cap_raise(cred->cap_effective, CAP_IPC_LOCK);
+	else
+		cap_lower(cred->cap_effective, CAP_IPC_LOCK);
+
+	commit_creds(cred);
+	return 0;
+
+err_cred:
+	return -ENOMEM;
+}
 
 static int rst_creds(struct cpt_task_image *ti, struct cpt_context *ctx)
 {
@@ -221,6 +249,9 @@ static int rst_creds(struct cpt_task_image *ti, struct cpt_context *ctx)
 			sizeof(cred->cap_inheritable));
 	memcpy(&cred->cap_permitted, &ti->cpt_pcap,
 			sizeof(cred->cap_permitted));
+	if (cpt_object_has(ti, cpt_bcap))
+		memcpy(&cred->cap_bset, &ti->cpt_bcap,
+				sizeof(cred->cap_bset));
 
 	if (ctx->image_version < CPT_VERSION_26)
 		cred->securebits = (ti->cpt_keepcap != 0) ?
@@ -273,8 +304,6 @@ static int hook(void *arg)
 
 		set_bit(VE_RESTORE, &get_exec_env()->flags);
 
-		memcpy(&get_exec_env()->ve_cap_bset, &ti->cpt_ecap, sizeof(kernel_cap_t));
-
 		if (ctx->statusfile) {
 			fput(ctx->statusfile);
 			ctx->statusfile = NULL;
@@ -303,7 +332,7 @@ static int hook(void *arg)
 			eprintk_ctx("CPT: lock fd is closed incorrectly: %d\n", err);
 			goto out;
 		}
-		err = vps_rst_veinfo(ctx);
+		err = vps_rst_veinfo(ti, ctx);
 		if (err) {
 			eprintk_ctx("rst_veinfo: %d\n", err);
 			goto out;
@@ -434,6 +463,8 @@ static int hook(void *arg)
 			
 			e.tv64 = ti->cpt_restart.arg2;
 			e = ktime_sub(e, timespec_to_ktime(ctx->delta_time));
+			if (e.tv64 < 0)
+				e = ktime_set(0, 0);
 			ts = ns_to_timespec(ktime_to_ns(e));
 
 			rb = &task_thread_info(current)->restart_block;
@@ -880,7 +911,7 @@ int vps_rst_undump(struct cpt_context *ctx)
 	int err;
 	unsigned long umask;
 
-	set_ubc_unlimited(ctx, get_exec_ub());
+	set_ubc_unlimited(ctx, get_exec_ub_top());
 
 	err = rst_open_dumpfile(ctx);
 	if (err)

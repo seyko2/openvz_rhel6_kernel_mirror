@@ -40,6 +40,7 @@
 #include <linux/tracehook.h>
 #include <linux/futex.h>
 #include <linux/compat.h>
+#include <linux/kthread.h>
 #include <linux/task_io_accounting_ops.h>
 #include <linux/rcupdate.h>
 #include <linux/ptrace.h>
@@ -109,20 +110,25 @@ int nr_processes(void)
 }
 
 #ifndef __HAVE_ARCH_TASK_STRUCT_ALLOCATOR
-# define alloc_task_struct()	kmem_cache_alloc(task_struct_cachep, GFP_KERNEL)
-# define free_task_struct(tsk)	kmem_cache_free(task_struct_cachep, (tsk))
+# define alloc_task_struct_node(node)		\
+		kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node)
+# define free_task_struct(tsk)			\
+		kmem_cache_free(task_struct_cachep, (tsk))
 static struct kmem_cache *task_struct_cachep;
 #endif
 
 #ifndef __HAVE_ARCH_THREAD_INFO_ALLOCATOR
-static inline struct thread_info *alloc_thread_info(struct task_struct *tsk)
+static struct thread_info *alloc_thread_info_node(struct task_struct *tsk,
+						  int node)
 {
 #ifdef CONFIG_DEBUG_STACK_USAGE
 	gfp_t mask = GFP_KERNEL | __GFP_ZERO;
 #else
 	gfp_t mask = GFP_KERNEL;
 #endif
-	return (struct thread_info *)__get_free_pages(mask, THREAD_SIZE_ORDER);
+	struct page *page = alloc_pages_node(node, mask, THREAD_SIZE_ORDER);
+
+	return page ? page_address(page) : NULL;
 }
 
 static inline void free_thread_info(struct thread_info *ti)
@@ -239,16 +245,16 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	struct task_struct *tsk;
 	struct thread_info *ti;
 	unsigned long *stackend;
-
+	int node = tsk_fork_get_node(orig);
 	int err;
 
 	prepare_to_copy(orig);
 
-	tsk = alloc_task_struct();
+	tsk = alloc_task_struct_node(node);
 	if (!tsk)
 		return NULL;
 
-	ti = alloc_thread_info(tsk);
+	ti = alloc_thread_info_node(tsk, node);
 	if (!ti) {
 		free_task_struct(tsk);
 		return NULL;
@@ -473,7 +479,7 @@ static inline void set_mm_ub(struct mm_struct *mm, struct user_beancounter *ub)
 static inline void put_mm_ub(struct mm_struct *mm)
 {
 	VM_BUG_ON(mm->page_table_precharge);
-	ub_kmem_uncharge(mm->mm_ub,
+	ub_kmem_uncharge(mm_ub_top(mm),
 			mm_cachep->objuse + (mm->nr_ptds << PAGE_SHIFT));
 	put_beancounter_longterm(mm->mm_ub);
 	mm->mm_ub = NULL;
@@ -550,7 +556,7 @@ struct mm_struct * mm_alloc(void)
 {
 	struct mm_struct * mm;
 
-	mm = allocate_mm(get_exec_ub());
+	mm = allocate_mm(get_exec_ub_top());
 	if (mm) {
 		memset(mm, 0, sizeof(*mm));
 		set_mm_ub(mm, get_exec_ub());
@@ -601,7 +607,7 @@ void mmput(struct mm_struct *mm)
 		put_swap_token(mm);
 		if (mm->binfmt)
 			module_put(mm->binfmt->module);
-		if (mm->global_oom || mm->ub_oom)
+		if (mm->oom_ctrl)
 			ub_oom_mm_dead(mm);
 		put_mm_ub(mm);
 		mmdrop(mm);
@@ -730,7 +736,7 @@ struct mm_struct *dup_mm(struct task_struct *tsk)
 	if (!oldmm)
 		return NULL;
 
-	mm = allocate_mm(tsk->task_bc.task_ub);
+	mm = allocate_mm(get_task_ub_top(tsk));
 	if (!mm)
 		goto fail_nomem;
 
@@ -740,14 +746,13 @@ struct mm_struct *dup_mm(struct task_struct *tsk)
 	mm->token_priority = 0;
 	mm->last_interval = 0;
 
-	mm->global_oom = 0;
-	mm->ub_oom = 0;
+	mm->oom_ctrl = NULL;
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	mm->pmd_huge_pte = NULL;
 #endif
 
-	set_mm_ub(mm, tsk->task_bc.task_ub);
+	set_mm_ub(mm, get_task_ub(tsk));
 	if (!mm_init(mm, tsk))
 		goto fail_nomem;
 
@@ -1022,6 +1027,10 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 	sig->oom_score_adj = current->signal->oom_score_adj;
 	sig->oom_score_adj_min = current->signal->oom_score_adj_min;
 
+	sig->has_child_subreaper = current->signal->has_child_subreaper ||
+				   current->signal->is_child_subreaper;
+	sig->is_child_subreaper = 0;
+
 	return 0;
 }
 
@@ -1142,7 +1151,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 		goto fork_out;
 
 	retval = -ENOMEM;
-	if (ub_task_charge(get_exec_ub()))
+	if (ub_task_charge(get_exec_ub_top()))
 		goto fork_out;
 
 	p = dup_task_struct(current);
@@ -1355,6 +1364,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	 */
 	p->group_leader = p;
 	INIT_LIST_HEAD(&p->thread_group);
+	INIT_HLIST_HEAD(&p->task_works);
 
 	/* Now that the task is set up, run cgroup callbacks if
 	 * necessary. We need to run them before the task is visible
@@ -1484,7 +1494,7 @@ bad_fork_free:
 	ub_task_put(p);
 	free_task(p);
 bad_fork_uncharge:
-	ub_task_uncharge(get_exec_ub());
+	ub_task_uncharge(get_exec_ub_top());
 fork_out:
 	return ERR_PTR(retval);
 }

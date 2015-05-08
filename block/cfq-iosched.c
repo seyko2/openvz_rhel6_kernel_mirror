@@ -1768,7 +1768,7 @@ static void cfq_bio_merged(struct request_queue *q, struct request *req,
 	cfq_blkiocg_update_io_merged_stats(&(RQ_CFQG(req))->blkg,
 					bio_data_dir(bio), cfq_bio_sync(bio));
 
-	if (get_exec_ub() != (RQ_CFQG(req))->blkg.blk_ub)
+	if (get_exec_ub_top() != (RQ_CFQG(req))->blkg.blk_ub)
 		ub_writeback_io(0, bio_sectors(bio));
 }
 
@@ -3327,7 +3327,7 @@ static int cfq_cic_link(struct cfq_data *cfqd, struct io_context *ioc,
 	unsigned long flags;
 	int ret;
 
-	ret = radix_tree_preload(gfp_mask);
+	ret = radix_tree_maybe_preload(gfp_mask);
 	if (!ret) {
 		cic->ioc = ioc;
 		cic->key = cfqd;
@@ -3640,7 +3640,7 @@ static void cfq_insert_request(struct request_queue *q, struct request *rq)
 			&cfqd->serving_group->blkg, rq_data_dir(rq),
 			rq_is_sync(rq));
 
-	if (get_exec_ub() != (RQ_CFQG(rq))->blkg.blk_ub)
+	if (get_exec_ub_top() != (RQ_CFQG(rq))->blkg.blk_ub)
 		ub_writeback_io(1, blk_rq_sectors(rq));
 
 	virtinfo_notifier_call_irq(VITYPE_IO, VIRTINFO_IO_OP_ACCOUNT, NULL);

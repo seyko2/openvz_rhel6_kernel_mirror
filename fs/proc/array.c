@@ -322,6 +322,7 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
 {
 	const struct cred *cred;
 	kernel_cap_t cap_inheritable, cap_permitted, cap_effective, cap_bset;
+	struct ve_struct *ve = get_exec_env();
 
 	rcu_read_lock();
 	cred = __task_cred(p);
@@ -330,6 +331,26 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
 	cap_effective	= cred->cap_effective;
 	cap_bset	= cred->cap_bset;
 	rcu_read_unlock();
+
+	if (!ve_is_super(ve)) {
+		if (!cap_raised(ve->ve_cap_bset, CAP_NET_ADMIN))
+			cap_swap_all(CAP_VE_NET_ADMIN, CAP_NET_ADMIN,
+				      &cap_effective,
+				      &cap_inheritable,
+				      &cap_permitted,
+				      &cred->cap_effective,
+				      &cred->cap_inheritable,
+				      &cred->cap_permitted);
+
+		if (!cap_raised(ve->ve_cap_bset, CAP_SYS_ADMIN))
+			cap_swap_all(CAP_VE_SYS_ADMIN, CAP_SYS_ADMIN,
+				      &cap_effective,
+				      &cap_inheritable,
+				      &cap_permitted,
+				      &cred->cap_effective,
+				      &cred->cap_inheritable,
+				      &cred->cap_permitted);
+	}
 
 	render_cap_t(m, "CapInh:\t", &cap_inheritable);
 	render_cap_t(m, "CapPrm:\t", &cap_permitted);
@@ -341,10 +362,10 @@ static inline void task_cap(struct seq_file *m, struct task_struct *p)
 static inline void ub_dump_task_info(struct task_struct *tsk,
 		char *stsk, int ltsk, char *smm, int lmm)
 {
-	snprintf(stsk, ltsk, "%u", tsk->task_bc.task_ub->ub_uid);
+	snprintf(stsk, ltsk, "%u", get_task_ub_top(tsk)->ub_uid);
 	task_lock(tsk);
 	if (tsk->mm)
-		snprintf(smm, lmm, "%u", tsk->mm->mm_ub->ub_uid);
+		snprintf(smm, lmm, "%u", mm_ub_top(tsk->mm)->ub_uid);
 	else
 		strncpy(smm, "N/A", lmm);
 	task_unlock(tsk);

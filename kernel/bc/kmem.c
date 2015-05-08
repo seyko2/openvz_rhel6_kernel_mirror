@@ -133,7 +133,7 @@ int ub_slab_charge(struct kmem_cache *cachep, void *objp, gfp_t flags)
 	unsigned int size;
 	struct user_beancounter *ub;
 
-	ub = get_beancounter(get_exec_ub());
+	ub = get_beancounter(get_exec_ub_top());
 	if (ub == NULL)
 		return 0;
 

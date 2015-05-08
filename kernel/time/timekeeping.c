@@ -1336,6 +1336,7 @@ ktime_t ktime_get_monotonic_offset(void)
 
 	return timespec_to_ktime(wtom);
 }
+EXPORT_SYMBOL_GPL(ktime_get_monotonic_offset);
 
 /*
  * The 64-bit jiffies value is not atomic - you MUST NOT read it
@@ -1379,7 +1380,7 @@ void get_xtime_and_monotonic_and_sleep_offset(struct timespec *xtim,
  *
  * RHEL6: We do not have real vs boot clocks in RHEL.
  */
-ktime_t ktime_get_update_offsets(ktime_t *offs_real)
+ktime_t ktime_get_update_offsets(ktime_t *offs_real, ktime_t *offs_boot)
 {
 	ktime_t now;
 	unsigned int seq;
@@ -1395,6 +1396,7 @@ ktime_t ktime_get_update_offsets(ktime_t *offs_real)
 		nsecs += arch_gettimeoffset();
 
 		*offs_real = timekeeper.offs_real;
+		*offs_boot = timekeeper.offs_boot;
 	} while (read_seqretry(&timekeeper.lock, seq));
 
 	now = ktime_add_ns(ktime_set(secs, 0), nsecs);

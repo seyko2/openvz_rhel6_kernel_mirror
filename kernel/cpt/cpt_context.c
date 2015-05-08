@@ -174,8 +174,7 @@ int cpt_open_dumpfile(struct cpt_context *ctx)
 int cpt_close_dumpfile(struct cpt_context *ctx)
 {
 	if (ctx->file) {
-		if (!ctx->write_error)
-			vmtruncate(ctx->file->f_mapping->host, ctx->dumpsize);
+		WARN_ON(i_size_read(ctx->file->f_mapping->host) != ctx->dumpsize);
 		fput(ctx->file);
 		ctx->file = NULL;
 	}

@@ -2545,6 +2545,47 @@ int sock_packet_rst_attr(struct sock *sk, struct cpt_sock_packet_image *v)
 }
 EXPORT_SYMBOL(sock_packet_rst_attr);
 
+void *sock_packet_cpt_one_mc(struct sock *sk,
+		struct cpt_sock_packet_mc_image *mi, void *prev)
+{
+	struct packet_sock *po = pkt_sk(sk);
+	struct packet_mclist *mc;
+
+	mc = prev ? ((struct packet_mclist *)prev)->next : po->mclist;
+	if (!mc)
+		return NULL;
+
+	mi->cpt_ifindex = mc->ifindex;
+	mi->cpt_count = mc->count;
+	mi->cpt_type = mc->type;
+	mi->cpt_alen = mc->alen;
+	memcpy(mi->cpt_addr, mc->addr, sizeof(mi->cpt_addr));
+
+	return mc;
+}
+EXPORT_SYMBOL(sock_packet_cpt_one_mc);
+
+int sock_packet_rst_one_mc(struct sock *sk,
+		struct cpt_sock_packet_mc_image *mi)
+{
+	struct packet_mreq_max mreq;
+	int i;
+	int err;
+
+	mreq.mr_ifindex = mi->cpt_ifindex;
+	mreq.mr_type = mi->cpt_type;
+	mreq.mr_alen = mi->cpt_alen;
+	memcpy(mreq.mr_address, mi->cpt_addr, sizeof(mreq.mr_address));
+
+	for (i = 0; i < mi->cpt_count; i++) {
+		err = packet_mc_add(sk, &mreq);
+		if (err)
+			return err;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(sock_packet_rst_one_mc);
+
 static const struct proto_ops packet_ops_spkt = {
 	.family =	PF_PACKET,
 	.owner =	THIS_MODULE,

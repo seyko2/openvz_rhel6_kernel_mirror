@@ -80,7 +80,7 @@ struct cgroup_subsys devices_subsys;
 static int devcgroup_can_attach(struct cgroup_subsys *ss,
 		struct cgroup *new_cgroup, struct task_struct *task)
 {
-	if (current != task && !capable(CAP_SYS_ADMIN))
+	if (current != task && !capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN))
 			return -EPERM;
 
 	return 0;
@@ -461,7 +461,7 @@ static int devcgroup_update_access(struct dev_cgroup *devcgroup,
 	struct cgroup *p = devcgroup->css.cgroup;
 	struct dev_cgroup *parent = NULL;
 
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN))
 		return -EPERM;
 
 	if (p->parent)
@@ -790,20 +790,20 @@ int devcgroup_inode_mknod(int mode, dev_t dev)
 #ifdef CONFIG_VE
 
 static struct dev_exception_item ve_devcgroup_ex_items[] = {
-	{ ~0,				~0,	DEV_ALL,  ACC_MKNOD		},
-	{ UNIX98_PTY_MASTER_MAJOR,	~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
-	{ UNIX98_PTY_SLAVE_MAJOR,	~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
-	{ PTY_MASTER_MAJOR,		~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
-	{ PTY_SLAVE_MAJOR,		~0,	DEV_CHAR, ACC_READ | ACC_WRITE	},
-	{ MEM_MAJOR,			3,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* null */
-	{ MEM_MAJOR,			5,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* zero */
-	{ MEM_MAJOR,			7,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* full */
-	{ TTYAUX_MAJOR,			0,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* tty */
-	{ TTYAUX_MAJOR,			1,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* console */
-	{ TTYAUX_MAJOR,			2,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* ptmx */
-	{ MEM_MAJOR,			8,	DEV_CHAR, ACC_READ		}, /* random */
-	{ MEM_MAJOR,			9,	DEV_CHAR, ACC_READ | ACC_WRITE	}, /* urandom */
-	{ MEM_MAJOR,			11,	DEV_CHAR, ACC_WRITE		}, /* kmsg */
+	{ ~0,				~0,	DEV_ALL,  ACC_MKNOD				},
+	{ UNIX98_PTY_MASTER_MAJOR,	~0,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	},
+	{ UNIX98_PTY_SLAVE_MAJOR,	~0,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	},
+	{ PTY_MASTER_MAJOR,		~0,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	},
+	{ PTY_SLAVE_MAJOR,		~0,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	},
+	{ MEM_MAJOR,			3,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* null */
+	{ MEM_MAJOR,			5,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* zero */
+	{ MEM_MAJOR,			7,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* full */
+	{ TTYAUX_MAJOR,			0,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* tty */
+	{ TTYAUX_MAJOR,			1,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* console */
+	{ TTYAUX_MAJOR,			2,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* ptmx */
+	{ MEM_MAJOR,			8,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* random */
+	{ MEM_MAJOR,			9,	DEV_CHAR, ACC_MKNOD | ACC_READ | ACC_WRITE	}, /* urandom */
+	{ MEM_MAJOR,			11,	DEV_CHAR, ACC_MKNOD | ACC_WRITE			}, /* kmsg */
 };
 
 static LIST_HEAD(ve_devcgroup_ex_list);
@@ -875,7 +875,7 @@ int set_device_perms_ve(struct ve_struct *ve,
 	else
 		return -EINVAL;
 
-	new.access = convert_bits(mask);
+	new.access = convert_bits(mask) | (mask ? ACC_MKNOD : 0);
 	new.major = new.minor = ~0;
 
 	switch (type & VE_USE_MASK) {

@@ -69,14 +69,14 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 	unsigned long background_thresh;
 	unsigned long dirty_thresh;
 	unsigned long bdi_thresh;
-	unsigned long nr_dirty, nr_io, nr_more_io, nr_wb;
+	unsigned long nr_dirty, nr_io, nr_more_io, nr_wb, nr_dirty_time;
 	struct inode *inode;
 
 	/*
 	 * inode lock is enough here, the bdi->wb_list is protected by
 	 * RCU on the reader side
 	 */
-	nr_wb = nr_dirty = nr_io = nr_more_io = 0;
+	nr_wb = nr_dirty = nr_io = nr_more_io = nr_dirty_time = 0;
 	spin_lock(&inode_lock);
 	list_for_each_entry(wb, &bdi->wb_list, list) {
 		nr_wb++;
@@ -86,6 +86,9 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 			nr_io++;
 		list_for_each_entry(inode, &wb->b_more_io, i_list)
 			nr_more_io++;
+		list_for_each_entry(inode, &wb->b_dirty_time, i_list)
+			if (inode->i_state & I_DIRTY_TIME)
+				nr_dirty_time++;
 	}
 	spin_unlock(&inode_lock);
 
@@ -102,6 +105,7 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   "b_dirty:          %8lu\n"
 		   "b_io:             %8lu\n"
 		   "b_more_io:        %8lu\n"
+		   "b_dirty_time:     %8lu\n"
 		   "bdi_list:         %8u\n"
 		   "state:            %8lx\n"
 		   "wb_list:          %8u\n",
@@ -109,6 +113,7 @@ static int bdi_debug_stats_show(struct seq_file *m, void *v)
 		   (unsigned long) K(bdi_stat(bdi, BDI_RECLAIMABLE)),
 		   K(bdi_thresh), K(dirty_thresh),
 		   K(background_thresh), nr_wb, nr_dirty, nr_io, nr_more_io,
+		   nr_dirty_time,
 		   !list_empty(&bdi->bdi_list), bdi->state,
 		   !list_empty(&bdi->wb_list));
 #undef K
@@ -239,8 +244,6 @@ static ssize_t stable_pages_required_show(struct device *dev,
 			bdi_cap_stable_pages_required(bdi) ? 1 : 0);
 }
 
-#define __ATTR_RW(attr) __ATTR(attr, 0644, attr##_show, attr##_store)
-
 static struct device_attribute bdi_dev_attrs[] = {
 	__ATTR_RW(read_ahead_kb),
 	__ATTR_RW(min_ratio),
@@ -289,6 +292,7 @@ static void bdi_wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi)
 	INIT_LIST_HEAD(&wb->b_dirty);
 	INIT_LIST_HEAD(&wb->b_io);
 	INIT_LIST_HEAD(&wb->b_more_io);
+	INIT_LIST_HEAD(&wb->b_dirty_time);
 }
 
 static void bdi_task_init(struct backing_dev_info *bdi,

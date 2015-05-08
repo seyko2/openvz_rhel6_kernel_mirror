@@ -160,7 +160,7 @@ struct mem_cgroup_zone {
  * From 0 .. 100.  Higher means more swappy.
  */
 int vm_swappiness = 60;
-long vm_total_pages;	/* The total number of pages which the VM controls */
+unsigned long vm_total_pages;	/* The total number of pages which the VM controls */
 int vm_sync_reclaim = 0;
 
 static LIST_HEAD(shrinker_list);
@@ -172,11 +172,6 @@ reclaimable_pages(struct lruvec *lruvec, struct scan_control *sc);
 static bool global_reclaim(struct scan_control *sc)
 {
 	return sc->gs == NULL;
-}
-
-static struct lruvec *local_lruvec(struct zone *zone, struct scan_control *sc)
-{
-	return &mem_zone_gang(sc->gs, zone)->lruvec;
 }
 
 /*
@@ -729,17 +724,41 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 						 : sc->may_shade_file;
 
 		if (!may_shade && PageWriteback(page)) {
-			nr_writeback++;
 			/*
-			 * Synchronous reclaim cannot queue pages for
-			 * writeback due to the possibility of stack overflow
-			 * but if it encounters a page under writeback, wait
-			 * for the IO to complete.
+			 * memcg doesn't have any dirty pages throttling so we
+			 * could easily OOM just because too many pages are in
+			 * writeback and there is nothing else to reclaim.
+			 *
+			 * Check __GFP_IO, certainly because a loop driver
+			 * thread might enter reclaim, and deadlock if it waits
+			 * on a page for which it is needed to do the write
+			 * (loop masks off __GFP_IO|__GFP_FS for this reason);
+			 * but more thought would probably show more reasons.
+			 *
+			 * Don't require __GFP_FS, since we're not going into
+			 * the FS, just waiting on its writeback completion.
+			 * Worryingly, ext4 gfs2 and xfs allocate pages with
+			 * grab_cache_page_write_begin(,,AOP_FLAG_NOFS), so
+			 * testing may_enter_fs here is liable to OOM on them.
 			 */
-			if (sync_writeback == PAGEOUT_IO_SYNC && may_enter_fs)
-				wait_on_page_writeback(page);
-			else
+			if (global_reclaim(sc) ||
+			    !PageReclaim(page) || !(sc->gfp_mask & __GFP_IO)) {
+				/*
+				 * This is slightly racy - end_page_writeback()
+				 * might have just cleared PageReclaim, then
+				 * setting PageReclaim here end up interpreted
+				 * as PageReadahead - but that does not matter
+				 * enough to care.  What we do want is for this
+				 * page to have PageReclaim set next time memcg
+				 * reclaim reaches the tests above, so it will
+				 * then wait_on_page_writeback() to avoid OOM;
+				 * and it's also appropriate in global reclaim.
+				 */
+				SetPageReclaim(page);
+				nr_writeback++;
 				goto keep_locked;
+			}
+			wait_on_page_writeback(page);
 		}
 
 		references = page_check_references(page, sc);
@@ -1044,6 +1063,9 @@ int __isolate_lru_page(struct page *page, isolate_mode_t mode, int file,
 		}
 	}
 
+	if ((mode & ISOLATE_UNMAPPED) && page_mapped(page))
+		return ret;
+
 	if (likely(get_page_unless_zero(page))) {
 		if (locked && !try_relock_page_lru(locked, page)) {
 			put_page(page);
@@ -1337,6 +1359,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	unsigned long nr_reclaimed = 0;
 	unsigned long nr_dirty = 0;
 	unsigned long nr_writeback = 0;
+	isolate_mode_t reclaim_mode = ISOLATE_INACTIVE;
 	struct zone *zone = lruvec_zone(lruvec);
 	int file = is_file_lru(lru);
 	struct lruvec *locked;
@@ -1350,6 +1373,12 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	}
 
 	lru_add_drain();
+
+	if (!sc->may_unmap)
+		reclaim_mode |= ISOLATE_UNMAPPED;
+	if (!sc->may_writepage)
+		reclaim_mode |= ISOLATE_CLEAN;
+
 	spin_lock_irq(&lruvec->lru_lock);
 	do {
 		struct page *page;
@@ -1362,7 +1391,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 		unsigned long nr_file;
 
 		nr_taken = isolate_lru_pages(SWAP_CLUSTER_MAX, lruvec, &page_list,
-					 &nr_scan, sc, ISOLATE_INACTIVE, lru);
+					 &nr_scan, sc, reclaim_mode, lru);
 		if (global_reclaim(sc)) {
 			atomic_long_add(nr_scan, &zone->pages_scanned);
 			if (current_is_kswapd())
@@ -1596,15 +1625,22 @@ static void shrink_active_list(unsigned long nr_to_scan,
 	LIST_HEAD(l_inactive);
 	struct page *page;
 	unsigned long nr_rotated = 0;
+	isolate_mode_t reclaim_mode = ISOLATE_ACTIVE;
 	int file = is_file_lru(lru);
 	struct zone *zone = lruvec_zone(lruvec);
 
 	{KSTAT_PERF_ENTER(refill_inact)
 	lru_add_drain();
+
+	if (!sc->may_unmap)
+		reclaim_mode |= ISOLATE_UNMAPPED;
+	if (!sc->may_writepage)
+		reclaim_mode |= ISOLATE_CLEAN;
+
 	spin_lock_irq(&lruvec->lru_lock);
 
 	nr_taken = isolate_lru_pages(nr_to_scan, lruvec, &l_hold,
-				 &pgscanned, sc, ISOLATE_ACTIVE, lru);
+				 &pgscanned, sc, reclaim_mode, lru);
 
 	if (global_reclaim(sc))
 		atomic_long_add(nr_taken, &zone->pages_scanned);
@@ -1827,6 +1863,20 @@ static unsigned long nr_scan_try_batch(unsigned long nr_to_scan,
 	return nr;
 }
 
+#ifdef CONFIG_MEMORY_GANGS
+int vm_force_scan_thresh = 50;
+
+static inline bool zone_force_scan(struct zone *zone)
+{
+	return zone->force_scan;
+}
+#else
+static inline bool zone_force_scan(struct zone *zone)
+{
+	return false;
+}
+#endif
+
 /*
  * Determine how aggressively the anon and file LRU lists should be
  * scanned.  The relative value of each set of LRU lists is determined
@@ -1838,7 +1888,7 @@ static unsigned long nr_scan_try_batch(unsigned long nr_to_scan,
  */
 static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 							unsigned long *nr)
- {
+{
 	struct zone *zone = lruvec_zone(lruvec);
 	unsigned long anon, file, free;
 	unsigned long anon_prio, file_prio;
@@ -1859,7 +1909,8 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 	 * well.
 	 */
 	if (global_reclaim(sc)) {
-		if (current_is_kswapd() && zone_is_all_unreclaimable(zone))
+		if (zone_force_scan(zone) ||
+		    (current_is_kswapd() && zone_is_all_unreclaimable(zone)))
 			force_scan = true;
 		/* DEF_PRIORITY on home priority and lowers down to zero. */
 		priority = sc->priority + (DEF_PRIORITY - lruvec->priority);
@@ -1888,8 +1939,8 @@ static void get_scan_count(struct lruvec *lruvec, struct scan_control *sc,
 
 	if (global_reclaim(sc)) {
 		free = zone_page_state(zone, NR_FREE_PAGES) +
-		       zone_page_state(zone, NR_ACTIVE_FILE) +
-		       zone_page_state(zone, NR_INACTIVE_FILE);
+			zone_page_state(zone, NR_ACTIVE_FILE) +
+			zone_page_state(zone, NR_INACTIVE_FILE);
 		/*
 		 * If we have very few page cache pages,
 		 * force-scan anon pages.
@@ -2121,6 +2172,44 @@ static inline bool should_continue_reclaim(struct zone *zone,
 
 #ifdef CONFIG_MEMORY_GANGS
 
+static unsigned long gang_reclaimable_pages(struct gang *gang)
+{
+	unsigned long nr;
+
+	nr = gang->lruvec.nr_pages[LRU_ACTIVE_FILE] +
+	     gang->lruvec.nr_pages[LRU_INACTIVE_FILE];
+
+	if (nr_swap_pages > 0)
+		nr += gang->lruvec.nr_pages[LRU_ACTIVE_ANON] +
+		      gang->lruvec.nr_pages[LRU_INACTIVE_ANON];
+
+	return nr;
+}
+
+static void update_gangs_present_pages(struct zone *zone)
+{
+	struct user_beancounter *top_ub, *ub;
+
+	rcu_read_lock();
+	for_each_top_beancounter(top_ub) {
+		unsigned long present = 0;
+
+		if (!get_beancounter_rcu(top_ub))
+			continue;
+		rcu_read_unlock();
+
+		for_each_beancounter_tree(ub, top_ub)
+			present += gang_reclaimable_pages(
+					mem_zone_gang(get_ub_gs(ub), zone));
+
+		mem_zone_gang(get_ub_gs(top_ub), zone)->present = present;
+
+		rcu_read_lock();
+		put_beancounter(top_ub);
+	}
+	rcu_read_unlock();
+}
+
 int vm_usage_factor = 2;
 int vm_shadow_factor = 8;
 int vm_age_factor = 8;
@@ -2133,24 +2222,20 @@ void update_vmscan_priority(struct gang *gang)
 	unsigned long age, max_age, now = jiffies;
 	unsigned long present, portion;
 	struct user_beancounter *ub;
+	struct gang *top_gang;
 	long limit, usage, shadow;
 	u64 p;
 	int priority;
 
 	age = max(now - gang->timestamp[LRU_INACTIVE_FILE],
 		  now - gang->timestamp[LRU_ACTIVE_FILE]);
-	present = gang->lruvec.nr_pages[LRU_ACTIVE_FILE] +
-		  gang->lruvec.nr_pages[LRU_INACTIVE_FILE];
-	if (nr_swap_pages > 0) {
+	if (nr_swap_pages > 0)
 		age = max(age, max(now - gang->timestamp[LRU_INACTIVE_ANON],
 				   now - gang->timestamp[LRU_ACTIVE_ANON]));
-		present += gang->lruvec.nr_pages[LRU_ACTIVE_ANON] +
-			   gang->lruvec.nr_pages[LRU_INACTIVE_ANON];
-	}
 
 	max_age = max(1ul, now - gang_zone(gang)->eldest_timestamp);
 
-	ub = get_gang_ub(gang);
+	ub = get_gang_ub(gang)->top;
 
 	limit = clamp(ub->ub_parms[UB_PHYSPAGES].limit, 1ul, totalram_pages);
 	usage = ub->ub_parms[UB_PHYSPAGES].held;
@@ -2167,15 +2252,17 @@ void update_vmscan_priority(struct gang *gang)
 		priority = DEF_PRIORITY;
 
 		/* Junk must die */
-		if (present) {
+		if (gang_reclaimable_pages(gang) > 0) {
 			priority += vm_usage_factor;
 			priority += vm_shadow_factor;
 		}
 	}
 
+	top_gang = mem_zone_gang(get_ub_gs(ub), gang_zone(gang));
+	present = top_gang->present;
+	portion = top_gang->portion;
 
 	p = (u64)vm_age_factor * age;
-	portion = gang->portion;
 	if (portion && present) {
 		p *= present;
 		do_div(p, portion);
@@ -2436,19 +2523,29 @@ static bool shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 
 			shrink_zone(zone, sc);
 		} else {
-			struct lruvec *lruvec = local_lruvec(zone, sc);
-			unsigned long reclaimable = reclaimable_pages(lruvec, sc);
+			struct user_beancounter *ub;
+			struct lruvec *lruvec;
+			unsigned long reclaimable = 0, scanned = 0;
+
+			for_each_beancounter_tree(ub, get_gangs_ub(sc->gs)) {
+				lruvec = &mem_zone_gang(get_ub_gs(ub), zone)->lruvec;
+				reclaimable += reclaimable_pages(lruvec, sc);
+				scanned += atomic_long_read(&lruvec->pages_scanned);
+			}
 
 			if (reclaimable < SWAP_CLUSTER_MAX)
 				continue;
 
-			if (atomic_long_read(&lruvec->pages_scanned) < 6 * reclaimable)
+			if (scanned < 6 * reclaimable)
 				sc->all_unreclaimable = 0;
 
-			if (atomic_long_read(&lruvec->pages_scanned) < 3 * reclaimable)
+			if (scanned < 3 * reclaimable)
 				sc->near_oom = 0;
 
-			shrink_lruvec(lruvec, sc);
+			for_each_beancounter_tree(ub, get_gangs_ub(sc->gs)) {
+				lruvec = &mem_zone_gang(get_ub_gs(ub), zone)->lruvec;
+				shrink_lruvec(lruvec, sc);
+			}
 		}
 
 		if (unlikely(test_tsk_thread_flag(current, TIF_MEMDIE)))
@@ -2458,11 +2555,17 @@ static bool shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 	/* Huge reclaim progress, reset internal OOM countdown counter */
 	if (!global_reclaim(sc) && sc->nr_reclaimed >= sc->nr_to_reclaim) {
 		for_each_zone_zonelist(zone, z, zonelist, high_zoneidx) {
+			struct user_beancounter *ub;
+			struct lruvec *lruvec;
+
 			if (!populated_zone(zone) ||
 			    !cpuset_zone_allowed_hardwall(zone, GFP_KERNEL))
 				continue;
 
-			atomic_long_set(&local_lruvec(zone, sc)->pages_scanned, 0);
+			for_each_beancounter_tree(ub, get_gangs_ub(sc->gs)) {
+				lruvec = &mem_zone_gang(get_ub_gs(ub), zone)->lruvec;
+				atomic_long_set(&lruvec->pages_scanned, 0);
+			}
 		}
 	}
 
@@ -2524,12 +2627,19 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
 	} else {
 		sc->near_oom = 1;
 		for_each_zone_zonelist(zone, z, zonelist, high_zoneidx) {
-			struct lruvec *lruvec = local_lruvec(zone, sc);
-			unsigned long reclaimable = reclaimable_pages(lruvec, sc);
+			struct user_beancounter *ub;
+			struct lruvec *lruvec;
+			unsigned long reclaimable = 0, scanned = 0;
+
+			for_each_beancounter_tree(ub, get_gangs_ub(sc->gs)) {
+				lruvec = &mem_zone_gang(get_ub_gs(ub), zone)->lruvec;
+				reclaimable += reclaimable_pages(lruvec, sc);
+				scanned += atomic_long_read(&lruvec->pages_scanned);
+			}
 
 			lru_pages += reclaimable;
 
-			if (atomic_long_read(&lruvec->pages_scanned) < 3 * reclaimable)
+			if (scanned < 3 * reclaimable)
 				sc->near_oom = 0;
 		}
 	}
@@ -2658,6 +2768,7 @@ unsigned long try_to_free_gang_pages(struct gang_set *gs, gfp_t gfp_mask)
 	struct scan_control sc = {
 		.gfp_mask = gfp_mask,
 		.nr_to_reclaim = SWAP_CLUSTER_MAX,
+		.may_writepage = 1,
 		.may_unmap = 1,
 		.may_swap = 1,
 		.use_vswap = 1,
@@ -2674,7 +2785,8 @@ unsigned long try_to_free_gang_pages(struct gang_set *gs, gfp_t gfp_mask)
 	progress = do_try_to_free_pages(zonelist, &sc);
 
 	if (sc.nr_reclaim_swapout) {
-		ub_percpu_add(get_gangs_ub(gs), vswapout, sc.nr_reclaim_swapout);
+		ub_percpu_add(top_beancounter(get_gangs_ub(gs)),
+				vswapout, sc.nr_reclaim_swapout);
 		ub_reclaim_rate_limit(get_gangs_ub(gs), gfp_mask & __GFP_WAIT,
 				      sc.nr_reclaim_swapout);
 	}
@@ -2849,6 +2961,7 @@ static unsigned long balance_pgdat(pg_data_t *pgdat, int order)
 		.swappiness = vm_swappiness,
 		.order = order,
 		.target_mem_cgroup = NULL,
+		.max_priority = DEF_PRIORITY,
 	};
 
 loop_again:
@@ -2894,27 +3007,52 @@ loop_again:
 		pgdat->next_milestone = now + pgdat->milestone_interval;
 		mod_timer(&pgdat->milestone_timer, pgdat->next_milestone);
 	}
-#endif
 
-	sc.max_priority = DEF_PRIORITY;
 	for (i = pgdat->nr_zones - 1; i >= 0; i--) {
 		struct zone *zone = pgdat->node_zones + i;
 		struct gang *gang;
 		int max_priority;
+		int nr_tiny, nr_total;
 
 		if (!populated_zone(zone))
 			continue;
 
+		update_gangs_present_pages(zone);
+
+		nr_tiny = nr_total = 0;
+
 		rcu_read_lock();
-		for_each_gang(gang, zone)
+		for_each_gang(gang, zone) {
+			struct lruvec *lruvec = &gang->lruvec;
+			unsigned long size;
+
 			update_vmscan_priority(gang);
+
+			size = max(lruvec->nr_pages[LRU_ACTIVE_FILE],
+				   lruvec->nr_pages[LRU_INACTIVE_FILE]);
+			if (nr_swap_pages > 0)
+				size = max3(size,
+					lruvec->nr_pages[LRU_ACTIVE_ANON],
+					lruvec->nr_pages[LRU_INACTIVE_ANON]);
+			if (size) {
+				if (!(size >> DEF_PRIORITY))
+					nr_tiny++;
+				nr_total++;
+			}
+		}
 		rcu_read_unlock();
+
+		if (nr_tiny * 100 > nr_total * vm_force_scan_thresh)
+			zone->force_scan = true;
+		else
+			zone->force_scan = false;
 
 		max_priority = zone_max_priority(zone);
 		if (max_priority > sc.max_priority &&
-		    max_priority < NR_VMSCAN_PRIORITIES)
+				max_priority < NR_VMSCAN_PRIORITIES)
 			sc.max_priority = max_priority;
 	}
+#endif /* CONFIG_MEMORY_GANGS */
 
 	for (sc.priority = sc.max_priority; sc.priority >= 0; sc.priority--) {
 		int end_zone = 0;	/* Inclusive.  0 = ZONE_DMA */

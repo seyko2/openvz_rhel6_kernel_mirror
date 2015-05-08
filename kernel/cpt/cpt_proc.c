@@ -211,7 +211,7 @@ static int cpt_test_vecaps_features(cpt_context_t *ctx, __u32 dst_flags,
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE, "sse", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE2, "sse2", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_1", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_2", err);
+	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4_2, "sse4_2", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_MMX, "mmx", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_3DNOW, "3dnow", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_3DNOW2, "3dnowext", err);
@@ -224,6 +224,7 @@ static int cpt_test_vecaps_features(cpt_context_t *ctx, __u32 dst_flags,
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_XSAVE, "xsave", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_AVX, "avx", err);
 	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_AESNI, "aesni", err);
+	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_RDRAND, "rdrand", err);
 
 	if (dst_flags & (1 << CPT_SLM_DMPRST)) {
 		eprintk_ctx("SLM is enabled on destination node, but slm_dmprst module is not loaded\n");
@@ -266,13 +267,12 @@ static int cpt_test_vecaps2(cpt_context_t *ctx, void __user *data)
 		return -EFAULT;
 
 	err = cpt_test_vecaps_features(ctx, caps.dst_flags, &caps.features);
-	if (err)
-		return err;
 
+	/* Userspace may want to know the mask of unsupported features */
 	if (copy_to_user(data, &caps, sizeof(caps)))
 		return -EFAULT;
 
-	return 0;
+	return err;
 }
 
 static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd, unsigned long arg)
@@ -287,24 +287,8 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 	request_module("vzcptpram");
 
 	if (cmd == CPT_TEST_CAPS) {
-		unsigned int src_flags, dst_flags = arg;
-
-		err = 0;
-		src_flags = test_cpu_caps_and_features();
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_CMOV, "cmov", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_FXSR, "fxsr", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SSE, "sse", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SSE2, "sse2", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_1", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_2", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_MMX, "mmx", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_3DNOW, "3dnow", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_3DNOW2, "3dnowext", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SSE4A, "sse4a", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_SEP, "sysenter", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_XSAVE, "xsave", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_AVX, "avx", err);
-		test_one_flag_old(src_flags, dst_flags, CPT_CPU_X86_AESNI, "aesni", err);
+		/* Obsoleted by CPT_TEST_VECAPS */
+		err = -ENOSYS;
 		goto out_lock;
 	}
 

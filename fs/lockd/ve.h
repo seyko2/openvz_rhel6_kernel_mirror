@@ -13,9 +13,6 @@ struct ve_nlm_data {
 	unsigned long		_nlmsvc_timeout;
 	struct svc_rqst*	_nlmsvc_rqst;
 
-	struct hlist_head	_nlm_reserved_pids;
-	spinlock_t		_nlm_reserved_lock;
-
 	struct delayed_work	_grace_period_end;
 	struct list_head	_grace_list;
 	struct lock_manager	_lockd_manager;
@@ -38,9 +35,6 @@ struct ve_nlm_data {
 #define nlmsvc_users		NLM_CTX_FIELD(nlmsvc_users)
 #define nlmsvc_task		NLM_CTX_FIELD(nlmsvc_task)
 #define nlmsvc_rqst		NLM_CTX_FIELD(nlmsvc_rqst)
-
-#define nlm_reserved_pids	NLM_CTX_FIELD(nlm_reserved_pids)
-#define nlm_reserved_lock	NLM_CTX_FIELD(nlm_reserved_lock)
 
 #define grace_period_end	NLM_CTX_FIELD(grace_period_end)
 #define grace_list		NLM_CTX_FIELD(grace_list)

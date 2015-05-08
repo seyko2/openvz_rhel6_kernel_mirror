@@ -74,7 +74,7 @@ static struct kmem_cache *anon_vma_chain_cachep;
 
 static inline struct anon_vma *anon_vma_alloc(struct mm_struct *mm)
 {
-	struct user_beancounter *ub = mm->mm_ub;
+	struct user_beancounter *ub = mm_ub_top(mm);
 	struct anon_vma *anon_vma;
 
 	anon_vma = ub_kmem_alloc(ub, anon_vma_cachep, GFP_KERNEL);
@@ -93,9 +93,9 @@ void anon_vma_free(struct anon_vma *anon_vma)
 }
 
 #define anon_vma_chain_alloc(mm) \
-	ub_kmem_alloc(mm->mm_ub, anon_vma_chain_cachep, GFP_KERNEL)
+	ub_kmem_alloc(mm_ub_top(mm), anon_vma_chain_cachep, GFP_KERNEL)
 #define anon_vma_chain_free(mm, avc) \
-	ub_kmem_free(mm->mm_ub, anon_vma_chain_cachep, avc)
+	ub_kmem_free(mm_ub_top(mm), anon_vma_chain_cachep, avc)
 
 /**
  * anon_vma_prepare - attach an anon_vma to a memory region
@@ -1310,9 +1310,19 @@ static int try_to_unmap_cluster(unsigned long cursor, unsigned int *mapcount,
 		BUG_ON(!page || PageAnon(page));
 
 		if (locked_vma) {
-			mlock_vma_page(vma, page);   /* no-op if already mlocked */
-			if (page == check_page)
+			if (page == check_page) {
+				/* we know we have check_page locked */
+				mlock_vma_page(vma, page);
 				ret = SWAP_MLOCK;
+			} else if (trylock_page(page)) {
+				/*
+				 * If we can lock the page, perform mlock.
+				 * Otherwise leave the page alone, it will be
+				 * eventually encountered again later.
+				 */
+				mlock_vma_page(vma, page);
+				unlock_page(page);
+			}
 			continue;	/* don't unmap */
 		}
 

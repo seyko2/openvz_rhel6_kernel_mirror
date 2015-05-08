@@ -12,6 +12,8 @@
 #ifndef __CPT_IMAGE_H_
 #define __CPT_IMAGE_H_ 1
 
+#include <linux/inetdevice.h>
+
 #define CPT_NULL (~0ULL)
 #define CPT_NOINDEX (~0U)
 
@@ -90,6 +92,7 @@ enum _cpt_object_type
 	CPT_OBJ_SYSVMSG			= 1049,
 	CPT_OBJ_SYSVMSG_MSG		= 1050,
 	CPT_OBJ_MM_AUXV			= 1051,
+	CPT_OBJ_NET_IDEV_CNF		= 1052,
 
 	CPT_OBJ_X86_REGS		= 4096,
 	CPT_OBJ_X86_64_REGS		= 4097,
@@ -120,6 +123,7 @@ enum _cpt_object_type
 	CPT_OBJ_MOUNT_DATA		= 4122,
 	CPT_OBJ_POSIX_TIMER		= 4123,
 	CPT_OBJ_SOCK_PACKET		= 4124,
+	CPT_OBJ_SOCK_PACKET_MC		= 4125,
 
 	/* 2.6.27-specific */
 	CPT_OBJ_NET_TAP_FILTER = 0x01000000,
@@ -210,10 +214,11 @@ struct cpt_major_hdr
 #define CPT_CPU_X86_AVX		26
 #define CPT_CPU_X86_AESNI	27
 #define CPT_NO_IPV6		28
+#define CPT_CPU_X86_RDRAND	29
 
 /* This mask is used to determine whether VE
    has some unsupported features or not */
-#define CPT_UNSUPPORTED_MASK	0xe1fd0000UL
+#define CPT_UNSUPPORTED_MASK	0xc1fd0000UL
 
 #define CPT_KERNEL_CONFIG_PAE	0
 
@@ -399,6 +404,8 @@ struct cpt_veinfo_image
 	__u32	__cpt_pad1;
 	__u64	real_start_timespec_delta;
 	__u64	reserved[6];
+	__u64	aio_max_nr;
+	__u64	cpt_ve_bcap;
 } __attribute__ ((aligned (8)));
 
 struct cpt_cgroup_image
@@ -952,6 +959,9 @@ struct cpt_sock_image
 	__u16	cpt_i_mode;
 	__u16	__cpt_pad13;
 	__u32	__cpt_pad14;
+
+	__u32	cpt_i_uid;
+	__u32	cpt_i_gid;
 } __attribute__ ((aligned (8)));
 
 struct cpt_sockmc_image {
@@ -996,6 +1006,20 @@ struct cpt_sock_packet_image {
 
 	struct cpt_sock_packet_ring_image cpt_rx_ring;
 	struct cpt_sock_packet_ring_image cpt_tx_ring;
+} __attribute__ ((aligned (8)));
+/* Followed by array of cpt_sock_packet_mc_image */
+
+struct cpt_sock_packet_mc_image {
+	__u64	cpt_next;
+	__u32	cpt_object;
+	__u16	cpt_hdrlen;
+	__u16	cpt_content;
+
+	__u32	cpt_ifindex;
+	__u32	cpt_count;
+	__u16	cpt_type;
+	__u16	cpt_alen;
+	__u8	cpt_addr[MAX_ADDR_LEN];
 } __attribute__ ((aligned (8)));
 
 struct cpt_openreq_image
@@ -1340,6 +1364,8 @@ struct cpt_siginfo_image {
 	__u64	cpt_stime;
 
 	__u64	cpt_user;
+
+	int	cpt_sifields[SI_PAD_SIZE];
 } __attribute__ ((aligned (8)));
 
 /* Portable presentaions for segment registers */
@@ -1566,6 +1592,7 @@ struct cpt_task_image {
 	__u64	cpt_mm_ub;
 	__u64	cpt_fork_sub;
 	__u64	cpt_posix_timers;
+	__u64	cpt_bcap;
 } __attribute__ ((aligned (8)));
 
 struct cpt_sigaltstack_image {
@@ -1625,6 +1652,11 @@ struct cpt_signal_image {
 
 	__u64	cpt_rlim_cur[CPT_RLIM_NLIMITS];
 	__u64	cpt_rlim_max[CPT_RLIM_NLIMITS];
+#define CPT_SIGNAL_STOP_STOPPED	(1ull << 0)
+#define CPT_SIGNAL_STOP_CONTINUED 	(1ull << 1)
+#define CPT_SIGNAL_CLD_STOPPED		(1ull << 2)
+#define CPT_SIGNAL_CLD_CONTINUED	(1ull << 3)
+	__u64	cpt_flags;
 } __attribute__ ((aligned (8)));
 /* Followed by list of posix timers. */
 
@@ -1818,6 +1850,15 @@ struct cpt_netstats_image {
 	__u64	cpt_rx_compressed;
 	__u64	cpt_tx_compressed;
 	__u64	pad[4];
+} __attribute__ ((aligned (8)));
+
+struct cpt_idev_cnf_image {
+	__u64	cpt_next;
+	__u32	cpt_object;
+	__u16	cpt_hdrlen;
+	__u16	cpt_content;
+
+	__u32	cpt_data[IPV4_DEVCONF_MAX];
 } __attribute__ ((aligned (8)));
 
 struct cpt_ifaddr_image {

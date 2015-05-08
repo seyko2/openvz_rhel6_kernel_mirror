@@ -77,7 +77,14 @@ static int cpt_dump_watches(struct fsnotify_group *g, struct cpt_context *ctx)
 	struct cpt_inotify_wd_image wi;
 	loff_t saved_obj;
 
-	/* FIXME locking */
+	/*
+	 * NOTE: We don't take spin lock over @mark_lock here on purpose:
+	 * the lock put the kernel in atomic context which is prohibited
+	 * if ctx->write operation is used. This is actually safe to run
+	 * over all marks without lock taken -- all tasks which belong to
+	 * the container are stopped so the marks won't be removed while
+	 * we're dumping them.
+	 */
 	list_for_each_entry(fse, &g->mark_entries, g_list) {
 		struct nameidata nd;
 

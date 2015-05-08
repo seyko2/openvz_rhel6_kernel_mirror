@@ -56,6 +56,13 @@ extern int cap_settime(const struct timespec *ts, const struct timezone *tz);
 extern int cap_ptrace_access_check(struct task_struct *child, unsigned int mode);
 extern int cap_ptrace_traceme(struct task_struct *parent);
 extern int cap_capget(struct task_struct *target, kernel_cap_t *effective, kernel_cap_t *inheritable, kernel_cap_t *permitted);
+extern void cap_swap_all(int old, int new,
+			 kernel_cap_t *effective,
+			 kernel_cap_t *inheritable,
+			 kernel_cap_t *permitted,
+			 const kernel_cap_t *effective_old,
+			 const kernel_cap_t *inheritable_old,
+			 const kernel_cap_t *permitted_old);
 extern int cap_capset(struct cred *new, const struct cred *old,
 		      const kernel_cap_t *effective,
 		      const kernel_cap_t *inheritable,
@@ -93,7 +100,6 @@ struct xfrm_user_sec_ctx;
 struct seq_file;
 
 extern int cap_netlink_send(struct sock *sk, struct sk_buff *skb);
-extern int cap_netlink_recv(struct sk_buff *skb, int cap);
 
 #ifdef CONFIG_MMU
 extern unsigned long mmap_min_addr;
@@ -125,6 +131,7 @@ struct request_sock;
 #define LSM_UNSAFE_SHARE	1
 #define LSM_UNSAFE_PTRACE	2
 #define LSM_UNSAFE_PTRACE_CAP	4
+#define LSM_UNSAFE_NO_NEW_PRIVS	8
 
 #ifdef CONFIG_MMU
 /*
@@ -846,12 +853,6 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
  *	@skb contains the sk_buff structure for the netlink message.
  *	Return 0 if the information was successfully saved and message
  *	is allowed to be transmitted.
- * @netlink_recv:
- *	Check permission before processing the received netlink message in
- *	@skb.
- *	@skb contains the sk_buff structure for the netlink message.
- *	@cap indicates the capability required
- *	Return 0 if permission is granted.
  *
  * Security hooks for Unix domain networking.
  *
@@ -1021,17 +1022,26 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
  *	Sets the connection's peersid to the secmark on skb.
  * @req_classify_flow:
  *	Sets the flow's sid to the openreq sid.
+ * @tun_dev_alloc_security:
+ *	This hook allows a module to allocate a security structure for a TUN
+ *	device.
+ *	@security pointer to a security structure pointer.
+ *	Returns a zero on success, negative values on failure.
+ * @tun_dev_free_security:
+ *	This hook allows a module to free the security structure for a TUN
+ *	device.
+ *	@security pointer to the TUN device's security structure
  * @tun_dev_create:
  *	Check permissions prior to creating a new TUN device.
- * @tun_dev_post_create:
- *	This hook allows a module to update or allocate a per-socket security
- *	structure.
- *	@sk contains the newly created sock structure.
  * @tun_dev_attach:
- *	Check permissions prior to attaching to a persistent TUN device.  This
- *	hook can also be used by the module to update any security state
+ *	This hook can be used by the module to update any security state
  *	associated with the TUN device's sock structure.
  *	@sk contains the existing sock structure.
+ *	@security pointer to the TUN device's security structure.
+ * @tun_dev_open:
+ *	This hook can be used by the module to update any security state
+ *	associated with the TUN device's security structure.
+ *	@security pointer to the TUN devices's security structure.
  *
  * Security hooks for XFRM operations.
  *
@@ -1632,7 +1642,6 @@ struct security_operations {
 			  struct sembuf *sops, unsigned nsops, int alter);
 
 	int (*netlink_send) (struct sock *sk, struct sk_buff *skb);
-	int (*netlink_recv) (struct sk_buff *skb, int cap);
 
 	void (*d_instantiate) (struct dentry *dentry, struct inode *inode);
 
@@ -1682,9 +1691,11 @@ struct security_operations {
 	void (*inet_csk_clone) (struct sock *newsk, const struct request_sock *req);
 	void (*inet_conn_established) (struct sock *sk, struct sk_buff *skb);
 	void (*req_classify_flow) (const struct request_sock *req, struct flowi *fl);
-	int (*tun_dev_create)(void);
-	void (*tun_dev_post_create)(struct sock *sk);
-	int (*tun_dev_attach)(struct sock *sk);
+	int (*tun_dev_alloc_security) (void **security);
+	void (*tun_dev_free_security) (void *security);
+	int (*tun_dev_create) (void);
+	int (*tun_dev_attach) (struct sock *sk, void *security);
+	int (*tun_dev_open) (void *security);
 #endif	/* CONFIG_SECURITY_NETWORK */
 
 #ifdef CONFIG_SECURITY_NETWORK_XFRM
@@ -1892,7 +1903,6 @@ void security_d_instantiate(struct dentry *dentry, struct inode *inode);
 int security_getprocattr(struct task_struct *p, char *name, char **value);
 int security_setprocattr(struct task_struct *p, char *name, void *value, size_t size);
 int security_netlink_send(struct sock *sk, struct sk_buff *skb);
-int security_netlink_recv(struct sk_buff *skb, int cap);
 int security_secid_to_secctx(u32 secid, char **secdata, u32 *seclen);
 int security_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid);
 void security_release_secctx(char *secdata, u32 seclen);
@@ -2648,11 +2658,6 @@ static inline int security_netlink_send(struct sock *sk, struct sk_buff *skb)
 	return cap_netlink_send(sk, skb);
 }
 
-static inline int security_netlink_recv(struct sk_buff *skb, int cap)
-{
-	return cap_netlink_recv(skb, cap);
-}
-
 static inline int security_secid_to_secctx(u32 secid, char **secdata, u32 *seclen)
 {
 	return -EOPNOTSUPP;
@@ -2725,9 +2730,11 @@ void security_inet_csk_clone(struct sock *newsk,
 			const struct request_sock *req);
 void security_inet_conn_established(struct sock *sk,
 			struct sk_buff *skb);
+int security_tun_dev_alloc_security(void **security);
+void security_tun_dev_free_security(void *security);
 int security_tun_dev_create(void);
-void security_tun_dev_post_create(struct sock *sk);
-int security_tun_dev_attach(struct sock *sk);
+int security_tun_dev_attach(struct sock *sk, void *security);
+int security_tun_dev_open(void *security);
 
 #else	/* CONFIG_SECURITY_NETWORK */
 static inline int security_unix_stream_connect(struct socket *sock,
@@ -2879,16 +2886,26 @@ static inline void security_inet_conn_established(struct sock *sk,
 {
 }
 
+static inline int security_tun_dev_alloc_security(void **security)
+{
+	return 0;
+}
+
+static inline void security_tun_dev_free_security(void *security)
+{
+}
+
 static inline int security_tun_dev_create(void)
 {
 	return 0;
 }
 
-static inline void security_tun_dev_post_create(struct sock *sk)
+static inline int security_tun_dev_attach(struct sock *sk, void *security)
 {
+	return 0;
 }
 
-static inline int security_tun_dev_attach(struct sock *sk)
+static inline int security_tun_dev_open(void *security)
 {
 	return 0;
 }

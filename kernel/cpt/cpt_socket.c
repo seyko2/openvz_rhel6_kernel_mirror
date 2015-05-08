@@ -433,6 +433,26 @@ static int dump_wqueue(int idx, struct sock *sk, struct cpt_context *ctx)
 	return 0;
 }
 
+static void cpt_dump_sock_packet_mclist(struct sock *sk,
+					struct cpt_context *ctx)
+{
+	struct cpt_sock_packet_mc_image mi;
+	loff_t saved_obj;
+	void *iter = NULL;
+
+	cpt_push_object(&saved_obj, ctx);
+	while ((iter = sock_packet_cpt_one_mc(sk, &mi, iter)) != NULL) {
+		cpt_open_object(NULL, ctx);
+		mi.cpt_next = CPT_NULL;
+		mi.cpt_object = CPT_OBJ_SOCK_PACKET_MC;
+		mi.cpt_hdrlen = sizeof(mi);
+		mi.cpt_content = CPT_CONTENT_VOID;
+		ctx->write(&mi, sizeof(mi), ctx);
+		cpt_close_object(ctx);
+	}
+	cpt_pop_object(&saved_obj, ctx);
+}
+
 void cpt_dump_sock_attr(struct sock *sk, cpt_context_t *ctx)
 {
 	loff_t saved_obj;
@@ -469,10 +489,12 @@ void cpt_dump_sock_attr(struct sock *sk, cpt_context_t *ctx)
 		v.cpt_next = CPT_NULL;
 		v.cpt_object = CPT_OBJ_SOCK_PACKET;
 		v.cpt_hdrlen = sizeof(v);
-		v.cpt_content = CPT_CONTENT_VOID;
+		v.cpt_content = CPT_CONTENT_ARRAY;
 		sock_packet_cpt_attr(sk, &v);
 
 		ctx->write(&v, sizeof(v), ctx);
+		cpt_dump_sock_packet_mclist(sk, ctx);
+
 		cpt_close_object(ctx);
 		cpt_pop_object(&saved_obj, ctx);
 	}
@@ -496,9 +518,13 @@ static int cpt_dump_unix_mount(struct sock *sk, struct cpt_sock_image *v,
 static int cpt_dump_unix_socket(struct sock *sk, struct cpt_sock_image *v, cpt_context_t *ctx)
 {
 	v->cpt_vfsmount_ref = CPT_NULL;
+	v->cpt_i_uid = -1;
+	v->cpt_i_gid = -1;
 
 	if (unix_sk(sk)->dentry) {
 		struct dentry *d = unix_sk(sk)->dentry;
+		v->cpt_i_uid = d->d_inode->i_uid;
+		v->cpt_i_gid = d->d_inode->i_gid;
 
 		if (IS_ROOT(d) || !d_unhashed(d)) {
 			int err = 0;

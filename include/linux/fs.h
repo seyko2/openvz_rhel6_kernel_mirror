@@ -259,6 +259,7 @@ struct inodes_stat_t {
 #define MS_KERNMOUNT	(1<<22) /* this is a kern_mount call */
 #define MS_I_VERSION	(1<<23) /* Update inode I_version field */
 #define MS_STRICTATIME	(1<<24) /* Always perform atime updates */
+#define MS_LAZYTIME	(1<<25) /* Update the on-disk [acm]times lazily */
 #define MS_SNAP_STABLE  (1<<27) /* Snapshot pages during writeback, if needed */
 #define MS_BORN		(1<<29)
 #define MS_ACTIVE	(1<<30)
@@ -267,7 +268,8 @@ struct inodes_stat_t {
 /*
  * Superblock flags that can be altered by MS_REMOUNT
  */
-#define MS_RMT_MASK	(MS_RDONLY|MS_SYNCHRONOUS|MS_MANDLOCK|MS_I_VERSION)
+#define MS_RMT_MASK	(MS_RDONLY|MS_SYNCHRONOUS|MS_MANDLOCK|MS_I_VERSION|\
+			 MS_LAZYTIME)
 
 /*
  * Remounts, which change any flags except for following ones,
@@ -1677,6 +1679,8 @@ struct super_block {
 	char *s_options;
 #ifndef __GENKSYMS__
 	struct sb_writers	s_writers;
+	atomic_t		s_fsnotify_marks;
+	wait_queue_head_t	s_fsnotify_marks_wq;
 #endif
 };
 
@@ -1687,8 +1691,10 @@ extern struct timespec current_fs_time(struct super_block *sb);
  */
 /* Old freezing mechanism */
 #define vfs_check_frozen(sb, level) \
+do { \
 	if (!sb_has_new_freeze(sb)) \
-		wait_event((sb)->s_wait_unfrozen, ((sb)->s_frozen < (level)))
+		wait_event((sb)->s_wait_unfrozen, ((sb)->s_frozen < (level))); \
+} while (0)
 
 void __sb_end_write(struct super_block *sb, int level);
 int __sb_start_write(struct super_block *sb, int level, bool wait);
@@ -1967,7 +1973,7 @@ struct super_operations {
    	struct inode *(*alloc_inode)(struct super_block *sb);
 	void (*destroy_inode)(struct inode *);
 
-   	void (*dirty_inode) (struct inode *);
+   	void (*dirty_inode) (struct inode *, int flags);
 	int (*write_inode) (struct inode *, struct writeback_control *wbc);
 	void (*drop_inode) (struct inode *);
 	void (*delete_inode) (struct inode *);
@@ -2060,8 +2066,12 @@ struct super_operations {
 #define I_LOCK			(1 << __I_LOCK)
 #define __I_SYNC		8
 #define I_SYNC			(1 << __I_SYNC)
+#define I_DIRTY_TIME		(1 << 11)
+#define __I_DIRTY_TIME_EXPIRED	12
+#define I_DIRTY_TIME_EXPIRED	(1 << __I_DIRTY_TIME_EXPIRED)
 
 #define I_DIRTY (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES)
+#define I_DIRTY_ALL (I_DIRTY | I_DIRTY_TIME)
 
 extern void __mark_inode_dirty(struct inode *, int);
 static inline void mark_inode_dirty(struct inode *inode)
@@ -2219,21 +2229,40 @@ void put_super(struct super_block *sb);
 	(((fops) && try_module_get((fops)->owner) ? (fops) : NULL))
 #define fops_put(fops) \
 	do { if (fops) module_put((fops)->owner); } while(0)
+/*
+ * This one is to be used *ONLY* from ->open() instances.
+ * fops must be non-NULL, pinned down *and* module dependencies
+ * should be sufficient to pin the caller down as well.
+ */
+#define replace_fops(f, fops) \
+	do {	\
+		struct file *__file = (f); \
+		fops_put(__file->f_op); \
+		BUG_ON(!(__file->f_op = (fops))); \
+	} while(0)
 
 extern int register_filesystem(struct file_system_type *);
 extern int unregister_filesystem(struct file_system_type *);
 extern struct vfsmount *kern_mount_data(struct file_system_type *, void *data);
 #define kern_mount(type) kern_mount_data(type, NULL)
+
+#ifdef CONFIG_VE
 extern int register_ve_fs_type_data(struct ve_struct *, struct file_system_type *,
 		struct file_system_type **, struct vfsmount **, void *data);
 #define register_ve_fs_type(ve, tmpl, pfstype, pmnt) \
 	register_ve_fs_type_data(ve, tmpl, pfstype, pmnt, NULL)
+extern int register_ve_fs_type_data_flags(struct ve_struct *ve, struct file_system_type *template,
+					  struct file_system_type **p_fs_type, struct vfsmount **p_mnt,
+					  void *data, int flags);
 extern void unregister_ve_fs_type(struct file_system_type *, struct vfsmount *);
 extern void umount_ve_fs_type(struct file_system_type *local_fs_type, int veid);
+#endif
+
 #define kern_umount mntput
 extern int may_umount_tree(struct vfsmount *);
 extern int may_umount(struct vfsmount *);
 extern long do_mount(char *, const char *, char *, unsigned long, void *);
+extern int do_remount(struct path *path, int flags, int mnt_flags, void *data);
 extern struct vfsmount *collect_mounts(struct path *);
 extern void drop_collected_mounts(struct vfsmount *);
 
@@ -2637,6 +2666,11 @@ extern struct inode *ilookup(struct super_block *sb, unsigned long ino);
 
 extern struct inode * iget5_locked(struct super_block *, unsigned long, int (*test)(struct inode *, void *), int (*set)(struct inode *, void *), void *);
 extern struct inode * iget_locked(struct super_block *, unsigned long);
+extern struct inode *find_inode_nowait(struct super_block *,
+				       unsigned long,
+				       int (*match)(struct inode *,
+						    unsigned long, void *),
+				       void *data);
 extern int insert_inode_locked4(struct inode *, unsigned long, int (*test)(struct inode *, void *), void *);
 extern int insert_inode_locked(struct inode *);
 extern void unlock_new_inode(struct inode *);
@@ -2691,6 +2725,8 @@ extern int generic_segment_checks(const struct iovec *iov,
 		unsigned long *nr_segs, size_t *count, int access_flags);
 
 /* fs/block_dev.c */
+extern ssize_t blkdev_aio_read(struct kiocb *iocb, const struct iovec *iov,
+			       unsigned long nr_segs, loff_t pos);
 extern ssize_t blkdev_aio_write(struct kiocb *iocb, const struct iovec *iov,
 				unsigned long nr_segs, loff_t pos);
 extern int blkdev_fsync(struct file *filp, struct dentry *dentry, int datasync);
@@ -2712,6 +2748,8 @@ file_ra_state_init(struct file_ra_state *ra, struct address_space *mapping);
 extern loff_t noop_llseek(struct file *file, loff_t offset, int origin);
 extern loff_t no_llseek(struct file *file, loff_t offset, int origin);
 extern loff_t generic_file_llseek(struct file *file, loff_t offset, int origin);
+extern loff_t generic_file_llseek_size(struct file *file, loff_t offset, int origin,
+					 loff_t maxsize, loff_t eof);
 extern loff_t generic_file_llseek_unlocked(struct file *file, loff_t offset,
 			int origin);
 extern int generic_file_open(struct inode * inode, struct file * filp);

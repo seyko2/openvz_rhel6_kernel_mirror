@@ -299,7 +299,7 @@ static int do_rst_aio(struct cpt_aio_ctx_image *aimg, loff_t pos, cpt_context_t 
 {
 	int err;
 	struct kioctx *aio_ctx;
-	extern spinlock_t aio_nr_lock;
+	struct ve_struct *ve;
 
 	aio_ctx = kmem_cache_alloc(kioctx_cachep, GFP_KERNEL);
 	if (!aio_ctx)
@@ -314,6 +314,12 @@ static int do_rst_aio(struct cpt_aio_ctx_image *aimg, loff_t pos, cpt_context_t 
 		return err;
 	}
 
+	ve = get_exec_env();
+	aio_ctx->ve = get_ve(ve);
+	spin_lock(&ve->aio_nr_lock);
+	ve->aio_nr += aio_ctx->max_reqs;
+	spin_unlock(&ve->aio_nr_lock);
+
 	aio_ctx->mm = current->mm;
 	atomic_inc(&aio_ctx->mm->mm_count);
 	atomic_set(&aio_ctx->users, 1);
@@ -323,10 +329,6 @@ static int do_rst_aio(struct cpt_aio_ctx_image *aimg, loff_t pos, cpt_context_t 
 	INIT_LIST_HEAD(&aio_ctx->active_reqs);
 	INIT_LIST_HEAD(&aio_ctx->run_list);
 	INIT_DELAYED_WORK(&aio_ctx->wq, aio_kick_handler);
-
-	spin_lock(&aio_nr_lock);
-	aio_nr += aio_ctx->max_reqs;
-	spin_unlock(&aio_nr_lock);
 
 	spin_lock(&aio_ctx->mm->ioctx_lock);
 	hlist_add_head(&aio_ctx->list, &aio_ctx->mm->ioctx_list);
@@ -929,8 +931,33 @@ check:
 				up_read(&mm->mmap_sem);
 				if (vma->vm_flags&VM_LOCKED)
 					err = __munlock(vmai->cpt_start, vmai->cpt_end-vmai->cpt_start, false);
-				else
-					err = __mlock(vmai->cpt_start, vmai->cpt_end-vmai->cpt_start, false);
+				else {
+					int ret;
+					int should_set_cap;
+					unsigned long locked;
+					unsigned long lock_limit;
+
+					locked = ((vmai->cpt_end - vmai->cpt_start) >> PAGE_SHIFT) +
+					          current->mm->locked_vm;
+					lock_limit = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >> PAGE_SHIFT;
+					should_set_cap = ((locked > lock_limit) && !capable(CAP_IPC_LOCK));
+					if (unlikely(should_set_cap)) {
+						if ((err = set_mlock_creds(1)) != 0) {
+							eprintk_ctx("set_mlock_creds: %d\n", err);
+							goto out;
+						}
+					}
+
+					ret = __mlock(vmai->cpt_start, vmai->cpt_end-vmai->cpt_start, false);
+
+					if (unlikely(should_set_cap)) {
+						if ((err = set_mlock_creds(0)) != 0) {
+							eprintk_ctx("set_mlock_creds: %d\n", err);
+							goto out;
+						}
+					}
+					err = ret;
+				}
 				/* When mlock fails with EFAULT, it means
 				 * that it could not bring in pages.
 				 * It can happen after mlock() on unreadable
@@ -1025,6 +1052,7 @@ static int do_rst_mm(struct cpt_mm_image *vmi, struct cpt_task_image *ti,
 	int err = 0;
 	unsigned int def_flags;
 	struct mm_struct *mm = current->mm;
+	struct ve_struct *ve = get_exec_env();
 #ifdef CONFIG_BEANCOUNTERS
 	struct user_beancounter *bc;
 #endif
@@ -1161,7 +1189,9 @@ static int do_rst_mm(struct cpt_mm_image *vmi, struct cpt_task_image *ti,
 	mm->def_flags = def_flags;
 	up_write(&mm->mmap_sem);
 
-
+	if (ve->aio_nr > ve->aio_max_nr)
+		wprintk_ctx("aio-nr=%lu exceed aio-max-nr=%lu\n",
+				ve->aio_nr, ve->aio_max_nr);
 out:
 	return err;
 }

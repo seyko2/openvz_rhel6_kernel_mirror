@@ -134,7 +134,7 @@ void cpt_printk_dentry(struct dentry *d, struct vfsmount *mnt)
 
 int cpt_need_delayfs(struct vfsmount *mnt)
 {
-	if (slab_ub(mnt) != get_exec_ub())
+	if (slab_ub(mnt) != get_exec_ub_top())
 		return 0;
 	if (mnt->mnt_sb->s_magic == FSMAGIC_NFS)
 		return 1;
@@ -309,8 +309,11 @@ static int cpt_dump_nfs_path(struct dentry *d, struct vfsmount *mnt,
 	p.mnt = mnt;
 
 	path = d_path(&p, pg, PAGE_SIZE);
-	if (IS_ERR(path))
+	if (IS_ERR(path)) {
+		eprintk_ctx("getting path failed\n");
+		__cpt_release_buf(ctx);
 		return PTR_ERR(path);
+	}
 
 	if (path - pg < dentry_name_len + 1) {
 		eprintk_ctx("full path is too long\n");
@@ -531,6 +534,9 @@ static int dump_one_flock(struct file_lock *fl, int owner,
 
 	if (delay && !fl->fl_ops)
 		delay = 0; /* no remote locks */
+	/* NFS4 is not supported yet, so we don't dump such locks */
+	if (delay && !fl->fl_ops->fl_owner_id)
+		return 0;
 
 	v = cpt_get_buf(ctx);
 
@@ -541,17 +547,18 @@ static int dump_one_flock(struct file_lock *fl, int owner,
 
 	v->cpt_owner = owner;
 
-	pid = fl->fl_pid;
-	if (pid) {
-		pid = pid_to_vpid(fl->fl_pid);
-		if (pid == -1) {
-			if (!(fl->fl_flags&FL_FLOCK)) {
-				eprintk_ctx("posix lock from another container?\n");
-				cpt_release_buf(ctx);
-				return -EBUSY;
-			}
-			pid = 0;
+	if (fl->fl_nspid)
+		pid = cpt_pid_nr(fl->fl_nspid);
+	else
+		pid = fl->fl_pid;
+
+	if (pid == -1) {
+		if (!(fl->fl_flags&FL_FLOCK)) {
+			eprintk_ctx("posix lock from another container?\n");
+			cpt_release_buf(ctx);
+			return -EBUSY;
 		}
+		pid = 0;
 	}
 
 	v->cpt_pid = pid;
@@ -702,9 +709,10 @@ static int dump_one_file(cpt_object_t *obj, struct file *file, cpt_context_t *ct
 	cpt_getattr(file->f_vfsmnt, file->f_dentry, &sbuf);
 
 	mntobj = cpt_lookup_vfsmount_obj(file->f_vfsmnt, ctx);
-	if (!mntobj && cpt_need_vfsmount(file->f_dentry, file->f_vfsmnt))
+	if (!mntobj && cpt_need_vfsmount(file->f_dentry, file->f_vfsmnt)) {
+		cpt_release_buf(ctx);
 		return -ENODEV;
-
+	}
 	v->cpt_i_mode = sbuf.mode;
 	v->cpt_lflags = 0;
 
@@ -1122,10 +1130,12 @@ static int dump_content_fifo(struct file *file, struct cpt_context *ctx)
 	/* OK, we must save fifo state. No semaphores required. */
 
 	if (ino->i_pipe->nrbufs) {
-		struct cpt_obj_bits *v = cpt_get_buf(ctx);
+		struct cpt_obj_bits *v;
 		struct pipe_inode_info *info;
 		int count, buf, nrbufs;
 
+		cpt_push_object(&saved_pos, ctx);
+		cpt_close_object(ctx);
 		mutex_lock(&ino->i_mutex);
 		info =  ino->i_pipe;
 		count = 0;
@@ -1134,6 +1144,7 @@ static int dump_content_fifo(struct file *file, struct cpt_context *ctx)
 		while (--nrbufs >= 0) {
 			if (!info->bufs[buf].ops->can_merge) {
 				mutex_unlock(&ino->i_mutex);
+				cpt_pop_object(&saved_pos, ctx);
 				eprintk_ctx("unknown format of pipe buffer\n");
 				return -EINVAL;
 			}
@@ -1143,10 +1154,10 @@ static int dump_content_fifo(struct file *file, struct cpt_context *ctx)
 
 		if (!count) {
 			mutex_unlock(&ino->i_mutex);
+			cpt_pop_object(&saved_pos, ctx);
 			return 0;
 		}
-
-		cpt_push_object(&saved_pos, ctx);
+		v = cpt_get_buf(ctx);
 		cpt_open_object(NULL, ctx);
 		v->cpt_next = CPT_NULL;
 		v->cpt_object = CPT_OBJ_BITS;
@@ -1252,7 +1263,9 @@ static int find_linked_dentry(struct dentry *d, struct vfsmount *mnt,
 		goto err_readdir;
 	}
 
+	mutex_lock(&de->d_inode->i_mutex);
 	found = lookup_one_len(entry.name, de, entry.namelen);
+	mutex_unlock(&de->d_inode->i_mutex);
 	if (IS_ERR(found)) {
 		err = PTR_ERR(found);
 		goto err_readdir;
@@ -2056,6 +2069,7 @@ struct args_t
 	char* path;
 	envid_t veid;
 	struct vfsmount *mnt;
+	char *buf;
 };
 
 static int dumptmpfs(void *arg)
@@ -2065,7 +2079,7 @@ static int dumptmpfs(void *arg)
 	int *pfd = args->pfd;
 	int fd0, fd2;
 	char *path = args->path;
-	char *argv[] = { "tar", "-c", "-S", "--numeric-owner", path, NULL };
+	char *argv[] = { "tar", "-c", "-S", "--numeric-owner", path, NULL, NULL, NULL };
 
 	i = real_env_create(args->veid, VE_ENTER|VE_SKIPLOCK, 2, NULL, 0);
 	if (i < 0) {
@@ -2074,7 +2088,27 @@ static int dumptmpfs(void *arg)
 		return 255 << 8;
 	}
 
-	if (args->mnt) {
+	if (args->mnt && !list_empty(&args->mnt->mnt_mounts) && strcmp(path, ".") != 0) {
+		/*
+		 * Child mounts prevent dumping of parent tmpfs content.
+		 * We use bind mount to make them hidden. Trick with
+		 * "--transform" allows to save full path in tar file.
+		 */
+		args->buf = vmalloc(strlen(path) + sizeof("s,^,//,S") + 1);
+		if (!args->buf) {
+			eprintk("cannot alloc memory\n");
+			module_put(THIS_MODULE);
+			return 255 << 8;
+		}
+
+		sprintf(args->buf, "s,^,%s/,S", path); /* Add a prefix to path */
+		path = ".";
+		argv[4] = path;
+		argv[5] = "--transform";
+		argv[6] = args->buf;
+	}
+
+	if (strcmp(path, ".") == 0) {
 		struct path pwd;
 
 		pwd.mnt = vfs_bind_mount(args->mnt, args->mnt->mnt_root);
@@ -2123,14 +2157,17 @@ static int cpt_dump_tmpfs(char *path, struct vfsmount *mnt,
 	struct file *f;
 	struct cpt_obj_tar v;
 	char buf[16];
-	int n;
+	int n, tar_ret;
 	loff_t saved_obj;
 	struct args_t args;
 	int status;
 	mm_segment_t oldfs;
 	sigset_t ignore, blocked;
 	struct ve_struct *oldenv;
-	u32 len = 0;
+	u32 len;
+	loff_t start_pos = ctx->file->f_pos;
+again:
+	len = 0;
 
 	err = sc_pipe(pfd);
 	if (err < 0)
@@ -2139,6 +2176,7 @@ static int cpt_dump_tmpfs(char *path, struct vfsmount *mnt,
 	args.path = path;
 	args.veid = VEID(get_exec_env());
 	args.mnt = mnt;
+	args.buf = NULL;
 	ignore.sig[0] = CPT_SIG_IGNORE_MASK;
 	sigprocmask(SIG_BLOCK, &ignore, &blocked);
 	oldenv = set_exec_env(get_ve0());
@@ -2179,18 +2217,22 @@ static int cpt_dump_tmpfs(char *path, struct vfsmount *mnt,
 		    ctx->current_object + offsetof(struct cpt_obj_tar, cpt_len));
 
 	oldfs = get_fs(); set_fs(KERNEL_DS);
-	if ((err = sc_waitx(pid, 0, &status)) < 0)
+	tar_ret = 0xffff;
+	err = sc_waitx(pid, 0, &status);
+	if (err < 0)
 		eprintk_ctx("wait4: %d\n", err);
 	else if ((status & 0x7f) == 0) {
-		err = (status & 0xff00) >> 8;
-		if (err != 0) {
-			eprintk_ctx("tar exited with %d\n", err);
+		err = tar_ret = (status & 0xff00) >> 8;
+		if (tar_ret != 0) {
+			eprintk_ctx("tar exited with %d\n", tar_ret);
 			err = -EINVAL;
 		}
 	} else {
 		eprintk_ctx("tar terminated\n");
 		err = -EINVAL;
 	}
+	if (args.buf)
+		vfree(args.buf);
 	set_fs(oldfs);
 	sigprocmask(SIG_SETMASK, &blocked, NULL);
 
@@ -2199,6 +2241,17 @@ static int cpt_dump_tmpfs(char *path, struct vfsmount *mnt,
 	ctx->align(ctx);
 	cpt_close_object(ctx);
 	cpt_pop_object(&saved_obj, ctx);
+
+	if ((tar_ret == 64 || tar_ret == 2) && mnt &&
+	    !list_empty(&mnt->mnt_mounts) && strcmp(path, ".") != 0) {
+		eprintk_ctx("old tar version is detected inside container, "
+			    "it does not allow us to dump child tmpfs bindmounts "
+			    "correctly, using workaround\n");
+		mnt = NULL;
+		ctx->file->f_pos = start_pos;
+		goto again;
+	}
+
 	return n ? : err;
 
 out:
@@ -2267,7 +2320,7 @@ static int is_ploop(struct vfsmount *mnt, struct cpt_context *ctx)
 
 	BUG_ON(!rwsem_is_locked(&namespace_sem));
 
-	if (slab_ub(mnt) != get_exec_ub())
+	if (slab_ub(mnt) != get_exec_ub_top())
 		return 0;
 
 	if (!sb->s_bdev || !sb->s_bdev->bd_disk)
@@ -2358,7 +2411,7 @@ static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
 
 	is_cgroup = !strcmp(mnt->mnt_sb->s_type->name, "cgroup");
 
-	if (slab_ub(mnt) != get_exec_ub()) {
+	if (slab_ub(mnt) != get_exec_ub_top()) {
 		v.cpt_mntflags |= CPT_MNT_EXT;
 	} else if (is_ploop(mnt, ctx)) {
 		v.cpt_mntflags |= CPT_MNT_PLOOP;
@@ -2407,7 +2460,7 @@ static int dump_vfsmount(cpt_object_t *obj, cpt_object_t *ns_obj,
 			mntget(mnt);
 			up_read(&namespace_sem);
 			if (ns_obj->o_flags & CPT_NAMESPACE_MAIN)
-				err = cpt_dump_tmpfs(path, NULL, ctx);
+				err = cpt_dump_tmpfs(path, mnt, ctx);
 			else
 				err = cpt_dump_tmpfs(".", mnt, ctx);
 			down_read(&namespace_sem);

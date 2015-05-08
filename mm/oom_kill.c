@@ -187,7 +187,7 @@ int oom_badness(struct task_struct *p, unsigned long totalpages,
 		return 0;
 
 	if (overdraft)
-		*overdraft = ub_current_overdraft(p->mm->mm_ub);
+		*overdraft = ub_current_overdraft(mm_ub_top(p->mm));
 
 	/*
 	 * The memory controller may have a limit of 0 bytes, so avoid a divide
@@ -470,7 +470,7 @@ static void oom_berserker(struct task_struct *victim,
 		if (tsk != victim) {
 			p = find_lock_task_mm(tsk);
 			if (p) {
-				mm_ub(p->mm)->ub_parms[UB_OOMGUARPAGES].failcnt++;
+				mm_ub_top(p->mm)->ub_parms[UB_OOMGUARPAGES].failcnt++;
 				task_unlock(p);
 			} else {
 				if (printk_ratelimit())
@@ -486,7 +486,7 @@ static void oom_berserker(struct task_struct *victim,
 			task_lock(tsk);
 			pr_warning("OOM kill in rage task %d (%s) score %d in ub %d\n",
 				   task_pid_nr(tsk), tsk->comm, score,
-				   ub ? ub->ub_uid : -1);
+				   ub ? top_beancounter(ub)->ub_uid : -1);
 			task_unlock(tsk);
 		}
 
@@ -495,7 +495,7 @@ static void oom_berserker(struct task_struct *victim,
 	}
 
 	pr_err("OOM killer in rage, %u tasks killed in ub %d\n",
-			killed, ub ? ub->ub_uid : -1);
+			killed, ub ? top_beancounter(ub)->ub_uid : -1);
 
 #ifdef CONFIG_VE
 	if (ub) {
@@ -905,6 +905,9 @@ skip:
  */
 void pagefault_out_of_memory(void)
 {
+	if (mem_cgroup_oom_synchronize(true))
+		return;
+
 	if (try_set_system_oom()) {
 		out_of_memory(NULL, 0, 0, NULL);
 		clear_system_oom();

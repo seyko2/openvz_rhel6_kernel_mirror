@@ -211,6 +211,8 @@ struct core_state {
 	struct completion startup;
 };
 
+struct oom_control;
+
 struct mm_struct {
 	struct vm_area_struct * mmap;		/* list of VMAs */
 	struct rb_root mm_rb;
@@ -288,8 +290,8 @@ struct mm_struct {
 	unsigned long flags; /* Must use atomic bitops to access the bits */
 
 	unsigned int vps_dumpable:2;
-	unsigned int global_oom:1;
-	unsigned int ub_oom:1;
+
+	struct oom_control *oom_ctrl;
 
 #ifdef CONFIG_BEANCOUNTERS
 	struct user_beancounter *mm_ub;
@@ -332,6 +334,17 @@ struct mm_struct {
 	unsigned long shlib_base;
 #endif
 };
+
+/* tasks entered to VE from host, no ptrace,
+ * or coredump or licdata access allowed
+ */
+#define VD_VE_ENTER_TASK	0
+/* tasks with ptrace and coredump allowed */
+#define VD_PTRACE_COREDUMP	1
+/* tasks accessed containers license data,
+ *  no ptrace and no coredump allowed
+ */
+#define VD_LICDATA_ACCESS	2
 
 /* Future-safe accessor for struct mm_struct's cpu_vm_mask. */
 #define mm_cpumask(mm) (&(mm)->cpu_vm_mask)

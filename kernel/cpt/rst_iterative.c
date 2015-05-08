@@ -19,6 +19,7 @@
 #include <asm/mmu.h>
 #include <asm/tlb.h>
 #include <linux/swapops.h>
+#include <linux/swap.h>
 #include <linux/shmem_fs.h>
 #include <linux/vmalloc.h>
 #include <linux/cpt_image.h>
@@ -261,7 +262,9 @@ static int nread(struct file *file, char *buf, int len)
 	return 0;
 }
 
-
+/*
+ * This one is close to read_swap_cache_async() in ideas, so look comments there.
+ */
 static struct page *dontread_swap_cache(swp_entry_t entry, struct file *file,
 					struct user_beancounter *ub)
 {
@@ -285,15 +288,31 @@ static struct page *dontread_swap_cache(swp_entry_t entry, struct file *file,
 				break;
 		}
 
-		lock_page(new_page);
+		err = radix_tree_preload(GFP_KERNEL);
+		if (err)
+			break;
+
+		err = swapcache_prepare(entry);
+		if (err == -EEXIST) {
+			radix_tree_preload_end();
+			cond_resched();
+			continue;
+		}
+		BUG_ON(err);
+
+		__set_page_locked(new_page);
 		SetPageSwapBacked(new_page);
-		err = add_to_swap_cache(new_page, entry, GFP_KERNEL);
+		err = __add_to_swap_cache(new_page, entry);
 		if (!err) {
+			radix_tree_preload_end();
 			lru_cache_add_anon(new_page);
 			goto dirty_page;
 		}
-		unlock_page(new_page);
-	} while (err != -ENOENT && err != -ENOMEM);
+		radix_tree_preload_end();
+		ClearPageSwapBacked(new_page);
+		__clear_page_locked(new_page);
+		swapcache_free(entry, NULL);
+	} while (err != -ENOMEM);
 
 	if (new_page) {
 		if (page_gang(new_page))
@@ -346,7 +365,7 @@ int rst_iteration(cpt_context_t *ctx)
 	ub = ctx->iter_ub;
 	if (ub == NULL) {
 		if (ctx->ve_id == 0) {
-			ub = get_beancounter_longterm(mm_ub(&init_mm));
+			ub = get_beancounter_longterm(mm_ub_top(&init_mm));
 		} else {
 			ub = get_beancounter_byuid(ctx->ve_id, 1);
 			err = -ENOMEM;
@@ -439,20 +458,16 @@ int rst_iteration(cpt_context_t *ctx)
 		if (add_to_swap(page, ub)) {
 			lru_cache_add_anon(page);
 			ent.val = page->private;
+			err = swap_duplicate(ent);
 		} else {
-			unlock_page(page);
 			gang_del_user_page(page);
-			page_cache_release(page);
-			eprintk_ctx("Failed to add page to swap\n");
 			err = -ENOMEM;
-			break;
 		}
 		unlock_page(page);
 		page_cache_release(page);
 
-		err = swap_duplicate(ent);
 		if (err) {
-			eprintk_ctx("Failed to duplicate page in swap\n");
+			eprintk_ctx("Failed to add page to swap\n");
 			break;
 		}
 

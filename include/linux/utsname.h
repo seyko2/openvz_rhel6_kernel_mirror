@@ -37,11 +37,29 @@ struct new_utsname {
 #include <linux/nsproxy.h>
 #include <linux/err.h>
 
+#ifdef CONFIG_X86
+struct uts_vdso {
+	void			*addr;
+	struct page		**pages;
+	unsigned int		nr_pages;
+	unsigned int		size;
+	unsigned long		version_off;
+};
+#endif
+
 struct uts_namespace {
 	struct kref kref;
 	struct new_utsname name;
 #ifndef __GENKSYMS__
 	unsigned int proc_inum;
+#endif
+#ifdef CONFIG_X86
+#ifdef CONFIG_X86_64
+	struct uts_vdso vdso;
+#endif
+#if defined(CONFIG_X86_32) || defined(CONFIG_IA32_EMULATION)
+	struct uts_vdso vdso32;
+#endif
 #endif
 };
 extern struct uts_namespace init_uts_ns;

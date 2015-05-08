@@ -85,6 +85,31 @@ static void cpt_dump_netstats(struct net_device *dev, struct cpt_context * ctx)
 	return;
 }
 
+static void cpt_dump_idev_cnf(struct net_device *dev, struct cpt_context * ctx)
+{
+	struct in_device *idev;
+	struct cpt_idev_cnf_image *d;
+
+	d = cpt_get_buf(ctx);
+	idev = in_dev_get(dev);
+	if (!idev)
+		goto out;
+	cpt_open_object(NULL, ctx);
+
+	d->cpt_next = CPT_NULL;
+	d->cpt_object = CPT_OBJ_NET_IDEV_CNF;
+	d->cpt_hdrlen = sizeof(*d);
+	d->cpt_content = CPT_CONTENT_VOID;
+
+	memcpy(d->cpt_data, idev->cnf.data, sizeof(d->cpt_data));
+	ctx->write(d, sizeof(*d), ctx);
+	cpt_close_object(ctx);
+	in_dev_put(idev);
+out:
+	cpt_release_buf(ctx);
+	return;
+}
+
 int cpt_dump_link(struct cpt_context * ctx)
 {
 	struct net *net = get_exec_env()->ve_netns;
@@ -152,6 +177,8 @@ dump:
 		cpt_close_object(ctx);
 		
 		cpt_dump_netstats(dev, ctx);
+
+		cpt_dump_idev_cnf(dev, ctx);
 
 		cpt_pop_object(&saved_obj, ctx);
 
@@ -574,7 +601,7 @@ out:
 
 static int cpt_dump_iptables(struct cpt_context *ctx)
 {
-	u64 mask = get_exec_env()->_iptables_modules;
+	u64 mask = get_exec_env()->ve_netns->_iptables_modules;
 	int pos, ret = 0;
 
 	if (!(mask & (VE_IP_IPTABLES_MOD|VE_IP_IPTABLES6_MOD)))
@@ -589,7 +616,7 @@ static int cpt_dump_iptables(struct cpt_context *ctx)
 			goto close;
 	}
 
-	if ((mask & VE_IP_IPTABLES6_MOD) != 0)
+	if (((mask & VE_IP_IPTABLES6_MOD) != 0) && ipv6_is_enabled())
 		ret = cpt_dump_xtables(ctx, true);
 close:
 	if (pos == ctx->file->f_pos || ret) {

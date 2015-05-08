@@ -110,7 +110,7 @@ static inline int ub_page_table_get_one(struct mm_struct *mm)
 {
 	if (mm->page_table_precharge)
 		return 0;
-	if (ub_kmem_charge(mm->mm_ub, PAGE_SIZE,
+	if (ub_kmem_charge(mm_ub_top(mm), PAGE_SIZE,
 				GFP_KERNEL | __GFP_SOFT_UBC))
 		return -ENOMEM;
 	return 1;
@@ -119,7 +119,7 @@ static inline int ub_page_table_get_one(struct mm_struct *mm)
 static inline void ub_page_table_put_one(struct mm_struct *mm, int one)
 {
 	if (one)
-		ub_kmem_uncharge(mm->mm_ub, PAGE_SIZE);
+		ub_kmem_uncharge(mm_ub_top(mm), PAGE_SIZE);
 }
 
 static inline int ub_page_table_charge(struct mm_struct *mm, int one)
@@ -127,7 +127,7 @@ static inline int ub_page_table_charge(struct mm_struct *mm, int one)
 	if (one)
 		return 0;
 	if (unlikely(mm->page_table_precharge == 0))
-		return ub_kmem_charge(mm->mm_ub, PAGE_SIZE,
+		return ub_kmem_charge(mm_ub_top(mm), PAGE_SIZE,
 				GFP_ATOMIC | __GFP_SOFT_UBC);
 	mm->page_table_precharge--;
 	return 0;
@@ -140,7 +140,7 @@ static inline void ub_page_table_uncharge(struct mm_struct *mm)
 
 static inline int ub_page_table_precharge(struct mm_struct *mm, long precharge)
 {
-	if (ub_kmem_charge(mm->mm_ub, precharge << PAGE_SHIFT,
+	if (ub_kmem_charge(mm_ub_top(mm), precharge << PAGE_SHIFT,
 				GFP_KERNEL | __GFP_SOFT_UBC))
 		return -ENOMEM;
 	mm->page_table_precharge += precharge;
@@ -150,7 +150,7 @@ static inline int ub_page_table_precharge(struct mm_struct *mm, long precharge)
 static inline void ub_page_table_commit(struct mm_struct *mm)
 {
 	if (unlikely(mm->page_table_precharge)) {
-		ub_kmem_uncharge(mm->mm_ub,
+		ub_kmem_uncharge(mm_ub_top(mm),
 				mm->page_table_precharge << PAGE_SHIFT);
 		mm->page_table_precharge = 0;
 	}

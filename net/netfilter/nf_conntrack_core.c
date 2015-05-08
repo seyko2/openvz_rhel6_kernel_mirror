@@ -173,8 +173,6 @@ clean_from_lists(struct nf_conn *ct)
 	nf_ct_remove_expectations(ct);
 }
 
-static void nf_conntrack_free(struct nf_conn *ct);
-
 static void
 destroy_conntrack(struct nf_conntrack *nfct)
 {
@@ -208,9 +206,10 @@ destroy_conntrack(struct nf_conntrack *nfct)
 	 * too. */
 	nf_ct_remove_expectations(ct);
 
+	/* We overload first tuple to link into unconfirmed list. */
 	if (!nf_ct_is_confirmed(ct)) {
-		if (!hlist_nulls_unhashed(&ct->tuplehash[IP_CT_DIR_ORIGINAL].hnnode))
-			hlist_nulls_del_rcu(&ct->tuplehash[IP_CT_DIR_ORIGINAL].hnnode);
+		BUG_ON(hlist_nulls_unhashed(&ct->tuplehash[IP_CT_DIR_ORIGINAL].hnnode));
+		hlist_nulls_del_rcu(&ct->tuplehash[IP_CT_DIR_ORIGINAL].hnnode);
 	}
 
 	NF_CT_STAT_INC(net, delete);
@@ -293,6 +292,19 @@ static void death_by_timeout(unsigned long ul_conntrack)
 	nf_ct_put(ct);
 }
 
+static inline bool
+nf_ct_key_equal(struct nf_conntrack_tuple_hash *h,
+			const struct nf_conntrack_tuple *tuple)
+{
+	struct nf_conn *ct = nf_ct_tuplehash_to_ctrack(h);
+
+	/* A conntrack can be recreated with the equal tuple,
+	 * so we need to check that the conntrack is confirmed
+	 */
+	return nf_ct_tuple_equal(tuple, &h->tuple) &&
+		nf_ct_is_confirmed(ct);
+}
+
 /*
  * Warning :
  * - Caller must take a reference on returned object
@@ -313,7 +325,7 @@ __nf_conntrack_find(struct net *net, const struct nf_conntrack_tuple *tuple)
 	local_bh_disable();
 begin:
 	hlist_nulls_for_each_entry_rcu(h, n, &net->ct.hash[hash], hnnode) {
-		if (nf_ct_tuple_equal(tuple, &h->tuple)) {
+		if (nf_ct_key_equal(h, tuple)) {
 			NF_CT_STAT_INC(net, found);
 			local_bh_enable();
 			return h;
@@ -349,11 +361,7 @@ begin:
 			     !atomic_inc_not_zero(&ct->ct_general.use)))
 			h = NULL;
 		else {
-			/* A conntrack can be recreated with the equal tuple,
-			 * so we need to check that the conntrack is confirmed
-			 */ 	
-			if (unlikely(!nf_ct_tuple_equal(tuple, &h->tuple) ||
-				     !nf_ct_is_confirmed(ct))) {
+			if (unlikely(!nf_ct_key_equal(h, tuple))) {
 				nf_ct_put(ct);
 				goto begin;
 			}
@@ -377,17 +385,46 @@ static void __nf_conntrack_hash_insert(struct nf_conn *ct,
 			   &net->ct.hash[repl_hash]);
 }
 
-void nf_conntrack_hash_insert(struct nf_conn *ct)
+int
+nf_conntrack_hash_check_insert(struct nf_conn *ct)
 {
 	struct net *net = nf_ct_net(ct);
 	unsigned int hash, repl_hash;
+	struct nf_conntrack_tuple_hash *h;
+	struct hlist_nulls_node *n;
 
 	hash = hash_conntrack(net, &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
 	repl_hash = hash_conntrack(net, &ct->tuplehash[IP_CT_DIR_REPLY].tuple);
 
+
+	spin_lock_bh(&nf_conntrack_lock);
+
+	/* See if there's one in the list already, including reverse */
+	hlist_nulls_for_each_entry(h, n, &net->ct.hash[hash], hnnode)
+		if (nf_ct_tuple_equal(&ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple,
+				      &h->tuple))
+			goto out;
+	hlist_nulls_for_each_entry(h, n, &net->ct.hash[repl_hash], hnnode)
+		if (nf_ct_tuple_equal(&ct->tuplehash[IP_CT_DIR_REPLY].tuple,
+				      &h->tuple))
+			goto out;
+
+	add_timer(&ct->timeout);
+	smp_wmb();
+	/* The caller holds a reference to this object */
+	atomic_set(&ct->ct_general.use, 2);
 	__nf_conntrack_hash_insert(ct, hash, repl_hash);
+	NF_CT_STAT_INC(net, insert);
+	spin_unlock_bh(&nf_conntrack_lock);
+
+	return 0;
+
+out:
+	NF_CT_STAT_INC(net, insert_failed);
+	spin_unlock_bh(&nf_conntrack_lock);
+	return -EEXIST;
 }
-EXPORT_SYMBOL_GPL(nf_conntrack_hash_insert);
+EXPORT_SYMBOL_GPL(nf_conntrack_hash_check_insert);
 
 /* Confirm a connection given skb; places it in hash table */
 int
@@ -619,20 +656,19 @@ struct nf_conn *nf_conntrack_alloc(struct net *net,
 	ct->ct_net = net;
 #endif
 
-	/*
-	 * changes to lookup keys must be done before setting refcnt to 1
+	/* Because we use RCU lookups, we set ct_general.use to zero before
+	 * this is inserted in any list.
 	 */
-	smp_wmb();
-	atomic_set(&ct->ct_general.use, 1);
+	atomic_set(&ct->ct_general.use, 0);
 	return ct;
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_alloc);
 
-static void nf_conntrack_free(struct nf_conn *ct)
+void nf_conntrack_free(struct nf_conn *ct)
 {
 	struct net *net = nf_ct_net(ct);
 
-	/* A freed object has refcnt == 0, thats
+	/* A freed object has refcnt == 0, that's
 	 * the golden rule for SLAB_DESTROY_BY_RCU
 	 */
 	NF_CT_ASSERT(atomic_read(&ct->ct_general.use) == 0);
@@ -643,6 +679,7 @@ static void nf_conntrack_free(struct nf_conn *ct)
 	smp_mb__before_atomic_dec();
 	atomic_dec(&net->ct.count);
 }
+EXPORT_SYMBOL_GPL(nf_conntrack_free);
 
 /* Allocate a new conntrack: we return -ENOMEM if classification
    failed due to stress.  Otherwise it really is unclassifiable. */
@@ -678,7 +715,7 @@ init_conntrack(struct net *net,
 	}
 
 	if (!l4proto->new(ct, skb, dataoff)) {
-		nf_ct_put(ct);
+		nf_conntrack_free(ct);
 		pr_debug("init conntrack: can't track with proto module\n");
 		return NULL;
 	}
@@ -712,6 +749,9 @@ init_conntrack(struct net *net,
 		__nf_ct_try_assign_helper(ct, GFP_ATOMIC);
 		NF_CT_STAT_INC(net, new);
 	}
+
+	/* Now it is inserted into the unconfirmed list, bump refcount */
+	nf_conntrack_get(&ct->ct_general);
 
 	/* Overload tuple linked list to put us in unconfirmed list. */
 	hlist_nulls_add_head_rcu(&ct->tuplehash[IP_CT_DIR_ORIGINAL].hnnode,

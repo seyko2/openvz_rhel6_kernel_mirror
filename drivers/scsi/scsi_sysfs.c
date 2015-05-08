@@ -251,7 +251,9 @@ show_shost_eh_deadline(struct device *dev,
 {
 	struct Scsi_Host *shost = class_to_shost(dev);
 
-	return sprintf(buf, "%d\n", shost->eh_deadline / HZ);
+	if (shost->eh_deadline == -1)
+		return snprintf(buf, strlen("off") + 2, "off\n");
+	return sprintf(buf, "%u\n", shost->eh_deadline / HZ);
 }
 
 static ssize_t
@@ -260,22 +262,34 @@ store_shost_eh_deadline(struct device *dev, struct device_attribute *attr,
 {
 	struct Scsi_Host *shost = class_to_shost(dev);
 	int ret = -EINVAL;
-	int eh_deadline;
-	unsigned long flags;
+	unsigned long deadline, flags;
 
-	if (shost->transportt->eh_strategy_handler)
+	if (shost->transportt && shost->transportt->eh_strategy_handler)
 		return ret;
 
-	if (sscanf(buf, "%d\n", &eh_deadline) == 1) {
-		spin_lock_irqsave(shost->host_lock, flags);
-		if (scsi_host_in_recovery(shost))
-			ret = -EBUSY;
-		else {
-			shost->eh_deadline = eh_deadline * HZ;
-			ret = count;
-		}
-		spin_unlock_irqrestore(shost->host_lock, flags);
+	if (!strncmp(buf, "off", strlen("off")))
+		deadline = -1;
+	else {
+		ret = kstrtoul(buf, 10, &deadline);
+		if (ret)
+			return ret;
+		if (deadline * HZ > UINT_MAX)
+			return -EINVAL;
 	}
+
+	spin_lock_irqsave(shost->host_lock, flags);
+	if (scsi_host_in_recovery(shost))
+		ret = -EBUSY;
+	else {
+		if (deadline == -1)
+			shost->eh_deadline = -1;
+		else
+			shost->eh_deadline = deadline * HZ;
+
+		ret = count;
+	}
+	spin_unlock_irqrestore(shost->host_lock, flags);
+
 	return ret;
 }
 
@@ -781,6 +795,11 @@ sdev_store_evt_##name(struct device *dev, struct device_attribute *attr,\
 #define REF_EVT(name) &dev_attr_evt_##name.attr
 
 DECLARE_EVT(media_change, MEDIA_CHANGE)
+DECLARE_EVT(inquiry_change_reported, INQUIRY_CHANGE_REPORTED)
+DECLARE_EVT(capacity_change_reported, CAPACITY_CHANGE_REPORTED)
+DECLARE_EVT(soft_threshold_reached, SOFT_THRESHOLD_REACHED_REPORTED)
+DECLARE_EVT(mode_parameter_change_reported, MODE_PARAMETER_CHANGE_REPORTED)
+DECLARE_EVT(lun_change_reported, LUN_CHANGE_REPORTED)
 
 /* Default template for device attributes.  May NOT be modified */
 static struct attribute *scsi_sdev_attrs[] = {
@@ -801,6 +820,11 @@ static struct attribute *scsi_sdev_attrs[] = {
 	&dev_attr_ioerr_cnt.attr,
 	&dev_attr_modalias.attr,
 	REF_EVT(media_change),
+	REF_EVT(inquiry_change_reported),
+	REF_EVT(capacity_change_reported),
+	REF_EVT(soft_threshold_reached),
+	REF_EVT(mode_parameter_change_reported),
+	REF_EVT(lun_change_reported),
 	NULL
 };
 

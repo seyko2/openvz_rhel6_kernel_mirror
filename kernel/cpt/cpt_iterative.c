@@ -186,8 +186,8 @@ retry:
 		ptep_set_wrprotect(vma->vm_mm, addr, pte);
 		if (add_to_xfer_list(pg, iter, ctx)) {
 			pte_unmap_unlock(pte, ptl);
-			err = flush_transfer(iter, ctx);
 			flush_tlb_range(vma, vma->vm_start, vma->vm_end);
+			err = flush_transfer(iter, ctx);
 			if (err)
 				return err;
 			pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
@@ -516,6 +516,7 @@ static int iter_one_shm(struct inode * inode,
 	struct dentry dummyd;
 	struct splice_desc sd;
 	ssize_t retval;
+	int err;
 
 	if (!S_ISREG(inode->i_mode))
 		return 0;
@@ -537,7 +538,9 @@ static int iter_one_shm(struct inode * inode,
 
 	fops_put(dummyf.f_op);
 
-	return (retval < 0) ? : 0;
+	err = flush_transfer(iter, ctx);
+
+	return retval < 0 ? retval : err;
 }
 
 extern spinlock_t inode_lock;

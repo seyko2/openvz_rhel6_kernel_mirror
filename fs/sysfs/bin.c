@@ -491,7 +491,17 @@ int sysfs_create_bin_file(struct kobject * kobj, struct bin_attribute * attr)
 	if (!ve_sysfs_alowed())
 		return 0;
 
-	BUG_ON(!kobj || !kobj->sd || !attr);
+	BUG_ON(!kobj || !attr);
+
+	/* RHEL specific
+	 *
+	 * RHEL6 has half-complete netns support that got pulled in, in
+	 * order to just add basic support for netns. kobj changes cannot
+	 * be backported due to kABI and failing gracefully here is the
+	 * only option.
+	 */
+	if (!kobj->sd)
+		return -ENOTSUPP;
 
 	return sysfs_add_file(kobj->sd, &attr->attr, SYSFS_KOBJ_BIN_ATTR);
 }

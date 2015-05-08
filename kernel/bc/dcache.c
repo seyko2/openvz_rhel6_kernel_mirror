@@ -420,7 +420,7 @@ void ub_update_threshold(void)
 	mutex_lock(&mutex);
 	rcu_read_lock();
 
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		if (!get_beancounter_rcu(ub))
 			continue;
 		rcu_read_unlock();
@@ -432,7 +432,7 @@ void ub_update_threshold(void)
 		put_beancounter(ub);
 	}
 
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		if (!get_beancounter_rcu(ub))
 			continue;
 		rcu_read_unlock();

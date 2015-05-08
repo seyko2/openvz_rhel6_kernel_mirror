@@ -81,8 +81,8 @@ extern void ub_kmemcache_free(struct kmem_cache *cachep);
 struct vm_struct;
 #define inc_vmalloc_charged(vm, flags)	do {				\
 		if (flags & __GFP_UBC)					\
-			ub_percpu_add(get_exec_ub(), vmalloc_charged,	\
-					vm->nr_pages);			\
+			ub_percpu_add(get_exec_ub_top(),		\
+				vmalloc_charged, vm->nr_pages);		\
 	} while (0)
 #define dec_vmalloc_charged(vm)		do {				\
 		struct user_beancounter *ub;				\

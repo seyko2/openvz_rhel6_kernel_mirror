@@ -118,7 +118,8 @@ static void mitigation_timeout(unsigned long data)
 	spin_lock_irq(&plo->lock);
 	if (test_bit(PLOOP_S_WAIT_PROCESS, &plo->state) &&
 	    (!list_empty(&plo->entry_queue) ||
-	     (plo->bio_head && !list_empty(&plo->free_list))) &&
+	     ((plo->bio_head || !bio_list_empty(&plo->bio_discard_list)) &&
+	      !list_empty(&plo->free_list))) &&
 	    waitqueue_active(&plo->waitq))
 		wake_up_interruptible(&plo->waitq);
 	spin_unlock_irq(&plo->lock);
@@ -236,7 +237,8 @@ void ploop_preq_drop(struct ploop_device * plo, struct list_head *drop_list,
 	if (waitqueue_active(&plo->req_waitq))
 		wake_up(&plo->req_waitq);
 	else if (test_bit(PLOOP_S_WAIT_PROCESS, &plo->state) &&
-		waitqueue_active(&plo->waitq) && plo->bio_head)
+		waitqueue_active(&plo->waitq) &&
+		(plo->bio_head || !bio_list_empty(&plo->bio_discard_list)))
 		wake_up_interruptible(&plo->waitq);
 
 	ploop_uncongest(plo);
@@ -515,7 +517,7 @@ ploop_bio_queue(struct ploop_device * plo, struct bio * bio,
 			}
 			BIO_ENDIO(plo->queue, bio, err);
 			list_add(&preq->list, &plo->free_list);
-			plo->bio_qlen--;
+			plo->bio_discard_qlen--;
 			plo->bio_total--;
 			return;
 		}
@@ -543,7 +545,11 @@ ploop_bio_queue(struct ploop_device * plo, struct bio * bio,
 
 	__TRACE("A %p %u\n", preq, preq->req_cluster);
 
-	plo->bio_qlen--;
+	if (unlikely(bio_rw_flagged(bio, BIO_RW_DISCARD)))
+		plo->bio_discard_qlen--;
+	else
+		plo->bio_qlen--;
+
 	ploop_entry_add(plo, preq);
 
 	if (bio->bi_size && !bio_rw_flagged(bio, BIO_RW_DISCARD))
@@ -724,6 +730,28 @@ static void process_bio_queue(struct ploop_device * plo, struct list_head *drop_
 	}
 }
 
+static void process_discard_bio_queue(struct ploop_device * plo, struct list_head *drop_list)
+{
+	bool discard = test_bit(PLOOP_S_DISCARD, &plo->state);
+
+	while (!list_empty(&plo->free_list)) {
+		struct bio *tmp;
+
+		/* Only one discard bio can be handled concurrently */
+		if (discard && ploop_discard_is_inprogress(plo->fbd))
+			return;
+
+		tmp = bio_list_pop(&plo->bio_discard_list);
+		if (tmp == NULL)
+			break;
+
+		/* If PLOOP_S_DISCARD isn't set, ploop_bio_queue
+		 * will complete it with a proper error.
+		 */
+		ploop_bio_queue(plo, tmp, drop_list);
+	}
+}
+
 static int ploop_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct bio * nbio;
@@ -807,6 +835,12 @@ static int ploop_make_request(struct request_queue *q, struct bio *bio)
 		return 0;
 	}
 
+	if (bio_rw_flagged(bio, BIO_RW_DISCARD)) {
+		bio_list_add(&plo->bio_discard_list, bio);
+		plo->bio_discard_qlen++;
+		goto queued;
+	}
+
 	/* Write tracking in fast path does not work at the moment. */
 	if (unlikely(test_bit(PLOOP_S_TRACK, &plo->state) &&
 		     (bio->bi_rw & WRITE)))
@@ -826,9 +860,6 @@ static int ploop_make_request(struct request_queue *q, struct bio *bio)
 		goto queue;
 
 	if (unlikely(nbio == NULL))
-		goto queue;
-
-	if (bio_rw_flagged(bio, BIO_RW_DISCARD))
 		goto queue;
 
 	/* Try to merge before checking for fastpath. Maybe, this
@@ -912,6 +943,7 @@ queue:
 	/* second chance to merge requests */
 	process_bio_queue(plo, &drop_list);
 
+queued:
 	/* If main thread is waiting for requests, wake it up.
 	 * But try to mitigate wakeups, delaying wakeup for some short
 	 * time.
@@ -919,7 +951,8 @@ queue:
 	if (test_bit(PLOOP_S_WAIT_PROCESS, &plo->state)) {
 		/* Synchronous requests are not batched. */
 		if (plo->entry_qlen > plo->tune.batch_entry_qlen ||
-			(bio->bi_rw & ((1<<BIO_RW_UNPLUG)|BIO_FLUSH|BIO_FUA))) {
+		    (bio->bi_rw & ((1<<BIO_RW_UNPLUG)|BIO_FLUSH|BIO_FUA)) ||
+		    (!bio_list_empty(&plo->bio_discard_list) && !list_empty(&plo->free_list))) {
 			wake_up_interruptible(&plo->waitq);
 		} else if (!timer_pending(&plo->mitigation_timer)) {
 			mod_timer(&plo->mitigation_timer,
@@ -1270,7 +1303,8 @@ static void ploop_complete_request(struct ploop_request * preq)
 		if (waitqueue_active(&plo->req_waitq))
 			wake_up(&plo->req_waitq);
 		else if (test_bit(PLOOP_S_WAIT_PROCESS, &plo->state) &&
-			 waitqueue_active(&plo->waitq) && plo->bio_head)
+			 waitqueue_active(&plo->waitq) &&
+			 (plo->bio_head || !bio_list_empty(&plo->bio_discard_list)))
 			wake_up_interruptible(&plo->waitq);
 	}
 	plo->bio_total -= nr_completed;
@@ -1296,7 +1330,7 @@ void ploop_fail_request(struct ploop_request * preq, int err)
 {
 	struct ploop_device * plo = preq->plo;
 
-	ploop_set_error(preq, err);
+	ploop_req_set_error(preq, err);
 
 	spin_lock_irq(&plo->lock);
 	if (err == -ENOSPC) {
@@ -1312,16 +1346,22 @@ void ploop_fail_request(struct ploop_request * preq, int err)
 }
 EXPORT_SYMBOL(ploop_fail_request);
 
-void ploop_fail_immediate(struct ploop_request * preq, int err)
+static void ploop_fail_immediate(struct ploop_request * preq, int err)
 {
 	struct ploop_device * plo = preq->plo;
 
-	ploop_set_error(preq, err);
+	ploop_req_set_error(preq, err);
 
 	set_bit(PLOOP_S_ABORT, &plo->state);
 	preq->eng_state = PLOOP_E_COMPLETE;
 	ploop_complete_request(preq);
 }
+
+#define PLOOP_REQ_FAIL_IMMEDIATE(preq, err)		\
+	do {						\
+		PLOOP_REQ_TRACE_ERROR(preq, err);	\
+		ploop_fail_immediate(preq, err);	\
+	} while (0);
 
 void ploop_complete_io_state(struct ploop_request * preq)
 {
@@ -1542,7 +1582,7 @@ ploop_reloc_sched_read(struct ploop_request *preq, iblock_t iblk)
 
 		if (!preq->aux_bio ||
 		    fill_bio(plo, preq->aux_bio, preq->req_cluster)) {
-			ploop_fail_immediate(preq, -ENOMEM);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, -ENOMEM);
 			return;
 		}
 	}
@@ -2029,7 +2069,7 @@ restart:
 
 		if (!preq->aux_bio ||
 		    fill_bio(plo, preq->aux_bio, preq->req_cluster)) {
-			ploop_fail_immediate(preq, -ENOMEM);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, -ENOMEM);
 			return;
 		}
 
@@ -2135,7 +2175,7 @@ delta_io:
 
 				if (!preq->aux_bio ||
 				    fill_bio(plo, preq->aux_bio, preq->req_cluster)) {
-					ploop_fail_immediate(preq, -ENOMEM);
+					PLOOP_REQ_FAIL_IMMEDIATE(preq, -ENOMEM);
 					return;
 				}
 				spin_lock_irq(&plo->lock);
@@ -2190,7 +2230,7 @@ delta_io:
 	return;
 
 error:
-	ploop_fail_immediate(preq, err);
+	PLOOP_REQ_FAIL_IMMEDIATE(preq, err);
 }
 
 static void ploop_req_state_process(struct ploop_request * preq)
@@ -2236,7 +2276,7 @@ restart:
 		if (preq->error ||
 		    ((preq->req_rw & (1<<BIO_RW)) &&
 		     test_bit(PLOOP_S_ABORT, &plo->state))) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2311,7 +2351,7 @@ restart:
 		 */
 		if (preq->error ||
 		    test_bit(PLOOP_S_ABORT, &plo->state)) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2351,7 +2391,7 @@ restart:
 
 			if (!preq->aux_bio ||
 			    fill_bio(plo, preq->aux_bio, preq->req_cluster)) {
-				ploop_fail_immediate(preq, -ENOMEM);
+				PLOOP_REQ_FAIL_IMMEDIATE(preq, -ENOMEM);
 				break;
 			}
 
@@ -2390,7 +2430,7 @@ restart:
 
 		if (preq->error ||
 		    test_bit(PLOOP_S_ABORT, &plo->state)) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2398,6 +2438,9 @@ restart:
 
 		top_delta = ploop_top_delta(plo);
 		sbl.head = sbl.tail = preq->aux_bio;
+
+		/* Relocated data write required sync before BAT updatee */
+		set_bit(PLOOP_REQ_FORCE_FUA, &preq->state);
 
 		if (test_bit(PLOOP_REQ_RELOC_S, &preq->state)) {
 			preq->eng_state = PLOOP_E_DATA_WBI;
@@ -2417,7 +2460,7 @@ restart:
 	{
 		if (preq->error ||
 		    test_bit(PLOOP_S_ABORT, &plo->state)) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2446,7 +2489,7 @@ restart:
 		 */
 		if (preq->error ||
 		    test_bit(PLOOP_S_ABORT, &plo->state)) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2484,7 +2527,7 @@ restart:
 		/* Data written. Index must be updated. */
 		if (preq->error ||
 		    test_bit(PLOOP_S_ABORT, &plo->state)) {
-			ploop_fail_immediate(preq, preq->error ? : -EIO);
+			PLOOP_REQ_FAIL_IMMEDIATE(preq, preq->error ? : -EIO);
 			break;
 		}
 
@@ -2531,7 +2574,9 @@ static void ploop_wait(struct ploop_device * plo, int once)
 			    (!test_bit(PLOOP_S_ATTENTION, &plo->state) ||
 			     !plo->active_reqs))
 				break;
-		} else if (plo->bio_head) {
+		} else if (plo->bio_head ||
+			   (!bio_list_empty(&plo->bio_discard_list) &&
+			    !ploop_discard_is_inprogress(plo->fbd))) {
 			/* ready_queue and entry_queue are empty, but
 			 * bio list not. Obviously, we'd like to process
 			 * bio_list instead of sleeping */
@@ -2633,6 +2678,7 @@ static int ploop_thread(void * data)
 		BUG_ON (!list_empty(&drop_list));
 
 		process_bio_queue(plo, &drop_list);
+		process_discard_bio_queue(plo, &drop_list);
 
 		if (!list_empty(&drop_list)) {
 			spin_unlock_irq(&plo->lock);
@@ -2709,7 +2755,8 @@ static int ploop_thread(void * data)
 		 * no requests are in process or in entry queue
 		 */
 		if (kthread_should_stop() && !plo->active_reqs &&
-		    list_empty(&plo->entry_queue) && !plo->bio_head)
+		    list_empty(&plo->entry_queue) && !plo->bio_head &&
+		    bio_list_empty(&plo->bio_discard_list))
 			break;
 
 wait_more:
@@ -3096,6 +3143,11 @@ static int ploop_snapshot(struct ploop_device * plo, unsigned long arg,
 		sb = find_and_freeze_bdev(plo->disk, &bdev);
 		mutex_lock(&plo->ctl_mutex);
 		plo->maintenance_type = PLOOP_MNTN_OFF;
+		if (IS_ERR(sb)) {
+			err = PTR_ERR(sb);
+			fput(snapdata.file);
+			goto out_close2;
+		}
 	}
 
 	ploop_quiesce(plo);
@@ -3301,6 +3353,7 @@ static void ploop_update_fmt_version(struct ploop_device * plo)
 
 	if (delta->level == 0 &&
 	    (delta->ops->capability & PLOOP_FMT_CAP_IDENTICAL)) {
+		ploop_map_destroy(&plo->map);
 		set_bit(PLOOP_MAP_IDENTICAL, &plo->map.flags);
 		plo->fmt_version = PLOOP_FMT_UNDEFINED;
 	}
@@ -3532,8 +3585,18 @@ static int ploop_bd_full(struct backing_dev_info *bdi, long long nr, int root)
 
 		current->journal_info = NULL;
 		ret = sb->s_op->statfs(F_DENTRY(file), &buf);
-		if (ret || buf.f_bfree * buf.f_bsize < reserved + nr)
+		if (ret || buf.f_bfree * buf.f_bsize < reserved + nr) {
+			static unsigned long full_warn_time;
+
+			if (printk_timed_ratelimit(&full_warn_time, 60*60*HZ))
+				printk(KERN_WARNING
+				       "ploop%d: host disk is almost full "
+				       "(%llu < %llu); CT sees -ENOSPC !\n",
+				       plo->index, buf.f_bfree * buf.f_bsize,
+				       reserved + nr);
+
 			rc = 1;
+		}
 
 		fput(file);
 		current->journal_info = jctx;
@@ -4581,6 +4644,7 @@ static struct ploop_device *__ploop_dev_alloc(int index)
 	track_init(plo);
 	KOBJECT_INIT(&plo->kobj, &ploop_ktype);
 	atomic_inc(&plo_count);
+	bio_list_init(&plo->bio_discard_list);
 
 	dk->major		= ploop_major;
 	dk->first_minor		= index << PLOOP_PART_SHIFT;

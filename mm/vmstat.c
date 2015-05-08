@@ -965,11 +965,13 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 		   "\n  junk_pages:        %ld"
 		   "\n  eldest_page:       %u"
 		   "\n  committed:         %ld"
-		   "\n  overcommit:        %ld %%",
+		   "\n  overcommit:        %ld %%"
+		   "\n  force_scan:        %d",
 		   get_zone_junk_pages(zone),
 		   jiffies_to_msecs(jiffies - zone->eldest_timestamp),
 		   zone->committed,
-		   zone->committed * 100 / zone->present_pages - 100);
+		   zone->committed * 100 / zone->present_pages - 100,
+		   zone->force_scan);
 
 	seq_printf(m,
 		   "\n  vmscan_priorities: ");

@@ -228,7 +228,7 @@ repeat:
 		zap_ve = 1;
 	write_unlock_irq(&tasklist_lock);
 	release_thread(p);
-	ub_task_uncharge(p->task_bc.task_ub);
+	ub_task_uncharge(get_task_ub_top(p));
 	if (zap_ve)
 		ve_cleanup_schedule(p->ve_task_info.owner_env);
 	call_rcu(&p->rcu, delayed_put_task_struct);
@@ -733,11 +733,11 @@ void exit_mm(struct task_struct * tsk)
 EXPORT_SYMBOL(exit_mm);
 
 /*
- * When we die, we re-parent all our children.
- * Try to give them to another thread in our thread
- * group, and if no such member exists, give it to
- * the child reaper process (ie "init") in our pid
- * space.
+ * When we die, we re-parent all our children, and try to:
+ * 1. give them to another thread in our thread group, if such a member exists
+ * 2. give it to the first ancestor process which prctl'd itself as a
+ *    child_subreaper for its children (like a service manager)
+ * 3. give it to the init process (PID 1) in our pid namespace
  */
 static struct task_struct *find_new_reaper(struct task_struct *father)
 {
@@ -766,6 +766,29 @@ static struct task_struct *find_new_reaper(struct task_struct *father)
 		 * forget_original_parent() must move them somewhere.
 		 */
 		pid_ns->child_reaper = init_pid_ns.child_reaper;
+	} else if (father->signal->has_child_subreaper) {
+		struct task_struct *reaper;
+
+		/*
+		 * Find the first ancestor marked as child_subreaper.
+		 * Note that the code below checks same_thread_group(reaper,
+		 * pid_ns->child_reaper).  This is what we need to DTRT in a
+		 * PID namespace. However we still need the check above, see
+		 * http://marc.info/?l=linux-kernel&m=131385460420380
+		 */
+		for (reaper = father->real_parent;
+		     reaper != &init_task;
+		     reaper = reaper->real_parent) {
+			if (same_thread_group(reaper, pid_ns->child_reaper))
+				break;
+			if (!reaper->signal->is_child_subreaper)
+				continue;
+			thread = reaper;
+			do {
+				if (!(thread->flags & PF_EXITING))
+					return reaper;
+			} while_each_thread_ve(reaper, thread);
+		}
 	}
 
 	return pid_ns->child_reaper;
@@ -1009,10 +1032,13 @@ NORET_TYPE void do_exit(long code)
 	exit_signals(tsk);  /* sets PF_EXITING */
 	/*
 	 * tsk->flags are checked in the futex code to protect against
-	 * an exiting task cleaning up the robust pi futexes.
+	 * an exiting task cleaning up the robust pi futexes, and in
+	 * task_work_add() to avoid the race with exit_task_work().
 	 */
 	smp_mb();
 	spin_unlock_wait(&tsk->pi_lock);
+
+	exit_task_work(tsk);
 
 	if (unlikely(in_atomic()))
 		printk(KERN_INFO "note: %s[%d] exited with preempt_count %d\n",

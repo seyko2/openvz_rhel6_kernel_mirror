@@ -53,6 +53,7 @@ struct sysfs_dirent sysfs_root = {
 	.s_flags	= SYSFS_DIR,
 	.s_mode		= S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
 	.s_ino		= 1,
+	.owner_env	= &ve0,
 };
 
 static void init_ve0_sysfs_root(void)

@@ -58,22 +58,34 @@ static void kaio_complete_io_state(struct ploop_request * preq)
 {
 	struct ploop_device * plo   = preq->plo;
 	unsigned long flags;
+	int post_fsync = 0;
 
-	if (preq->error || !(preq->req_rw & BIO_FUA) ||
-	    preq->eng_state == PLOOP_E_INDEX_READ ||
-	    preq->eng_state == PLOOP_E_TRANS_INDEX_READ ||
-	    preq->eng_state == PLOOP_E_DELTA_READ ||
-	    preq->eng_state == PLOOP_E_TRANS_DELTA_READ) {
+	if (preq->error ||
+		preq->eng_state == PLOOP_E_INDEX_READ ||
+		preq->eng_state == PLOOP_E_TRANS_INDEX_READ ||
+		preq->eng_state == PLOOP_E_DELTA_READ ||
+		preq->eng_state == PLOOP_E_TRANS_DELTA_READ) {
 		ploop_complete_io_state(preq);
 		return;
 	}
 
-	preq->req_rw &= ~BIO_FUA;
+	/* Convert requested fua to fsync */
+	if (test_and_clear_bit(PLOOP_REQ_FORCE_FUA, &preq->state) ||
+		test_and_clear_bit(PLOOP_REQ_KAIO_FSYNC, &preq->state))
+		post_fsync = 1;
 
-	spin_lock_irqsave(&plo->lock, flags);
-	kaio_queue_fsync_req(preq);
-	plo->st.bio_syncwait++;
-	spin_unlock_irqrestore(&plo->lock, flags);
+	if (!post_fsync &&
+		!ploop_req_delay_fua_possible(preq->req_rw, preq) &&
+		(preq->req_rw & BIO_FUA))
+		post_fsync = 1;
+
+	if (post_fsync) {
+		spin_lock_irqsave(&plo->lock, flags);
+		kaio_queue_fsync_req(preq);
+		plo->st.bio_syncwait++;
+		spin_unlock_irqrestore(&plo->lock, flags);
+	} else
+		ploop_complete_io_state(preq);
 }
 
 static void kaio_complete_io_request(struct ploop_request * preq)
@@ -101,7 +113,7 @@ static void kaio_rw_aio_complete(u64 data, long res)
 		bio_list_for_each(b, &preq->bl)
 			printk(" bio=%p: bi_sector=%ld bi_size=%d\n",
 			       b, b->bi_sector, b->bi_size);
-		ploop_set_error(preq, res);
+		PLOOP_REQ_SET_ERROR(preq, (int)res);
 	}
 
 	kaio_complete_io_request(preq);
@@ -261,7 +273,7 @@ static void kaio_sbl_submit(struct file *file, struct ploop_request *preq,
 
 		kreq = kaio_kreq_alloc(preq, &nr_segs);
 		if (!kreq) {
-			ploop_set_error(preq, -ENOMEM);
+			PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 			break;
 		}
 
@@ -270,7 +282,7 @@ static void kaio_sbl_submit(struct file *file, struct ploop_request *preq,
 		atomic_inc(&preq->io_count);
 		err = kaio_kernel_submit(file, kreq, nr_segs, copy, off, rw);
 		if (err) {
-			ploop_set_error(preq, err);
+			PLOOP_REQ_SET_ERROR(preq, err);
 			ploop_complete_io_request(preq);
 			kfree(kreq);
 			break;
@@ -386,7 +398,7 @@ static int kaio_fsync_thread(void * data)
 			err = kaio_truncate(io, io->files.file,
 					    preq->prealloc_size >> (plo->cluster_log + 9));
 			if (err)
-				ploop_set_error(preq, -EIO);
+				PLOOP_REQ_SET_ERROR(preq, -EIO);
 		} else {
 			struct file *file = io->files.file;
 			err = vfs_fsync(file, file->f_path.dentry, 1);
@@ -396,7 +408,7 @@ static int kaio_fsync_thread(void * data)
 				       "on ploop%d)\n",
 				       err, io->files.inode->i_ino,
 				       io2level(io), plo->index);
-				ploop_set_error(preq, -EIO);
+				PLOOP_REQ_SET_ERROR(preq, -EIO);
 			} else if (preq->req_rw & BIO_FLUSH) {
 				BUG_ON(!preq->req_size);
 				preq->req_rw &= ~BIO_FLUSH;
@@ -427,7 +439,7 @@ kaio_submit_alloc(struct ploop_io *io, struct ploop_request * preq,
 	loff_t clu_siz = 1 << log;
 
 	if (delta->flags & PLOOP_FMT_RDONLY) {
-		ploop_fail_request(preq, -EBADF);
+		PLOOP_FAIL_REQUEST(preq, -EBADF);
 		return;
 	}
 
@@ -566,7 +578,7 @@ kaio_io_page(struct ploop_io * io, int op, struct ploop_request * preq,
 
 	iocb = aio_kernel_alloc(GFP_NOIO);
 	if (!iocb) {
-		ploop_set_error(preq, -ENOMEM);
+		PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 		goto out;
 	}
 
@@ -582,7 +594,7 @@ kaio_io_page(struct ploop_io * io, int op, struct ploop_request * preq,
 		       "err=%d (rw=%s; state=%ld/0x%lx; pos=%lld)\n",
 		       err, (op == IOCB_CMD_WRITE_ITER) ? "WRITE" : "READ",
 		       preq->eng_state, preq->state, pos);
-		ploop_set_error(preq, err);
+		PLOOP_REQ_SET_ERROR(preq, err);
 	}
 
 out:
@@ -601,6 +613,11 @@ kaio_write_page(struct ploop_io * io, struct ploop_request * preq,
 		 struct page * page, sector_t sec, int fua)
 {
 	ploop_prepare_tracker(preq, sec);
+
+	/* No FUA in kaio, convert it to fsync */
+	if (fua)
+		set_bit(PLOOP_REQ_KAIO_FSYNC, &preq->state);
+
 	kaio_io_page(io, IOCB_CMD_WRITE_ITER, preq, page, sec);
 }
 

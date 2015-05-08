@@ -53,6 +53,7 @@
 #include <linux/perf_event.h>
 #include <linux/kprobes.h>
 #include <linux/kmod.h>
+#include <linux/capability.h>
 #include <linux/cpuset.h>
 #include <linux/ve_task.h>
 #include <linux/mmgang.h>
@@ -78,8 +79,6 @@ static int deprecated_sysctl_warning(struct __sysctl_args *args);
 /* External variables not in a header file. */
 extern int C_A_D;
 extern int print_fatal_signals;
-extern int sysctl_overcommit_memory;
-extern int sysctl_overcommit_ratio;
 extern int sysctl_panic_on_oom;
 extern int sysctl_oom_kill_allocating_task;
 extern int sysctl_oom_dump_tasks;
@@ -121,6 +120,11 @@ extern int kexec_reuse_crash;
 extern int pramcache_ploop_nosync;
 /* bz790921 */
 int unmap_area_factor_sysctl_handler(ctl_table *table, int write,
+			void __user *buffer, size_t *length, loff_t *ppos);
+
+/* bz1032702 */
+extern unsigned int sysctl_meminfo_legacy_layout;
+int meminfo_legacy_layout_sysctl_handler(ctl_table *table, int write,
 			void __user *buffer, size_t *length, loff_t *ppos);
 
 int exec_shield = (1<<0);
@@ -175,6 +179,7 @@ static int minolduid;
 static int min_percpu_pagelist_fract = 8;
 
 static int ngroups_max = NGROUPS_MAX;
+static const int cap_last_cap = CAP_LAST_CAP;
 
 #ifdef CONFIG_MODULES
 extern char modprobe_path[];
@@ -225,6 +230,7 @@ extern int vm_age_factor;
 extern unsigned long commitment_for_unlimited_containers;
 extern int commitment_for_unlimited_containers_handler(struct ctl_table *table,
 		int write, void __user *buffer, size_t *lenp, loff_t *ppos);
+extern int vm_force_scan_thresh;
 #endif /* CONFIG_MEMORY_GANGS */
 
 #ifdef CONFIG_PROC_SYSCTL
@@ -268,9 +274,11 @@ struct ctl_table *sysctl_ve_table(struct ctl_table *orig,
 		return orig;
 
 	*onstack = *orig;
-	if (orig->extra1 != NULL) /* per-ve_struct variable */
+	if (orig->extra1 != NULL) { /* per-ve_struct variable */
 		onstack->data = (void *)get_exec_env() +
 			(unsigned long)orig->extra1;
+		onstack->extra1 = NULL;
+	}
 	else if (write && !ve_is_super(get_exec_env())) /* immutable */
 		return NULL;
 
@@ -1046,6 +1054,13 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0444,
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.procname	= "cap_last_cap",
+		.data		= (void *)&cap_last_cap,
+		.maxlen		= sizeof(int),
+		.mode		= 0444,
+		.proc_handler	= proc_dointvec,
+	},
 #if defined(CONFIG_LOCKUP_DETECTOR)
 	{
 		.ctl_name	= CTL_UNNUMBERED,
@@ -1434,7 +1449,16 @@ static struct ctl_table vm_table[] = {
 		.data		= &sysctl_overcommit_ratio,
 		.maxlen		= sizeof(sysctl_overcommit_ratio),
 		.mode		= 0644,
-		.proc_handler	= &proc_dointvec,
+		.proc_handler	= overcommit_ratio_handler,
+		.strategy	= &sysctl_data,
+	},
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "overcommit_kbytes",
+		.data		= &sysctl_overcommit_kbytes,
+		.maxlen		= sizeof(sysctl_overcommit_kbytes),
+		.mode		= 0644,
+		.proc_handler	= overcommit_kbytes_handler,
 	},
 	{
 		.ctl_name	= VM_PAGE_CLUSTER,
@@ -1621,6 +1645,14 @@ static struct ctl_table vm_table[] = {
 		.maxlen         = sizeof(unsigned int),
 		.mode           = 0644,
 		.proc_handler   = unmap_area_factor_sysctl_handler,
+		.strategy       = &sysctl_intvec,
+	},
+	{
+		.procname       = "meminfo_legacy_layout",
+		.data           = &sysctl_meminfo_legacy_layout,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = meminfo_legacy_layout_sysctl_handler,
 		.strategy       = &sysctl_intvec,
 	},
 	{
@@ -1903,6 +1935,16 @@ static struct ctl_table vm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= commitment_for_unlimited_containers_handler,
 	},
+	{
+		.procname	= "force_scan_thresh",
+		.ctl_name	= CTL_UNNUMBERED,
+		.data		= &vm_force_scan_thresh,
+		.maxlen		= sizeof(vm_force_scan_thresh),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
 #endif /* CONFIG_MEMORY_GANGS */
 #ifdef CONFIG_PSWAP
 	{
@@ -2044,16 +2086,16 @@ static struct ctl_table fs_table[] = {
 #ifdef CONFIG_AIO
 	{
 		.procname	= "aio-nr",
-		.data		= &aio_nr,
-		.maxlen		= sizeof(aio_nr),
-		.mode		= 0444,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0444 | S_ISVTX,
+		.extra1		= (void *)offsetof(struct ve_struct, aio_nr),
 		.proc_handler	= &proc_doulongvec_minmax,
 	},
 	{
 		.procname	= "aio-max-nr",
-		.data		= &aio_max_nr,
-		.maxlen		= sizeof(aio_max_nr),
-		.mode		= 0644,
+		.maxlen		= sizeof(unsigned long),
+		.mode		= 0644 | S_ISVTX,
+		.extra1		= (void *)offsetof(struct ve_struct, aio_max_nr),
 		.proc_handler	= &proc_doulongvec_minmax,
 	},
 #endif /* CONFIG_AIO */
@@ -2095,9 +2137,9 @@ static struct ctl_table fs_table[] = {
 	{
 		.ctl_name	= CTL_UNNUMBERED,
 		.procname	= "odirect_enable",
-		.extra1		= (void *)offsetof(struct ve_struct, odirect_enable),
 		.maxlen		= sizeof(int),
-		.mode           = 0644 | S_ISVTX,
+		.extra1		= (void *)offsetof(struct ve_struct, odirect_enable),
+		.mode		= 0644 | S_ISVTX,
 		.proc_handler   = proc_dointvec,
 	},
 	{
@@ -2118,7 +2160,7 @@ static struct ctl_table fs_table[] = {
 		.procname	= "pramcache_ploop_nosync",
 		.data		= &pramcache_ploop_nosync,
 		.maxlen		= sizeof(int),
-	 	.mode		= 0644,
+		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
 #endif

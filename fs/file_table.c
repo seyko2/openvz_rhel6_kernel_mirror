@@ -117,7 +117,7 @@ struct file *get_empty_filp(void)
 	struct file * f;
 	int acct;
 
-	acct = (get_exec_ub() == get_ub0());
+	acct = (get_exec_ub_top() == get_ub0());
 	/*
 	 * Privileged users can go above max_files
 	 */

@@ -20,6 +20,7 @@ show up in /proc/sys/kernel:
 - acpi_video_flags
 - acct
 - callhome		     [ S390 only ]
+- cap_last_cap
 - auto_msgmni
 - core_pattern
 - core_pipe_limit
@@ -497,6 +498,13 @@ can be ORed together:
         instead of using the one provided by the hardware.
  512 - A kernel warning has occurred.
 1024 - A module from drivers/staging was loaded.
+
+==============================================================
+
+cap_last_cap
+
+Highest valid capability of the running kernel.  Exports
+CAP_LAST_CAP from the kernel.
 
 ==============================================================
 

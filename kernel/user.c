@@ -116,7 +116,7 @@ static struct user_struct *uid_hash_find(uid_t uid, struct hlist_head *hashent)
 		if (user->uid == uid) {
 			/* possibly resurrect an "almost deleted" object */
 			if (atomic_inc_return(&user->__count) == 1) {
-				user->user_ub = get_beancounter(get_exec_ub());
+				user->user_ub = get_beancounter(get_exec_ub_top());
 				ub_kmem_charge(user->user_ub, uid_cachep->objuse, __GFP_NOFAIL);
 				cancel_delayed_work(&user->work);
 			}
@@ -450,7 +450,7 @@ struct user_struct *alloc_uid(struct user_namespace *ns, uid_t uid)
 	spin_unlock_irq(&uidhash_lock);
 
 	if (!up) {
-		struct user_beancounter *ub = get_exec_ub();
+		struct user_beancounter *ub = get_exec_ub_top();
 
 		new = ub_kmem_alloc(ub, uid_cachep, GFP_KERNEL | __GFP_ZERO);
 		if (!new)

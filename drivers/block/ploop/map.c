@@ -527,7 +527,7 @@ int map_index_fault(struct ploop_request * preq)
 
 err_out:
 	clear_bit(PLOOP_MAP_READ, &m->state);
-	ploop_fail_request(preq, err);
+	PLOOP_FAIL_REQUEST(preq, err);
 	return 0;
 }
 
@@ -921,7 +921,7 @@ void ploop_index_update(struct ploop_request * preq)
 	if (test_bit(PLOOP_REQ_ZERO, &preq->state) && !blk) {
 		printk("Either map_node is corrupted or bug in "
 		       "ploop-balloon (%u)\n", preq->req_cluster);
-		ploop_set_error(preq, -EIO);
+		PLOOP_REQ_SET_ERROR(preq, -EIO);
 		goto corrupted;
 	}
 
@@ -952,13 +952,19 @@ void ploop_index_update(struct ploop_request * preq)
 	__TRACE("wbi %p %u %p\n", preq, preq->req_cluster, m);
 	plo->st.map_single_writes++;
 	top_delta->ops->map_index(top_delta, m->mn_start, &sec);
+
+	/* Relocate requires consistent writes, mark such reqs appropriately */
+	if (test_bit(PLOOP_REQ_RELOC_A, &preq->state) ||
+		test_bit(PLOOP_REQ_RELOC_S, &preq->state))
+		set_bit(PLOOP_REQ_FORCE_FUA, &preq->state);
+
 	top_delta->io.ops->write_page(&top_delta->io, preq, page, sec,
 				      !!(preq->req_rw & BIO_FUA));
 	put_page(page);
 	return;
 
 enomem:
-	ploop_set_error(preq, -ENOMEM);
+	PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 corrupted:
 	set_bit(PLOOP_S_ABORT, &plo->state);
 out:
@@ -1049,6 +1055,15 @@ static void map_wb_complete_post_process(struct ploop_map *map,
 		memset(page_address(preq->aux_bio->bi_io_vec[i].bv_page),
 		       0, PAGE_SIZE);
 
+	/*
+	 * Lately we think we does sync of nullified blocks at format
+	 * driver by image fsync before header update.
+	 * But we write this data directly into underlying device
+	 * bypassing EXT4 by usage of extent map tree
+	 * (see dio_submit()). So fsync of EXT4 image doesnt help us.
+	 * We need to force sync of nullified blocks.
+	 */
+	set_bit(PLOOP_REQ_FORCE_FUA, &preq->state);
 	top_delta->io.ops->submit(&top_delta->io, preq, preq->req_rw,
 				  &sbl, preq->iblock, 1<<plo->cluster_log);
 }
@@ -1063,7 +1078,7 @@ static void map_wb_complete(struct map_node * m, int err)
 	int delayed = 0;
 	unsigned int idx;
 	sector_t sec;
-	int fua;
+	int fua, force_fua;
 
 	/* First, complete processing of written back indices,
 	 * finally instantiate indices in mapping cache.
@@ -1102,7 +1117,7 @@ static void map_wb_complete(struct map_node * m, int err)
 					BUG_ON(MAP_LEVEL(m) != top_delta->level);
 				}
 			} else {
-				ploop_set_error(preq, err);
+				PLOOP_REQ_SET_ERROR(preq, err);
 			}
 			put_page(preq->sinfo.wi.tpage);
 			preq->sinfo.wi.tpage = NULL;
@@ -1110,7 +1125,7 @@ static void map_wb_complete(struct map_node * m, int err)
 			break;
 		case PLOOP_E_INDEX_DELAY:
 			if (err) {
-				ploop_set_error(preq, err);
+				PLOOP_REQ_SET_ERROR(preq, err);
 				preq->eng_state = PLOOP_E_COMPLETE;
 				spin_lock_irq(&plo->lock);
 				list_del(cursor);
@@ -1134,6 +1149,7 @@ static void map_wb_complete(struct map_node * m, int err)
 
 	main_preq = NULL;
 	fua = 0;
+	force_fua = 0;
 
 	list_for_each_safe(cursor, tmp, &m->io_queue) {
 		struct ploop_request * preq;
@@ -1143,7 +1159,7 @@ static void map_wb_complete(struct map_node * m, int err)
 		switch (preq->eng_state) {
 		case PLOOP_E_INDEX_DELAY:
 			if (page == NULL) {
-				ploop_set_error(preq, -ENOMEM);
+				PLOOP_REQ_SET_ERROR(preq, -ENOMEM);
 				preq->eng_state = PLOOP_E_COMPLETE;
 				spin_lock_irq(&plo->lock);
 				list_del(cursor);
@@ -1154,6 +1170,10 @@ static void map_wb_complete(struct map_node * m, int err)
 
 			if (preq->req_rw & BIO_FUA)
 				fua = 1;
+
+			if (test_bit(PLOOP_REQ_RELOC_A, &preq->state) ||
+				test_bit(PLOOP_REQ_RELOC_S, &preq->state))
+				force_fua = 1;
 
 			preq->eng_state = PLOOP_E_INDEX_WB;
 			get_page(page);
@@ -1179,6 +1199,10 @@ static void map_wb_complete(struct map_node * m, int err)
 	__TRACE("wbi2 %p %u %p\n", main_preq, main_preq->req_cluster, m);
 	plo->st.map_multi_writes++;
 	top_delta->ops->map_index(top_delta, m->mn_start, &sec);
+
+	if (force_fua)
+		set_bit(PLOOP_REQ_FORCE_FUA, &main_preq->state);
+
 	top_delta->io.ops->write_page(&top_delta->io, main_preq, page, sec, fua);
 	put_page(page);
 }

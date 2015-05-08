@@ -107,7 +107,7 @@ static unsigned long tmpfs_ram_pages(void)
 	if (unlikely(!current->mm))
 		goto out;
 
-	ub = current->mm->mm_ub;
+	ub = mm_ub_top(current->mm);
 	if (ub != get_ub0()) {
 		ub_rampages = ub->ub_parms[UB_PHYSPAGES].limit;
 		if (ub_rampages == UB_MAXVALUE)
@@ -155,6 +155,8 @@ static inline int shmem_acct_size(unsigned long flags, loff_t size,
 	long pages = VM_ACCT(size);
 	int ret;
 
+	ub = top_beancounter(ub);
+
 	if (flags & VM_NORESERVE)
 		return 0;
 
@@ -169,27 +171,6 @@ static inline int shmem_acct_size(unsigned long flags, loff_t size,
 	ret = security_vm_enough_memory_kern(pages);
 	if (ret)
 		goto no_vm;
-#ifdef CONFIG_VE
-	/*
-	 * In container the maximal amount of shared pages available
-	 * is limited with @max_blocks so make sure we have space
-	 * left thus users won't wonder why their applications get
-	 * VM_FAULT_SIGBUS when pool exceeded.
-	 */
-	if (!ve_is_super(get_exec_env())) {
-		struct shmem_sb_info *sbinfo = SHMEM_SB(shm_mnt->mnt_sb);
-
-		if (sbinfo->max_blocks) {
-			if (sbinfo->max_blocks < pages ||
-			    percpu_counter_compare(&sbinfo->used_blocks,
-						   sbinfo->max_blocks - pages) > 0) {
-				ret = -ENOSPC;
-				goto no_vm;
-			}
-		}
-	}
-#endif
-
 	return 0;
 
 no_vm:
@@ -204,6 +185,8 @@ static inline void shmem_unacct_size(unsigned long flags, loff_t size,
 				     struct user_beancounter *ub)
 {
 	long pages = VM_ACCT(size);
+
+	ub = top_beancounter(ub);
 
 	if (!(flags & VM_NORESERVE)) {
 		vm_unacct_memory(pages);
@@ -335,7 +318,7 @@ static int shmem_add_to_page_cache(struct page *page,
 	VM_BUG_ON(!PageSwapBacked(page));
 
 	if (!expected)
-		error = radix_tree_preload(gfp & GFP_RECLAIM_MASK);
+		error = radix_tree_maybe_preload(gfp & GFP_RECLAIM_MASK);
 	if (!error) {
 		page_cache_get(page);
 		page->mapping = mapping;
@@ -2242,7 +2225,9 @@ static struct inode *shmem_alloc_inode(struct super_block *sb)
 {
 	struct user_beancounter *ub = get_exec_ub();
 	struct shmem_inode_info *info;
-	info = ub_kmem_alloc(ub, shmem_inode_cachep, GFP_KERNEL);
+
+	info = ub_kmem_alloc(top_beancounter(ub),
+			     shmem_inode_cachep, GFP_KERNEL);
 	if (!info)
 		return NULL;
 	info->shmi_ub = get_beancounter(ub);
@@ -2257,7 +2242,8 @@ static void shmem_destroy_inode(struct inode *inode)
 		/* only struct inode is valid if it's an inline symlink */
 		mpol_free_shared_policy(&SHMEM_I(inode)->policy);
 	}
-	ub_kmem_free(ub, shmem_inode_cachep, SHMEM_I(inode));
+	ub_kmem_free(top_beancounter(ub),
+		     shmem_inode_cachep, SHMEM_I(inode));
 	put_beancounter(ub);
 }
 
@@ -2573,7 +2559,7 @@ int shmem_zero_setup(struct vm_area_struct *vma)
 	if (vma->vm_file)
 		fput(vma->vm_file);
 	else if (vma->vm_flags & VM_WRITE)
-               uncharge_beancounter_fast(vma->vm_mm->mm_ub, UB_PRIVVMPAGES,
+               uncharge_beancounter_fast(mm_ub_top(vma->vm_mm), UB_PRIVVMPAGES,
                                size >> PAGE_SHIFT);
 
 	vma->vm_file = file;

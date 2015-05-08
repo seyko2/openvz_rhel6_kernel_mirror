@@ -92,7 +92,7 @@ static void __br_forward(const struct net_bridge_port *to, struct sk_buff *skb)
 /* called with rcu_read_lock */
 int br_deliver(const struct net_bridge_port *to, struct sk_buff *skb, int free)
 {
-	if (should_deliver(to, skb)) {
+	if (to && should_deliver(to, skb)) {
 		if (!free) {
 			struct sk_buff *skb2;
 
@@ -296,6 +296,7 @@ void br_multicast_deliver(struct net_bridge_mdb_entry *mdst,
 void br_multicast_forward(struct net_bridge_mdb_entry *mdst,
 			  struct sk_buff *skb, struct sk_buff *skb2)
 {
+	skb->brmark = BR_ALREADY_SEEN;
 	br_multicast_flood(mdst, skb, skb2, __br_forward);
 }
 #endif

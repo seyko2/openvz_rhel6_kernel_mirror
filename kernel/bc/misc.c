@@ -72,7 +72,7 @@ void ub_task_put(struct task_struct *task)
 
 int ub_file_charge(struct file *f)
 {
-	struct user_beancounter *ub = get_exec_ub();
+	struct user_beancounter *ub = get_exec_ub_top();
 	int err;
 
 	err = charge_beancounter_fast(ub, UB_NUMFILE, 1, UB_HARD);

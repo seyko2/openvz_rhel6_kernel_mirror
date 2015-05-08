@@ -20,6 +20,7 @@ struct file * rst_open_tty(cpt_object_t *mntobj, char *name,
 __u32 cpt_tty_fasync(struct file *file, struct cpt_context *ctx);
 
 int rst_posix_locks(struct cpt_context *ctx);
+void fixup_lock_pid(struct inode *inode, unsigned int cpt_pid, struct ve_struct *ve);
 
 struct file *rst_file(loff_t pos, int fd, struct cpt_context *ctx);
 int rst_task_namespace(struct cpt_task_image *ti, struct cpt_context *ctx);
@@ -61,6 +62,8 @@ int rst_inotify(cpt_context_t *ctx);
 struct file *rst_open_inotify(struct cpt_file_image *fi,
 			      unsigned flags,
 			      struct cpt_context *ctx);
+
+extern struct dentry_operations delay_dir_dops;
 
 #define FAKE_FILE_NAME "[fake_file]"
 

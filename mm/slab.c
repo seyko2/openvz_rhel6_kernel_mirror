@@ -2992,10 +2992,22 @@ static int cache_grow(struct kmem_cache *cachep,
 	check_irq_off();
 	spin_lock(&l3->list_lock);
 
+	/*
+	 * The cache could have been grown by another process while we were
+	 * allocating the slab. Bail out if there are too many free objects.
+	 */
+	if (unlikely(l3->free_objects > l3->free_limit)) {
+		kmem_freepages(cachep, objp);
+		if (OFF_SLAB(cachep))
+			kmem_cache_free(cachep->slabp_cache, slabp);
+		goto out;
+	}
+
 	/* Make slab active. */
 	list_add_tail(&slabp->list, &(l3->slabs_free));
 	STATS_INC_GROWN(cachep);
 	l3->free_objects += cachep->num;
+out:
 	spin_unlock(&l3->list_lock);
 	return 1;
 opps1:
@@ -3323,7 +3335,7 @@ static inline void *____cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 
 #ifdef CONFIG_NUMA
 /*
- * Try allocating on another node if PF_SPREAD_SLAB|PF_MEMPOLICY.
+ * Try allocating on another node if PFA_SPREAD_SLAB|PF_MEMPOLICY.
  *
  * If we are in_interrupt, then process context, including cpusets and
  * mempolicy, may not apply and should not be used for allocation policy.
@@ -3511,6 +3523,7 @@ __cache_alloc_node(struct kmem_cache *cachep, gfp_t flags, int nodeid,
 	flags &= gfp_allowed_mask;
 
 	lockdep_trace_alloc(flags);
+	WARN_ON((flags & __GFP_FS) && current->journal_info);
 
 	if (slab_should_failslab(cachep, flags))
 		return NULL;
@@ -3560,7 +3573,8 @@ __do_cache_alloc(struct kmem_cache *cache, gfp_t flags)
 {
 	void *objp;
 
-	if (unlikely(current->flags & (PF_SPREAD_SLAB | PF_MEMPOLICY))) {
+	if (unlikely(current->flags & PF_MEMPOLICY ||
+			cpuset_do_slab_mem_spread())) {
 		objp = alternate_node_alloc(cache, flags);
 		if (objp)
 			goto out;

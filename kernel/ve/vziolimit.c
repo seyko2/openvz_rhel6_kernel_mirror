@@ -151,7 +151,7 @@ static void iolimit_balance_dirty(struct iolimit *iolimit,
 static int iolimit_virtinfo(struct vnotifier_block *nb,
 		unsigned long cmd, void *arg, int old_ret)
 {
-	struct user_beancounter *ub = get_exec_ub();
+	struct user_beancounter *ub = get_exec_ub_top();
 	struct iolimit *iolimit = ub->private_data2;
 	unsigned long flags, timeout;
 

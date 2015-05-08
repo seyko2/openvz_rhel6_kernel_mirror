@@ -315,7 +315,6 @@ out:
 
 	nf_reset(skb);
 	length = skb->len;
-	skb_init_brmark(skb);
 
 	netif_rx(skb);
 
@@ -481,8 +480,8 @@ static void veth_setup(struct net_device *dev)
 	 * No other features, as they are:
 	 *  - checksumming is required, and nobody else will done our job
 	 */
-	dev->features |= NETIF_F_VENET | NETIF_F_VIRTUAL | NETIF_F_LLTX |
-		NETIF_F_HIGHDMA;
+	dev->features |= NETIF_F_LLTX |	NETIF_F_HIGHDMA;
+	dev->vz_features |= NETIF_F_VENET | NETIF_F_VIRTUAL;
 
 	SET_ETHTOOL_OPS(dev, &veth_ethtool_ops);
 }

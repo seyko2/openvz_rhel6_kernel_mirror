@@ -185,6 +185,7 @@ struct kioctx {
 	atomic_t		users;
 	int			dead;
 	struct mm_struct	*mm;
+	struct ve_struct	*ve;
 
 	/* This needs improving */
 	unsigned long		user_id;
@@ -208,8 +209,8 @@ struct kioctx {
 	struct rcu_head		rcu_head;
 };
 
-extern spinlock_t aio_nr_lock;
-extern unsigned long aio_nr;
+#define AIO_MAX_NR_DEFAULT	0x10000
+
 extern struct kmem_cache	*kioctx_cachep;
 
 /* prototypes */

@@ -12,15 +12,12 @@ static void show_cpuinfo_core(struct seq_file *m, struct cpuinfo_x86 *c,
 			      unsigned int cpu)
 {
 #ifdef CONFIG_SMP
-	if (c->x86_max_cores * smp_num_siblings > 1) {
-		seq_printf(m, "physical id\t: %d\n", c->phys_proc_id);
-		seq_printf(m, "siblings\t: %d\n",
-			   cpumask_weight(cpu_core_mask(cpu)));
-		seq_printf(m, "core id\t\t: %d\n", c->cpu_core_id);
-		seq_printf(m, "cpu cores\t: %d\n", c->booted_cores);
-		seq_printf(m, "apicid\t\t: %d\n", c->apicid);
-		seq_printf(m, "initial apicid\t: %d\n", c->initial_apicid);
-	}
+	seq_printf(m, "physical id\t: %d\n", c->phys_proc_id);
+	seq_printf(m, "siblings\t: %d\n", cpumask_weight(cpu_core_mask(cpu)));
+	seq_printf(m, "core id\t\t: %d\n", c->cpu_core_id);
+	seq_printf(m, "cpu cores\t: %d\n", c->booted_cores);
+	seq_printf(m, "apicid\t\t: %d\n", c->apicid);
+	seq_printf(m, "initial apicid\t: %d\n", c->initial_apicid);
 #endif
 }
 
@@ -62,6 +59,10 @@ static void show_cpuinfo_misc(struct seq_file *m, struct cpuinfo_x86 *c)
 }
 #endif
 
+extern void __do_cpuid_fault(unsigned int op, unsigned int count,
+			     unsigned int *eax, unsigned int *ebx,
+			     unsigned int *ecx, unsigned int *edx);
+
 struct cpu_flags {
 	u32 val[RHNCAPINTS];
 };
@@ -70,19 +71,11 @@ static DEFINE_PER_CPU(struct cpu_flags, cpu_flags);
 
 static void init_cpu_flags(void *dummy)
 {
-	int cpu = smp_processor_id();
-	struct cpu_flags *flags = &per_cpu(cpu_flags, cpu);
-	struct cpuinfo_x86 *c = &cpu_data(cpu);
-	unsigned int tmp1, tmp2;
-	int i;
+	struct cpu_flags *flags;
 
-	bitmap_zero((unsigned long *)flags, 32*RHNCAPINTS);
-	for (i = 0; i < 32*RHNCAPINTS; i++)
-		if (cpu_has(c, i))
-			set_bit(i, (unsigned long *)flags);
-
-	cpuid(0x00000001, &tmp1, &tmp2, &flags->val[4], &flags->val[0]);
-	cpuid(0x80000001, &tmp1, &tmp2, &flags->val[6], &flags->val[1]);
+	flags = &get_cpu_var(cpu_flags);
+	get_cpu_cap_masked(flags->val);
+	put_cpu_var(cpu_flags);
 }
 
 static int show_cpuinfo(struct seq_file *m, void *v)
@@ -110,6 +103,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "stepping\t: %d\n", c->x86_mask);
 	else
 		seq_printf(m, "stepping\t: unknown\n");
+	if (c->microcode)
+		seq_printf(m, "microcode\t: %u\n", c->microcode);
 
 	if (cpu_has(c, X86_FEATURE_TSC)) {
 		unsigned int freq = cpufreq_quick_get(cpu);

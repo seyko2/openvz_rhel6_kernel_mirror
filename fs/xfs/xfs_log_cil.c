@@ -32,68 +32,6 @@
 #include "xfs_discard.h"
 
 /*
- * Perform initial CIL structure initialisation. If the CIL is not
- * enabled in this filesystem, ensure the log->l_cilp is null so
- * we can check this conditional to determine if we are doing delayed
- * logging or not.
- */
-int
-xlog_cil_init(
-	struct log	*log)
-{
-	struct xfs_cil	*cil;
-	struct xfs_cil_ctx *ctx;
-
-	log->l_cilp = NULL;
-	if (!(log->l_mp->m_flags & XFS_MOUNT_DELAYLOG))
-		return 0;
-
-	cil = kmem_zalloc(sizeof(*cil), KM_SLEEP|KM_MAYFAIL);
-	if (!cil)
-		return ENOMEM;
-
-	ctx = kmem_zalloc(sizeof(*ctx), KM_SLEEP|KM_MAYFAIL);
-	if (!ctx) {
-		kmem_free(cil);
-		return ENOMEM;
-	}
-
-	INIT_LIST_HEAD(&cil->xc_cil);
-	INIT_LIST_HEAD(&cil->xc_committing);
-	spin_lock_init(&cil->xc_cil_lock);
-	init_rwsem(&cil->xc_ctx_lock);
-	init_waitqueue_head(&cil->xc_commit_wait);
-
-	INIT_LIST_HEAD(&ctx->committing);
-	INIT_LIST_HEAD(&ctx->busy_extents);
-	ctx->sequence = 1;
-	ctx->cil = cil;
-	cil->xc_ctx = ctx;
-	cil->xc_current_sequence = ctx->sequence;
-
-	cil->xc_log = log;
-	log->l_cilp = cil;
-	return 0;
-}
-
-void
-xlog_cil_destroy(
-	struct log	*log)
-{
-	if (!log->l_cilp)
-		return;
-
-	if (log->l_cilp->xc_ctx) {
-		if (log->l_cilp->xc_ctx->ticket)
-			xfs_log_ticket_put(log->l_cilp->xc_ctx->ticket);
-		kmem_free(log->l_cilp->xc_ctx);
-	}
-
-	ASSERT(list_empty(&log->l_cilp->xc_cil));
-	kmem_free(log->l_cilp);
-}
-
-/*
  * Allocate a new ticket. Failing to get a new ticket makes it really hard to
  * recover, so we don't allow failure here. Also, we allocate in a context that
  * we don't want to be issuing transactions from, so we need to tell the
@@ -403,8 +341,7 @@ xlog_cil_committed(
  */
 STATIC int
 xlog_cil_push(
-	struct log		*log,
-	xfs_lsn_t		push_seq)
+	struct log		*log)
 {
 	struct xfs_cil		*cil = log->l_cilp;
 	struct xfs_log_vec	*lv;
@@ -420,40 +357,65 @@ xlog_cil_push(
 	struct xfs_log_iovec	lhdr;
 	struct xfs_log_vec	lvhdr = { NULL };
 	xfs_lsn_t		commit_lsn;
+	xfs_lsn_t		push_seq;
 
 	if (!cil)
 		return 0;
 
-	ASSERT(!push_seq || push_seq <= cil->xc_ctx->sequence);
-
 	new_ctx = kmem_zalloc(sizeof(*new_ctx), KM_SLEEP|KM_NOFS);
 	new_ctx->ticket = xlog_cil_ticket_alloc(log);
 
-	/*
-	 * Lock out transaction commit, but don't block for background pushes
-	 * unless we are well over the CIL space limit. See the definition of
-	 * XLOG_CIL_HARD_SPACE_LIMIT() for the full explanation of the logic
-	 * used here.
-	 */
-	if (!down_write_trylock(&cil->xc_ctx_lock)) {
-		if (!push_seq &&
-		    cil->xc_ctx->space_used < XLOG_CIL_HARD_SPACE_LIMIT(log))
-			goto out_free_ticket;
-		down_write(&cil->xc_ctx_lock);
-	}
+	down_write(&cil->xc_ctx_lock);
 	ctx = cil->xc_ctx;
 
-	/* check if we've anything to push */
-	if (list_empty(&cil->xc_cil))
-		goto out_skip;
+	spin_lock(&cil->xc_cil_lock);
+	push_seq = cil->xc_push_seq;
+	ASSERT(push_seq <= ctx->sequence);
 
-	/* check for spurious background flush */
-	if (!push_seq && cil->xc_ctx->space_used < XLOG_CIL_SPACE_LIMIT(log))
+	/*
+	 * Check if we've anything to push. If there is nothing, then we don't
+	 * move on to a new sequence number and so we have to be able to push
+	 * this sequence again later.
+	 */
+	if (list_empty(&cil->xc_cil)) {
+		cil->xc_push_seq = 0;
+		spin_unlock(&cil->xc_cil_lock);
 		goto out_skip;
+	}
+
 
 	/* check for a previously pushed seqeunce */
-	if (push_seq && push_seq < cil->xc_ctx->sequence)
+	if (push_seq < cil->xc_ctx->sequence) {
+		spin_unlock(&cil->xc_cil_lock);
 		goto out_skip;
+	}
+
+	/*
+	 * We are now going to push this context, so add it to the committing
+	 * list before we do anything else. This ensures that anyone waiting on
+	 * this push can easily detect the difference between a "push in
+	 * progress" and "CIL is empty, nothing to do".
+	 *
+	 * IOWs, a wait loop can now check for:
+	 *	the current sequence not being found on the committing list;
+	 *	an empty CIL; and
+	 *	an unchanged sequence number
+	 * to detect a push that had nothing to do and therefore does not need
+	 * waiting on. If the CIL is not empty, we get put on the committing
+	 * list before emptying the CIL and bumping the sequence number. Hence
+	 * an empty CIL and an unchanged sequence number means we jumped out
+	 * above after doing nothing.
+	 *
+	 * Hence the waiter will either find the commit sequence on the
+	 * committing list or the sequence number will be unchanged and the CIL
+	 * still dirty. In that latter case, the push has not yet started, and
+	 * so the waiter will have to continue trying to check the CIL
+	 * committing list until it is found. In extreme cases of delay, the
+	 * sequence may fully commit between the attempts the wait makes to wait
+	 * on the commit sequence.
+	 */
+	list_add(&ctx->committing, &cil->xc_committing);
+	spin_unlock(&cil->xc_cil_lock);
 
 	/*
 	 * pull all the log vectors off the items in the CIL, and
@@ -498,13 +460,6 @@ xlog_cil_push(
 	cil->xc_ctx = new_ctx;
 
 	/*
-	 * mirror the new sequence into the cil structure so that we can do
-	 * unlocked checks against the current sequence in log forces without
-	 * risking deferencing a freed context pointer.
-	 */
-	cil->xc_current_sequence = new_ctx->sequence;
-
-	/*
 	 * The switch is now done, so we can drop the context lock and move out
 	 * of a shared context. We can't just go straight to the commit record,
 	 * though - we need to synchronise with previous and future commits so
@@ -522,9 +477,15 @@ xlog_cil_push(
 	 * Hence we need to add this context to the committing context list so
 	 * that higher sequences will wait for us to write out a commit record
 	 * before they do.
+	 *
+	 * xfs_log_force_lsn requires us to mirror the new sequence into the cil
+	 * structure atomically with the addition of this sequence to the
+	 * committing list. This also ensures that we can do unlocked checks
+	 * against the current sequence in log forces without risking
+	 * deferencing a freed context pointer.
 	 */
 	spin_lock(&cil->xc_cil_lock);
-	list_add(&ctx->committing, &cil->xc_committing);
+	cil->xc_current_sequence = new_ctx->sequence;
 	spin_unlock(&cil->xc_cil_lock);
 	up_write(&cil->xc_ctx_lock);
 
@@ -606,7 +567,6 @@ restart:
 
 out_skip:
 	up_write(&cil->xc_ctx_lock);
-out_free_ticket:
 	xfs_log_ticket_put(new_ctx->ticket);
 	kmem_free(new_ctx);
 	return 0;
@@ -630,6 +590,86 @@ xlog_cil_empty(
 		empty = true;
 	spin_unlock(&cil->xc_cil_lock);
 	return empty;
+}
+
+static void
+xlog_cil_push_work(
+	struct work_struct	*work)
+{
+	struct xfs_cil		*cil = container_of(work, struct xfs_cil,
+							xc_push_work);
+	xlog_cil_push(cil->xc_log);
+}
+
+/*
+ * We need to push CIL every so often so we don't cache more than we can fit in
+ * the log. The limit really is that a checkpoint can't be more than half the
+ * log (the current checkpoint is not allowed to overwrite the previous
+ * checkpoint), but commit latency and memory usage limit this to a smaller
+ * size.
+ */
+static void
+xlog_cil_push_background(
+	struct log	*log)
+{
+	struct xfs_cil	*cil = log->l_cilp;
+
+	/*
+	 * The cil won't be empty because we are called while holding the
+	 * context lock so whatever we added to the CIL will still be there
+	 */
+	ASSERT(!list_empty(&cil->xc_cil));
+
+	/*
+	 * don't do a background push if we haven't used up all the
+	 * space available yet.
+	 */
+	if (cil->xc_ctx->space_used < XLOG_CIL_SPACE_LIMIT(log))
+		return;
+
+	spin_lock(&cil->xc_cil_lock);
+	if (cil->xc_push_seq < cil->xc_current_sequence) {
+		cil->xc_push_seq = cil->xc_current_sequence;
+		queue_work(log->l_mp->m_cil_workqueue, &cil->xc_push_work);
+	}
+	spin_unlock(&cil->xc_cil_lock);
+
+}
+
+/*
+ * xlog_cil_push_now() is used to trigger an immediate CIL push to the sequence
+ * number that is passed. When it returns, the work will be queued for
+ * @push_seq, but it won't be completed. The caller is expected to do any
+ * waiting for push_seq to complete if it is required.
+ */
+static void
+xlog_cil_push_now(
+	struct log	*log,
+	xfs_lsn_t	push_seq)
+{
+	struct xfs_cil	*cil = log->l_cilp;
+
+	if (!cil)
+		return;
+
+	ASSERT(push_seq && push_seq <= cil->xc_current_sequence);
+
+	/* start on any pending background push to minimise wait time on it */
+	flush_work(&cil->xc_push_work);
+
+	/*
+	 * If the CIL is empty or we've already pushed the sequence then
+	 * there's no work we need to do.
+	 */
+	spin_lock(&cil->xc_cil_lock);
+	if (list_empty(&cil->xc_cil) || push_seq <= cil->xc_push_seq) {
+		spin_unlock(&cil->xc_cil_lock);
+		return;
+	}
+
+	cil->xc_push_seq = push_seq;
+	queue_work(log->l_mp->m_cil_workqueue, &cil->xc_push_work);
+	spin_unlock(&cil->xc_cil_lock);
 }
 
 /*
@@ -659,7 +699,6 @@ xfs_log_commit_cil(
 {
 	struct log		*log = mp->m_log;
 	int			log_flags = 0;
-	int			push = 0;
 
 	if (flags & XFS_TRANS_RELEASE_LOG_RES)
 		log_flags = XFS_LOG_REL_PERM_RESERV;
@@ -708,21 +747,9 @@ xfs_log_commit_cil(
 	 */
 	xfs_trans_free_items(tp, *commit_lsn, 0);
 
-	/* check for background commit before unlock */
-	if (log->l_cilp->xc_ctx->space_used > XLOG_CIL_SPACE_LIMIT(log))
-		push = 1;
+	xlog_cil_push_background(log);
 
 	up_read(&log->l_cilp->xc_ctx_lock);
-
-	/*
-	 * We need to push CIL every so often so we don't cache more than we
-	 * can fit in the log. The limit really is that a checkpoint can't be
-	 * more than half the log (the current checkpoint is not allowed to
-	 * overwrite the previous checkpoint), but commit latency and memory
-	 * usage limit this to a smaller size in most cases.
-	 */
-	if (push)
-		xlog_cil_push(log, 0);
 }
 
 /*
@@ -734,9 +761,6 @@ xfs_log_commit_cil(
  *
  * We return the current commit lsn to allow the callers to determine if a
  * iclog flush is necessary following this call.
- *
- * XXX: Initially, just push the CIL unconditionally and return whatever
- * commit lsn is there. It'll be empty, so this is broken for now.
  */
 xfs_lsn_t
 xlog_cil_force_lsn(
@@ -754,8 +778,8 @@ xlog_cil_force_lsn(
 	 * xlog_cil_push() handles racing pushes for the same sequence,
 	 * so no need to deal with it here.
 	 */
-	if (sequence == cil->xc_current_sequence)
-		xlog_cil_push(log, sequence);
+restart:
+	xlog_cil_push_now(log, sequence);
 
 	/*
 	 * See if we can find a previous sequence still committing.
@@ -763,7 +787,6 @@ xlog_cil_force_lsn(
 	 * before allowing the force of push_seq to go ahead. Hence block
 	 * on commits for those as well.
 	 */
-restart:
 	spin_lock(&cil->xc_cil_lock);
 	list_for_each_entry(ctx, &cil->xc_committing, committing) {
 		if (ctx->sequence > sequence)
@@ -781,6 +804,29 @@ restart:
 		/* found it! */
 		commit_lsn = ctx->commit_lsn;
 	}
+
+	/*
+	 * The call to xlog_cil_push_now() executes the push in the background.
+	 * Hence by the time we have got here it our sequence may not have been
+	 * pushed yet. This is true if the current sequence still matches the
+	 * push sequence after the above wait loop and the CIL still contains
+	 * dirty objects. This is guaranteed by the push code first adding the
+	 * context to the committing list before emptying the CIL.
+	 *
+	 * Hence if we don't find the context in the committing list and the
+	 * current sequence number is unchanged then the CIL contents are
+	 * significant.  If the CIL is empty, if means there was nothing to push
+	 * and that means there is nothing to wait for. If the CIL is not empty,
+	 * it means we haven't yet started the push, because if it had started
+	 * we would have found the context on the committing list.
+	 */
+
+	if (sequence == cil->xc_current_sequence &&
+	    !list_empty(&cil->xc_cil)) {
+		spin_unlock(&cil->xc_cil_lock);
+		goto restart;
+	}
+
 	spin_unlock(&cil->xc_cil_lock);
 	return commit_lsn;
 }
@@ -816,3 +862,67 @@ xfs_log_item_in_current_chkpt(
 		return false;
 	return true;
 }
+
+/*
+ * Perform initial CIL structure initialisation. If the CIL is not
+ * enabled in this filesystem, ensure the log->l_cilp is null so
+ * we can check this conditional to determine if we are doing delayed
+ * logging or not.
+ */
+int
+xlog_cil_init(
+	struct log	*log)
+{
+	struct xfs_cil	*cil;
+	struct xfs_cil_ctx *ctx;
+
+	log->l_cilp = NULL;
+	if (!(log->l_mp->m_flags & XFS_MOUNT_DELAYLOG))
+		return 0;
+
+	cil = kmem_zalloc(sizeof(*cil), KM_SLEEP|KM_MAYFAIL);
+	if (!cil)
+		return ENOMEM;
+
+	ctx = kmem_zalloc(sizeof(*ctx), KM_SLEEP|KM_MAYFAIL);
+	if (!ctx) {
+		kmem_free(cil);
+		return ENOMEM;
+	}
+
+	INIT_WORK(&cil->xc_push_work, xlog_cil_push_work);
+	INIT_LIST_HEAD(&cil->xc_cil);
+	INIT_LIST_HEAD(&cil->xc_committing);
+	spin_lock_init(&cil->xc_cil_lock);
+	init_rwsem(&cil->xc_ctx_lock);
+	init_waitqueue_head(&cil->xc_commit_wait);
+
+	INIT_LIST_HEAD(&ctx->committing);
+	INIT_LIST_HEAD(&ctx->busy_extents);
+	ctx->sequence = 1;
+	ctx->cil = cil;
+	cil->xc_ctx = ctx;
+	cil->xc_current_sequence = ctx->sequence;
+
+	cil->xc_log = log;
+	log->l_cilp = cil;
+	return 0;
+}
+
+void
+xlog_cil_destroy(
+	struct log	*log)
+{
+	if (!log->l_cilp)
+		return;
+
+	if (log->l_cilp->xc_ctx) {
+		if (log->l_cilp->xc_ctx->ticket)
+			xfs_log_ticket_put(log->l_cilp->xc_ctx->ticket);
+		kmem_free(log->l_cilp->xc_ctx);
+	}
+
+	ASSERT(list_empty(&log->l_cilp->xc_cil));
+	kmem_free(log->l_cilp);
+}
+

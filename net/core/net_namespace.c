@@ -14,6 +14,7 @@
 #include <linux/file.h>
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
+#include <linux/vziptable_defs.h>
 
 /*
  *	Our network namespace constructor/destructor lists
@@ -24,10 +25,13 @@ static struct list_head *first_device = &pernet_list;
 static DEFINE_MUTEX(net_mutex);
 
 LIST_HEAD(net_namespace_list);
-EXPORT_SYMBOL_GPL(net_namespace_list);
+EXPORT_SYMBOL(net_namespace_list);
 
 struct net init_net = {
 	.dev_base_head = LIST_HEAD_INIT(init_net.dev_base_head),
+#if defined(CONFIG_VE) && defined(CONFIG_VE_IPTABLES)
+	._iptables_modules = VE_IP_NONE,
+#endif
 };
 EXPORT_SYMBOL(init_net);
 
@@ -133,6 +137,8 @@ static __net_init int setup_net(struct net *net)
 
 #ifdef CONFIG_VE
 	net->owner_ve = get_exec_env();
+	if (net->owner_ve->ve_netns)
+		get_net(net->owner_ve->ve_netns);
 #endif
 
 	atomic_set(&net->count, 1);
@@ -198,6 +204,7 @@ out_free:
 static void net_free(struct net *net)
 {
 	struct completion *sysfs_completion;
+	struct net *ve_netns;
 
 #ifdef NETNS_REFCNT_DEBUG
 	if (unlikely(atomic_read(&net->use_count) != 0)) {
@@ -207,10 +214,15 @@ static void net_free(struct net *net)
 	}
 #endif
 	sysfs_completion = net->sysfs_completion;
+	ve_netns = net->owner_ve->ve_netns;
+
 	kfree(net->gen);
 	kmem_cache_free(net_cachep, net);
+
 	if (sysfs_completion)
 		complete(sysfs_completion);
+	if (ve_netns)
+		put_net(ve_netns);
 }
 
 static struct net *net_create(void)

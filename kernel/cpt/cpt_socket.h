@@ -55,3 +55,7 @@ void rst_put_delayed_sockets(cpt_context_t *);
 
 void sock_packet_cpt_attr(struct sock *sk, struct cpt_sock_packet_image *v);
 int sock_packet_rst_attr(struct sock *sk, struct cpt_sock_packet_image *v);
+void *sock_packet_cpt_one_mc(struct sock *sk,
+		struct cpt_sock_packet_mc_image *mi, void *prev);
+int sock_packet_rst_one_mc(struct sock *sk,
+		struct cpt_sock_packet_mc_image *mi);

@@ -2410,6 +2410,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	lockdep_trace_alloc(gfp_mask);
 
 	might_sleep_if(gfp_mask & __GFP_WAIT);
+	WARN_ON((gfp_mask & __GFP_FS) && current->journal_info);
 
 	if (should_fail_alloc_page(gfp_mask, order))
 		return NULL;
@@ -2444,7 +2445,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	__alloc_collect_stats(gfp_mask, order, page, start);
 
 	if (page && (gfp_mask & __GFP_UBC) &&
-		ub_page_charge(page, order, get_exec_ub(), gfp_mask)) {
+		ub_page_charge(page, order, get_exec_ub_top(), gfp_mask)) {
 		__free_pages(page, order);
 		page = NULL;
 	}
@@ -2592,13 +2593,13 @@ void free_pages_exact(void *virt, size_t size)
 }
 EXPORT_SYMBOL(free_pages_exact);
 
-static unsigned int nr_free_zone_pages(int offset)
+static unsigned long nr_free_zone_pages(int offset)
 {
 	struct zoneref *z;
 	struct zone *zone;
 
 	/* Just pick one node, since fallback list is circular */
-	unsigned int sum = 0;
+	unsigned long sum = 0;
 
 	struct zonelist *zonelist = node_zonelist(numa_node_id(), GFP_KERNEL);
 
@@ -2615,7 +2616,7 @@ static unsigned int nr_free_zone_pages(int offset)
 /*
  * Amount of free RAM allocatable within ZONE_DMA and ZONE_NORMAL
  */
-unsigned int nr_free_buffer_pages(void)
+unsigned long nr_free_buffer_pages(void)
 {
 	return nr_free_zone_pages(gfp_zone(GFP_USER));
 }
@@ -2624,7 +2625,7 @@ EXPORT_SYMBOL_GPL(nr_free_buffer_pages);
 /*
  * Amount of free RAM allocatable within all zones
  */
-unsigned int nr_free_pagecache_pages(void)
+unsigned long nr_free_pagecache_pages(void)
 {
 	return nr_free_zone_pages(gfp_zone(GFP_HIGHUSER_MOVABLE));
 }

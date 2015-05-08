@@ -314,6 +314,13 @@ struct sock {
 	struct ve_struct	*owner_env;
 };
 
+struct inet_cork_extended {
+	__s16		tos;
+	__u8		ttl;
+	char		priority;
+	unsigned __rh_inet_cork_reserved[2];
+};
+
 /*
  * To prevent KABI-breakage, struct sock_extended is added here to extend
  * the original struct sock. Also two helpers are added:
@@ -321,6 +328,9 @@ struct sock {
  *     - is used to adjust prot->obj_size
  * sk_extended
  *     - should be used to access items in struct sock_extended
+ *
+ *	@sk_napi_id: id of the last napi context to receive data for sk
+ *	@sk_ll_usec: usecs to busypoll when there is no data
  */
 
 struct sock_extended {
@@ -367,6 +377,11 @@ struct sock_extended {
 	const struct cred	*sk_peer_cred;
 	u16			sk_gso_max_segs;
 	u32			sk_pacing_rate; /* bytes per second */
+	struct inet_cork_extended	inet_cork_ext;
+#ifdef CONFIG_NET_RX_BUSY_POLL
+	unsigned int		sk_napi_id;
+	unsigned int		sk_ll_usec;
+#endif
 };
 
 #define __sk_tx_queue_mapping(sk) \
@@ -1576,20 +1591,7 @@ extern void sk_stop_timer(struct sock *sk, struct timer_list* timer);
 
 extern int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb);
 
-static inline int sock_queue_err_skb(struct sock *sk, struct sk_buff *skb)
-{
-	/* Cast skb->rcvbuf to unsigned... It's pointless, but reduces
-	   number of warnings when compiling with -W --ANK
-	 */
-	if (atomic_read(&sk->sk_rmem_alloc) + skb->truesize >=
-	    (unsigned)sk->sk_rcvbuf)
-		return -ENOMEM;
-	skb_set_owner_r(skb, sk);
-	skb_queue_tail(&sk->sk_error_queue, skb);
-	if (!sock_flag(sk, SOCK_DEAD))
-		sk->sk_data_ready(sk, skb->len);
-	return 0;
-}
+extern int sock_queue_err_skb(struct sock *sk, struct sk_buff *skb);
 
 /*
  *	Recover an error report and clear atomically

@@ -57,18 +57,6 @@ int cap_netlink_send(struct sock *sk, struct sk_buff *skb)
 	return 0;
 }
 
-int cap_netlink_recv(struct sk_buff *skb, int cap)
-{
-	if (likely(cap == CAP_VE_NET_ADMIN) &&
-			cap_raised(NETLINK_CB(skb).eff_cap, CAP_NET_ADMIN))
-		return 0;
-
-	if (!cap_raised(NETLINK_CB(skb).eff_cap, cap))
-		return -EPERM;
-	return 0;
-}
-EXPORT_SYMBOL(cap_netlink_recv);
-
 /**
  * cap_capable - Determine whether a task has a particular effective capability
  * @tsk: The task to query
@@ -161,6 +149,7 @@ int cap_capget(struct task_struct *target, kernel_cap_t *effective,
 	       kernel_cap_t *inheritable, kernel_cap_t *permitted)
 {
 	const struct cred *cred;
+	struct ve_struct *ve = get_exec_env();
 
 	/* Derived from kernel/capability.c:sys_capget. */
 	rcu_read_lock();
@@ -169,6 +158,27 @@ int cap_capget(struct task_struct *target, kernel_cap_t *effective,
 	*inheritable = cred->cap_inheritable;
 	*permitted   = cred->cap_permitted;
 	rcu_read_unlock();
+
+	if (!ve_is_super(ve)) {
+		if (!cap_raised(ve->ve_cap_bset, CAP_NET_ADMIN))
+			cap_swap_all(CAP_VE_NET_ADMIN, CAP_NET_ADMIN,
+				      effective,
+				      inheritable,
+				      permitted,
+				      &cred->cap_effective,
+				      &cred->cap_inheritable,
+				      &cred->cap_permitted);
+
+		if (!cap_raised(ve->ve_cap_bset, CAP_SYS_ADMIN))
+			cap_swap_all(CAP_VE_SYS_ADMIN, CAP_SYS_ADMIN,
+				      effective,
+				      inheritable,
+				      permitted,
+				      &cred->cap_effective,
+				      &cred->cap_inheritable,
+				      &cred->cap_permitted);
+	}
+
 	return 0;
 }
 
@@ -190,6 +200,28 @@ static inline int cap_inh_is_capped(void)
 	return 1;
 }
 
+void cap_swap_all(int old, int new,
+	          kernel_cap_t *effective,
+	          kernel_cap_t *inheritable,
+	          kernel_cap_t *permitted,
+		  const kernel_cap_t *effective_old,
+	          const kernel_cap_t *inheritable_old,
+	          const kernel_cap_t *permitted_old)
+{
+	if (cap_raised(*effective_old, old)) {
+		cap_lower(*effective, old);
+		cap_raise(*effective, new);
+	}
+	if (cap_raised(*inheritable_old, old)) {
+		cap_lower(*inheritable, old);
+		cap_raise(*inheritable, new);
+	}
+	if (cap_raised(*permitted_old, old)) {
+		cap_lower(*permitted, old);
+		cap_raise(*permitted, new);
+	}
+}
+
 /**
  * cap_capset - Validate and apply proposed changes to current's capabilities
  * @new: The proposed new credentials; alterations should be made here
@@ -208,30 +240,69 @@ int cap_capset(struct cred *new,
 	       const kernel_cap_t *inheritable,
 	       const kernel_cap_t *permitted)
 {
+	kernel_cap_t ve_effective = *effective;
+	kernel_cap_t ve_inheritable = *inheritable;
+	kernel_cap_t ve_permitted = *permitted;
+	struct ve_struct *ve = get_exec_env();
+
+	if (!ve_is_super(ve)) {
+		/*
+		 * In container replace:
+		 * 	CAP_NET_ADMIN -> CAP_VE_NET_ADMIN,
+		 * 	CAP_SYS_ADMIN -> CAP_VE_SYS_ADMIN
+		 */
+		if (!cap_raised(ve->ve_cap_bset, CAP_NET_ADMIN))
+			cap_swap_all(CAP_NET_ADMIN, CAP_VE_NET_ADMIN,
+				      &ve_effective,
+				      &ve_inheritable,
+				      &ve_permitted,
+				      effective,
+				      inheritable,
+				      permitted);
+
+		if (!cap_raised(ve->ve_cap_bset, CAP_SYS_ADMIN))
+			cap_swap_all(CAP_SYS_ADMIN, CAP_VE_SYS_ADMIN,
+				      &ve_effective,
+				      &ve_inheritable,
+				      &ve_permitted,
+				      effective,
+				      inheritable,
+				      permitted);
+
+		if (cap_raised(old->cap_effective, CAP_SETPCAP)) {
+			/*
+			 * Ignore not known caps or caps not enabled in container
+			 */
+			ve_effective = cap_intersect(ve_effective, ve->ve_cap_bset);
+			ve_inheritable = cap_intersect(ve_inheritable, ve->ve_cap_bset);
+			ve_permitted = cap_intersect(ve_permitted, ve->ve_cap_bset);
+		}
+	}
+
 	if (cap_inh_is_capped() &&
-	    !cap_issubset(*inheritable,
+	    !cap_issubset(ve_inheritable,
 			  cap_combine(old->cap_inheritable,
 				      old->cap_permitted)))
 		/* incapable of using this inheritable set */
 		return -EPERM;
 
-	if (!cap_issubset(*inheritable,
+	if (!cap_issubset(ve_inheritable,
 			  cap_combine(old->cap_inheritable,
 				      old->cap_bset)))
 		/* no new pI capabilities outside bounding set */
 		return -EPERM;
 
 	/* verify restrictions on target's new Permitted set */
-	if (!cap_issubset(*permitted, old->cap_permitted))
+	if (!cap_issubset(ve_permitted, old->cap_permitted))
 		return -EPERM;
 
 	/* verify the _new_Effective_ is a subset of the _new_Permitted_ */
-	if (!cap_issubset(*effective, *permitted))
+	if (!cap_issubset(ve_effective, ve_permitted))
 		return -EPERM;
 
-	new->cap_effective   = *effective;
-	new->cap_inheritable = *inheritable;
-	new->cap_permitted   = *permitted;
+	new->cap_effective   = ve_effective;
+	new->cap_inheritable = ve_inheritable;
+	new->cap_permitted   = ve_permitted;
 	return 0;
 }
 
@@ -531,14 +602,17 @@ skip:
 
 
 	/* Don't let someone trace a set[ug]id/setpcap binary with the revised
-	 * credentials unless they have the appropriate permit
+	 * credentials unless they have the appropriate permit.
+	 *
+	 * In addition, if NO_NEW_PRIVS, then ensure we get no new privs.
 	 */
 	if ((new->euid != old->uid ||
 	     new->egid != old->gid ||
 	     !cap_issubset(new->cap_permitted, old->cap_permitted)) &&
 	    bprm->unsafe & ~LSM_UNSAFE_PTRACE_CAP) {
 		/* downgrade; they get no more than they had, and maybe less */
-		if (!capable(CAP_SETUID)) {
+		if (!capable(CAP_SETUID) ||
+		    (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS)) {
 			new->euid = new->uid;
 			new->egid = new->gid;
 		}

@@ -916,6 +916,7 @@ static int show_sb_opts(struct seq_file *m, struct super_block *sb)
 		{ MS_SYNCHRONOUS, ",sync" },
 		{ MS_DIRSYNC, ",dirsync" },
 		{ MS_MANDLOCK, ",mand" },
+		{ MS_LAZYTIME, ",lazytime" },
 		{ 0, NULL }
 	};
 	const struct proc_fs_info *fs_infop;
@@ -1376,7 +1377,7 @@ SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 	if (!(flags & UMOUNT_NOFOLLOW))
 		lookup_flags |= LOOKUP_FOLLOW;
 
-	retval = user_path_mountpoint_at(AT_FDCWD, name, lookup_flags, &path);
+	retval = user_path_at(AT_FDCWD, name, lookup_flags, &path);
 	if (retval)
 		goto out;
 	retval = -EINVAL;
@@ -1772,7 +1773,7 @@ static int do_loopback(struct path *path, char *old_name,
 
 	err = -EINVAL;
 	if (mnt_ns_loop(&old_path))
-		goto out;
+		goto out_path;
 
 	down_write(&namespace_sem);
 	err = -EINVAL;
@@ -1803,6 +1804,7 @@ static int do_loopback(struct path *path, char *old_name,
 
 out:
 	up_write(&namespace_sem);
+out_path:
 	path_put(&old_path);
 	return err;
 }
@@ -1981,8 +1983,7 @@ static int do_check_and_remount_sb(struct super_block *sb, int flags, void *data
  * If you've mounted a non-root directory somewhere and want to do remount
  * on it - tough luck.
  */
-static int do_remount(struct path *path, int flags, int mnt_flags,
-		      void *data)
+int do_remount(struct path *path, int flags, int mnt_flags, void *data)
 {
 	int err;
 	struct super_block *sb = path->mnt->mnt_sb;
@@ -2021,6 +2022,7 @@ static int do_remount(struct path *path, int flags, int mnt_flags,
 	}
 	return err;
 }
+EXPORT_SYMBOL(do_remount);
 
 static inline int tree_contains_unbindable(struct vfsmount *mnt)
 {
@@ -2760,6 +2762,7 @@ SYSCALL_DEFINE2(pivot_root, const char __user *, new_root,
 {
 	struct vfsmount *tmp;
 	struct path new, old, parent_path, root_parent, root;
+	struct ve_struct *ve = get_exec_env();
 	int error;
 
 	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN))
@@ -2781,11 +2784,15 @@ SYSCALL_DEFINE2(pivot_root, const char __user *, new_root,
 		goto out1_5;
 
 	error = -EPERM;
-	if (!ve_accessible_veid(old.mnt->owner, get_exec_env()->veid)||
-	    !ve_accessible_veid(new.mnt->owner, get_exec_env()->veid))
+	if (!ve_accessible_veid(old.mnt->owner, ve->veid)||
+	    !ve_accessible_veid(new.mnt->owner, ve->veid))
 		goto out1_5;
 
 	get_fs_root(current->fs, &root);
+	if (ve->root_path.mnt == root.mnt &&
+	    ve->root_path.dentry == root.dentry)
+		goto out1_6;
+
 	down_write(&namespace_sem);
 	mutex_lock(&old.dentry->d_inode->i_mutex);
 	error = -EINVAL;
@@ -2846,6 +2853,7 @@ SYSCALL_DEFINE2(pivot_root, const char __user *, new_root,
 out2:
 	mutex_unlock(&old.dentry->d_inode->i_mutex);
 	up_write(&namespace_sem);
+out1_6:
 	path_put(&root);
 out1_5:
 	path_put(&old);
@@ -2959,7 +2967,7 @@ static int mntns_install(struct nsproxy *nsproxy, void *ns)
 	struct mnt_namespace *mnt_ns = ns;
 	struct path root;
 
-	if (!capable(CAP_SYS_ADMIN) || !capable(CAP_SYS_CHROOT))
+	if ((!capable(CAP_SYS_ADMIN) && !capable(CAP_VE_SYS_ADMIN)) || !capable(CAP_SYS_CHROOT))
 		return -EINVAL;
 
 	if (fs->users != 1)

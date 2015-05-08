@@ -75,8 +75,6 @@ struct delay_sb_info {
 	int nfs_mnt_retrans;
 };
 
-static struct dentry_operations delay_dir_dops;
-
 #define FNAME(file) ((file)->f_dentry->d_name.name)
 
 /* mm */
@@ -235,6 +233,7 @@ static void delayed_flock(struct delayed_flock_info *dfi, struct file *file)
 {
 	int err;
 	struct file_lock *fl = dfi->fl;
+	u32 cpt_pid = fl->fl_pid;
 
 	err = nlmclnt_set_lockowner(file->f_dentry->d_inode, fl, dfi->svid);
 	if (err)
@@ -257,6 +256,8 @@ out:
 		eprintk("oh shit :( can't lock file back in %d:%s (%d)\n",
 				get_exec_env()->veid,
 				file->f_dentry->d_name.name, err);
+	else
+		fixup_lock_pid(file->f_path.dentry->d_inode, cpt_pid, get_exec_env());
 }
 
 static void apply_delayed_locks(struct delayed_flock_info *dfi, struct file *real)
@@ -813,7 +814,7 @@ static void delayfs_release_dentry(struct dentry *dentry)
 		fput(real);
 }
 
-static struct dentry_operations delay_dir_dops = {
+struct dentry_operations delay_dir_dops = {
        .d_release = delayfs_release_dentry,
 };
 
@@ -1646,6 +1647,7 @@ static int delayfs_resume_fn(void *d)
 	unsigned long abort_timeout;
 	LIST_HEAD(broken_mounts);
 	LIST_HEAD(live_mounts);
+	int ve_id = -1;
 
 	dctx->dfs_daemon = current;
 
@@ -1691,10 +1693,13 @@ try_again:
 
 		goto try_again;
 	}
-	ve_printk(VE_LOG_BOTH, "DFS%d: Delayed mounts successfully resumed\n", dctx->ve_id);
+	ve_id = dctx->ve_id;
 out_splice:
 	list_splice(&live_mounts, &dctx->object_array[CPT_DOBJ_VFSMOUNT_REF]);
 	destroy_delayed_context(dctx);
+	if (ve_id >= 0)
+		ve_printk(VE_LOG_BOTH, "DFS%d: Delayed mounts successfully resumed\n",
+					ve_id);
 	module_put_and_exit(0);
 }
 
@@ -1741,10 +1746,6 @@ int rst_delay_flock(struct file *f, struct cpt_flock_image *fli,
 		goto out;
 	}
 
-	err = nlmclnt_reserve_pid(fli->cpt_svid);
-	if (err)
-		goto out;
-
 	err = -ENOMEM;
 	dfi = kmalloc(sizeof(*dfi), GFP_KERNEL);
 	if (dfi == NULL)
@@ -1759,7 +1760,7 @@ int rst_delay_flock(struct file *f, struct cpt_flock_image *fli,
 		fl->fl_flags = FL_FLOCK;
 		fl->fl_start = 0;
 		fl->fl_end = OFFSET_MAX;
-		fl->fl_pid = 0;
+		fl->fl_pid = fli->cpt_pid;
 		fl->fl_type = fli->cpt_type;
 	} else {
 		cpt_object_t *obj;
@@ -1781,11 +1782,7 @@ int rst_delay_flock(struct file *f, struct cpt_flock_image *fli,
 		if (fl->fl_owner == NULL)
 			eprintk_ctx("no lock owner\n");
 
-		fl->fl_pid = vpid_to_pid(fli->cpt_pid);
-		if (fl->fl_pid < 0) {
-			eprintk_ctx("unknown lock pid %d\n", fl->fl_pid);
-			goto out2;
-		}
+		fl->fl_pid = fli->cpt_pid;
 	}
 
 	priv = f->private_data;
@@ -1877,6 +1874,10 @@ int rst_delay_unix_bind(struct sock *sk, struct cpt_sock_image *v,
 		dbi->i_mode = v->cpt_i_mode;
 	dbi->uid = v->cpt_peer_uid;
 	dbi->gid = v->cpt_peer_gid;
+	if (cpt_object_has(v, cpt_i_uid) && cpt_object_has(v, cpt_i_gid)) {
+		dbi->uid = v->cpt_i_uid;
+		dbi->gid = v->cpt_i_gid;
+	}
 
 	sbi = sb->s_fs_info;
 	dbi->next = sbi->bi_list;

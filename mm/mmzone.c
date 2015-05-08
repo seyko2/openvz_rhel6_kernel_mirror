@@ -292,6 +292,10 @@ void set_gang_limits(struct gang_set *gs,
 	struct gang *gang;
 	int nid;
 
+	/* sub-beancounters do not contribute to global commitment */
+	if (get_gangs_ub(gs)->parent)
+		return;
+
 	mutex_lock(&gs_lock);
 
 	if (gs->memory_limit > totalram_pages) {
@@ -398,7 +402,7 @@ int commitment_for_unlimited_containers_handler(struct ctl_table *table,
 	err = proc_doulongvec_minmax(table, write, buffer, lenp, ppos);
 	if (!err && write) {
 		rcu_read_lock();
-		for_each_beancounter(ub) {
+		for_each_top_beancounter(ub) {
 			if (get_beancounter_rcu(ub)) {
 				rcu_read_unlock();
 				set_gang_limits(get_ub_gs(ub), NULL, NULL);
@@ -640,17 +644,14 @@ void del_mem_gangs(struct gang_set *gs)
 	}
 }
 
-void gang_page_stat(struct gang_set *gs, nodemask_t *nodemask,
-		    unsigned long *stat, unsigned long *shadow)
+static void __gang_page_stat(struct gang_set *gs, nodemask_t *nodemask,
+			     unsigned long *stat, unsigned long *shadow)
 {
 	struct zoneref *z;
 	struct zone *zone;
 	struct gang *gang;
 	enum lru_list lru;
 
-	memset(stat, 0, sizeof(unsigned long) * NR_LRU_LISTS);
-	if (shadow)
-		memset(shadow, 0, sizeof(unsigned long) * NR_LRU_LISTS);
 	for_each_zone_zonelist_nodemask(zone, z,
 			node_zonelist(numa_node_id(), GFP_KERNEL),
 			MAX_NR_ZONES - 1, nodemask) {
@@ -670,11 +671,30 @@ void gang_page_stat(struct gang_set *gs, nodemask_t *nodemask,
 	}
 }
 
+void gang_page_stat(struct gang_set *gs, bool acct_hier, nodemask_t *nodemask,
+		    unsigned long *stat, unsigned long *shadow)
+{
+	struct user_beancounter *ub;
+
+	memset(stat, 0, sizeof(unsigned long) * NR_LRU_LISTS);
+	if (shadow)
+		memset(shadow, 0, sizeof(unsigned long) * NR_LRU_LISTS);
+
+	__gang_page_stat(gs, nodemask, stat, shadow);
+
+	if (!acct_hier)
+		return;
+
+	for_each_beancounter_tree(ub, get_gangs_ub(gs))
+		if (ub != get_gangs_ub(gs))
+			__gang_page_stat(get_ub_gs(ub), nodemask, stat, shadow);
+}
+
 static void show_one_gang(struct zone *zone, struct gang *gang)
 {
 	unsigned long now = jiffies;
 
-	printk("Node %d %s%s prio:%u portion:%ld scan:%lu"
+	printk(" Node %d %s%s prio:%u portion:%ld scan:%lu"
 	       " a_anon:%lu %dms i_anon:%lu %dms"
 	       " a_file:%lu %dms i_file:%lu %dms"
 	       " unevictable:%lu"
@@ -703,17 +723,25 @@ void gang_show_state(struct gang_set *gs)
 {
 	struct zone *zone;
 	struct gang *gang;
+	struct user_beancounter *ub;
 	unsigned long stat[NR_LRU_LISTS];
 
-	for_each_populated_zone(zone) {
-		gang = mem_zone_gang(gs, zone);
-		show_one_gang(zone, gang);
-		show_one_gang(zone, gang_to_shadow_gang(gang));
-		if (gs == &init_gang_set)
-			show_one_gang(zone, zone_junk_gang(zone));
+	for_each_beancounter_tree(ub, get_gangs_ub(gs)) {
+		if (ub->parent) {
+			printk("Memory cgroup ");
+			ub_print_mem_cgroup_name(ub);
+			printk(":\n");
+		}
+		for_each_populated_zone(zone) {
+			gang = mem_zone_gang(get_ub_gs(ub), zone);
+			show_one_gang(zone, gang);
+			show_one_gang(zone, gang_to_shadow_gang(gang));
+			if (ub == get_ub0())
+				show_one_gang(zone, zone_junk_gang(zone));
+		}
 	}
 
-	gang_page_stat(gs, NULL, stat, stat);
+	gang_page_stat(gs, true, NULL, stat, stat);
 
 	printk("Total %lu anon:%lu file:%lu"
 			" a_anon:%lu i_anon:%lu"
@@ -733,7 +761,7 @@ void gang_show_state(struct gang_set *gs)
 
 #else /* CONFIG_MEMORY_GANGS */
 
-void gang_page_stat(struct gang_set *gs, nodemask_t *nodemask,
+void gang_page_stat(struct gang_set *gs, bool acct_hier, nodemask_t *nodemask,
 		    unsigned long *stat, unsigned long *shadow)
 {
 	enum lru_list lru;
@@ -1078,8 +1106,8 @@ out:
 #endif /* CONFIG_MEMORY_GANGS_MIGRATION */
 
 #ifdef CONFIG_KSTALED
-void gang_idle_page_stat(struct gang_set *gs, nodemask_t *nodemask,
-			 struct idle_page_stats *stats)
+static void __gang_idle_page_stat(struct gang_set *gs, nodemask_t *nodemask,
+				  struct idle_page_stats *stats)
 {
 	struct zoneref *z;
 	struct zone *zone;
@@ -1087,7 +1115,6 @@ void gang_idle_page_stat(struct gang_set *gs, nodemask_t *nodemask,
 	struct idle_page_stats *gang_stats;
 	unsigned seq;
 
-	memset(stats, 0, sizeof(*stats));
 	for_each_zone_zonelist_nodemask(zone, z,
 			node_zonelist(numa_node_id(), GFP_KERNEL),
 			MAX_NR_ZONES - 1, nodemask) {
@@ -1100,6 +1127,22 @@ void gang_idle_page_stat(struct gang_set *gs, nodemask_t *nodemask,
 			stats->idle_dirty_swap += gang_stats->idle_dirty_swap;
 		} while (read_seqcount_retry(&gang->idle_page_stats_lock, seq));
 	}
+}
+void gang_idle_page_stat(struct gang_set *gs, bool acct_hier,
+			 nodemask_t *nodemask, struct idle_page_stats *stats)
+{
+	struct user_beancounter *ub;
+
+	memset(stats, 0, sizeof(*stats));
+
+	__gang_idle_page_stat(gs, nodemask, stats);
+
+	if (!acct_hier)
+		return;
+
+	for_each_beancounter_tree(ub, get_gangs_ub(gs))
+		if (ub != get_gangs_ub(gs))
+			__gang_idle_page_stat(gs, nodemask, stats);
 }
 #endif /* CONFIG_KSTALED */
 

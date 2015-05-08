@@ -40,6 +40,15 @@ extern unsigned int sysctl_unmap_area_factor;
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 
+extern int sysctl_overcommit_memory;
+extern int sysctl_overcommit_ratio;
+extern unsigned long sysctl_overcommit_kbytes;
+
+extern int overcommit_ratio_handler(struct ctl_table *, int, void __user *,
+				    size_t *, loff_t *);
+extern int overcommit_kbytes_handler(struct ctl_table *, int, void __user *,
+				    size_t *, loff_t *);
+
 #define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
 
 /* to align the pointer to the (next) page boundary */
@@ -55,8 +64,8 @@ extern unsigned int sysctl_unmap_area_factor;
  */
 
 extern struct kmem_cache *__vm_area_cachep;
-#define allocate_vma(mm, gfp_flags)	ub_kmem_alloc((mm)->mm_ub, __vm_area_cachep, gfp_flags)
-#define free_vma(mm, vma)		ub_kmem_free((mm)->mm_ub, __vm_area_cachep, vma)
+#define allocate_vma(mm, gfp_flags)	ub_kmem_alloc(mm_ub_top(mm), __vm_area_cachep, gfp_flags)
+#define free_vma(mm, vma)		ub_kmem_free(mm_ub_top(mm), __vm_area_cachep, vma)
 
 #ifndef CONFIG_MMU
 extern struct rb_root nommu_region_tree;
@@ -162,6 +171,7 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_MKWRITE	0x04	/* Fault was mkwrite of existing pte */
 #define FAULT_FLAG_ALLOW_RETRY	0x08	/* Retry fault if blocking */
 #define FAULT_FLAG_KILLABLE	0x20	/* The fault task is in SIGKILL killable region */
+#define FAULT_FLAG_USER		0x40	/* The fault originated in userspace */
 
 /*
  * This interface is used by x86 PAT code to identify a pfn mapping that is
@@ -1441,6 +1451,8 @@ int vm_insert_pfn(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
 int vm_insert_mixed(struct vm_area_struct *vma, unsigned long addr,
 			unsigned long pfn);
+int vm_iomap_memory(struct vm_area_struct *vma, phys_addr_t start, unsigned long len);
+
 
 struct page *follow_page(struct vm_area_struct *, unsigned long address,
 			unsigned int foll_flags);
@@ -1536,6 +1548,7 @@ enum mf_flags {
 	MF_COUNT_INCREASED = 1 << 0,
 	MF_ACTION_REQUIRED = 1 << 1,
 	MF_MUST_KILL = 1 << 2,
+	MF_SOFT_OFFLINE = 1 << 3,
 };
 extern int memory_failure(unsigned long pfn, int trapno, int flags);
 extern void memory_failure_queue(unsigned long pfn, int trapno, int flags);

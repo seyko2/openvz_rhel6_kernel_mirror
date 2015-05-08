@@ -10,15 +10,18 @@
 
 static int cgroup_index = 0;
 
-static void cpt_dump_one_cgroup_pid(struct task_struct *task,
-				struct cgroup_scanner *scan)
+static int cpt_dump_one_cgroup_pid(struct task_struct *task,
+				   struct cgroup_scanner *scan)
 {
 	struct cpt_context *ctx = scan->data;
 	u32 pid;
 
 	pid = cpt_task_pid_nr(task, PIDTYPE_PID);
-	BUG_ON(!pid);
-	ctx->write(&pid, sizeof(pid), ctx);
+	if (pid)
+		ctx->write(&pid, sizeof(pid), ctx);
+	else
+		eprintk_ctx("Can't find pid for task '%s'\n", task->comm);
+	return pid ? 0 : -ENOENT;
 }
 
 static int cpt_dump_one_cgroup(struct cgroup *cgrp, void *args)
@@ -98,10 +101,13 @@ static int cpt_dump_cgroup_options(struct vfsmount *mnt, struct cpt_context *ctx
 	sf.count = 0;
 	sf.size = PAGE_SIZE;
 
-	seq_printf(&sf, "none");
 	mnt->mnt_sb->s_op->show_options(&sf, mnt);
 
-	cpt_dump_string(sf.buf, ctx);
+	if (strstr(sf.buf, "name=systemd"))
+		seq_printf(&sf, ",none");
+
+	/* ->show_options prepends a comma to the output */
+	cpt_dump_string(sf.buf + 1, ctx);
 
 	free_page((unsigned long) sf.buf);
 

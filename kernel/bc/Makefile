@@ -7,7 +7,7 @@
 # Licensing governed by "linux/COPYING.SWsoft" file.
 
 obj-y := sys.o beancounter.o kmem.o misc.o \
-	 vm_pages.o statd.o oom_kill.o dcache.o
+	 vm_pages.o statd.o oom_kill.o dcache.o memcontrol.o
 
 obj-$(CONFIG_NET) += net.o
 obj-$(CONFIG_BC_PROC)  += proc.o

@@ -55,7 +55,6 @@ int ext4_sync_file(struct file *file, struct dentry *dentry, int datasync)
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
 	int ret, err = 0;
 	tid_t commit_tid;
-	tid_t flush_tid;
 	bool needs_barrier = false;
 
 	J_ASSERT(ext4_journal_current_handle() == NULL);
@@ -71,7 +70,7 @@ int ext4_sync_file(struct file *file, struct dentry *dentry, int datasync)
 		return 0;
 	}
 
-	ret = flush_aio_dio_completed_IO(inode);
+	ret = ext4_flush_unwritten_io(inode);
 	if (ret < 0)
 		return ret;
 
@@ -95,8 +94,6 @@ int ext4_sync_file(struct file *file, struct dentry *dentry, int datasync)
 	if (ext4_should_journal_data(inode))
 		return ext4_force_commit(inode->i_sb);
 
-	flush_tid = journal->j_commit_sequence;
-
 	commit_tid = datasync ? ei->i_datasync_tid : ei->i_sync_tid;
 	if (journal->j_flags & JBD2_BARRIER &&
 	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
@@ -107,7 +104,7 @@ int ext4_sync_file(struct file *file, struct dentry *dentry, int datasync)
 	 * issued after data demanded by this fsync were written back. Commit could be in state
 	 * after it is already done, but not yet in state where we should not wait.
 	 */
-	if (needs_barrier && !tid_gt(journal->j_commit_sequence, flush_tid))
+	if (needs_barrier)
 		err = blkdev_issue_flush(inode->i_sb->s_bdev, NULL);
 	if (!ret)
 		ret = err;
@@ -121,7 +118,6 @@ int ext4_sync_files(struct file **files, unsigned int *flags, unsigned int nr_fi
 	int err = 0, err2 = 0, i = 0, j = 0;
 	int force_commit = 0, datawriteback = 0;
 	tid_t commit_tid = 0;
-	tid_t flush_tid;
 	int fdsync_cnt = 0, fsync_cnt = 0;
 	int need_barrier = 0;
 	struct user_beancounter *ub;
@@ -132,7 +128,7 @@ int ext4_sync_files(struct file **files, unsigned int *flags, unsigned int nr_fi
 
 	sb = files[0]->f_mapping->host->i_sb;
 	journal = EXT4_SB(sb)->s_journal;
-	ub = get_exec_ub();
+	ub = get_exec_ub_top();
 	if (sb->s_flags & MS_RDONLY) {
 		/* Make shure that we read updated s_mount_flags value */
 		smp_rmb();
@@ -186,7 +182,7 @@ int ext4_sync_files(struct file **files, unsigned int *flags, unsigned int nr_fi
 		}
 
 		mutex_lock(&inode->i_mutex);
-		err2 = flush_aio_dio_completed_IO(inode);
+		err2 = ext4_flush_unwritten_io(inode);
 		if (!err || err2 == -EIO)
 			err = err2;
 		force_commit  |= ext4_should_journal_data(inode);
@@ -200,11 +196,10 @@ int ext4_sync_files(struct file **files, unsigned int *flags, unsigned int nr_fi
 
 	/* Ext4 specific stuff starts here */
 	if (!journal) {
-		for (j = 0; i < i; j++) {
+		for (j = 0; j < i; j++) {
 			err2 = simple_fsync(files[j], files[j]->f_path.dentry, flags[j]);
 			if (!err)
 				err = err2;
-			j++;
 		}
 	} else if (force_commit) {
 		/* data=journal:
@@ -223,39 +218,19 @@ int ext4_sync_files(struct file **files, unsigned int *flags, unsigned int nr_fi
 		 * Metadata is in the journal, we wait for proper transaction to
 		 * commit here.
 		 */
-		flush_tid = journal->j_commit_sequence;
-		if (jbd2_log_start_commit(journal, commit_tid)) {
-			/*
-			 * When the journal is on a different device than the
-			 * fs data disk, we need to issue the barrier in
-			 * writeback mode.  (In ordered mode, the jbd2 layer
-			 * will take care of issuing the barrier.  In
-			 * data=journal, all of the data blocks are written to
-			 * the journal device.)
-			 */
-			if (datawriteback &&
-			    (journal->j_fs_dev != journal->j_dev) &&
-			    (journal->j_flags & JBD2_BARRIER)) {
-				err2 = blkdev_issue_flush(sb->s_bdev, NULL);
-				if (!err)
-					err = err2;
-			}
-			err2 = jbd2_log_wait_commit(journal, commit_tid);
-			/* Even if we had to wait for commit completion, it does
-			 * not mean a flush has been issued after data demanded
-			 * by this fsync were written back. Commit could be in
-			 * state  after it is already done, but not yet in state
-			 * where we should not wait.
-			 */
-		}
-		if ((journal->j_flags & JBD2_BARRIER) &&
-		    !tid_gt(journal->j_commit_sequence, flush_tid)) {
-			int err3;
-			need_barrier = 1;
-			err3 = blkdev_issue_flush(sb->s_bdev, NULL);
-			if (!err)
-				err = err3;
-		}
+		if (journal->j_flags & JBD2_BARRIER &&
+		    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
+			need_barrier = true;
+
+		err2 = jbd2_complete_transaction(journal, commit_tid);
+		/* Even if we had to wait for commit completion, it does not
+		 * mean a flush has been issued after data demanded by this
+		 * fsync were written back. Commit could be in state after
+		 * it is already done, but not yet in state where we should
+		 * not wait.
+		 */
+		if (need_barrier)
+			err2 = blkdev_issue_flush(sb->s_bdev, NULL);
 	}
 out:
 	trace_ext4_sync_files_exit(files[0]->f_path.dentry, commit_tid, need_barrier);

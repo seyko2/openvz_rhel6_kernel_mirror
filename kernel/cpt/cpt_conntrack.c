@@ -211,15 +211,27 @@ static int dump_one_ct(struct ct_holder *c, struct ct_holder *list,
 	struct nf_conn *ct = nf_ct_tuplehash_to_ctrack(h);
 	struct nf_conn_nat *nat = nfct_nat(ct);
 	struct cpt_ip_conntrack_image v;
+	const struct nf_conn_help *help;
 	int err = 0;
 
 	BUILD_BUG_ON(sizeof(v.cpt_proto_data) < sizeof(ct->proto));
 	BUILD_BUG_ON(sizeof(v.cpt_help_data) < sizeof(union nf_conntrack_help));
 
-	if (nfct_help(ct) && !strcmp(nfct_help(ct)->helper->name, "pptp")) {
-		eprintk_ctx("conntrack: PPTP isn't supported\n");
-		return -EBUSY;
+	rcu_read_lock_bh();
+	help = nfct_help(ct);
+	if (help) {
+		const struct nf_conntrack_helper *helper;
+
+		helper = rcu_dereference(help->helper);
+		if (helper && !strcmp(helper->name, "pptp")) {
+			eprintk_ctx("conntrack: PPTP isn't supported\n");
+			err = -EBUSY;
+		}
 	}
+	rcu_read_unlock_bh();
+
+	if (err)
+		return err;
 
 	cpt_open_object(NULL, ctx);
 

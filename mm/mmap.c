@@ -103,6 +103,7 @@ EXPORT_SYMBOL(vm_get_page_prot);
 
 int sysctl_overcommit_memory = OVERCOMMIT_GUESS;  /* heuristic overcommit */
 int sysctl_overcommit_ratio = 50;	/* default is 50% */
+unsigned long sysctl_overcommit_kbytes __read_mostly;
 int sysctl_max_map_count __read_mostly = DEFAULT_MAX_MAP_COUNT;
 struct percpu_counter vm_committed_as;
 
@@ -143,8 +144,8 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 	vm_acct_memory(pages);
 
 #ifdef CONFIG_BEANCOUNTERS
-	if (mm && mm->mm_ub->ub_parms[UB_PRIVVMPAGES].held <=
-			mm->mm_ub->ub_parms[UB_VMGUARPAGES].barrier)
+	if (mm && mm_ub_top(mm)->ub_parms[UB_PRIVVMPAGES].held <=
+			mm_ub_top(mm)->ub_parms[UB_VMGUARPAGES].barrier)
 		return 0;
 #endif
 
@@ -204,14 +205,12 @@ int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 		goto error;
 	}
 
-	allowed = (totalram_pages - hugetlb_total_pages())
-	       	* sysctl_overcommit_ratio / 100;
+	allowed = vm_commit_limit();
 	/*
 	 * Leave the last 3% for root
 	 */
 	if (!cap_sys_admin)
 		allowed -= allowed / 32;
-	allowed += total_swap_pages;
 
 	/* Don't let a single process grow too big:
 	   leave 3% of the size of this process for other processes */
@@ -1346,8 +1345,20 @@ munmap_back:
 			goto free_vma;
 	}
 
-	if (vma_wants_writenotify(vma))
+	if (vma_wants_writenotify(vma)) {
+		pgprot_t pprot = vma->vm_page_prot;
+
+		/* Can vma->vm_page_prot have changed??
+		 *
+		 * Answer: Yes, drivers may have changed it in their
+		 *         f_op->mmap method.
+		 *
+		 * Ensures that vmas marked as uncached stay that way.
+		 */
 		vma->vm_page_prot = vm_get_page_prot(vm_flags & ~VM_SHARED);
+		if (pgprot_val(pprot) == pgprot_val(pgprot_noncached(pprot)))
+			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	}
 
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 	file = vma->vm_file;

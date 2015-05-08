@@ -64,7 +64,17 @@ static int internal_create_group(struct kobject *kobj, int update,
 
 	if (!ve_sysfs_alowed())
 		return 0;
-	BUG_ON(!kobj || (!update && !kobj->sd));
+	BUG_ON(!kobj);
+
+	/* RHEL specific
+	 *
+	 * RHEL6 has half-complete netns support that got pulled in, in
+	 * order to just add basic support for netns. kobj changes cannot
+	 * be backported due to kABI and failing gracefully here is the
+	 * only option.
+	 */
+	if (!update && !kobj->sd)
+		return -ENOTSUPP;
 
 	/* Updates may happen before the object has been instantiated */
 	if (unlikely(update && !kobj->sd))

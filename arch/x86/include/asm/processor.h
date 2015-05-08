@@ -121,6 +121,7 @@ struct cpuinfo_x86 {
 	/* Compute unit id */
 	u8			compute_unit_id;
 #endif /* CONFIG_SMP */
+	u32			microcode;
 #endif /* !__GENKSYMS__ */
 } __attribute__((__aligned__(SMP_CACHE_BYTES)));
 
@@ -211,7 +212,8 @@ static inline void native_cpuid(unsigned int *eax, unsigned int *ebx,
 	      "=b" (*ebx),
 	      "=c" (*ecx),
 	      "=d" (*edx)
-	    : "0" (*eax), "2" (*ecx));
+	    : "0" (*eax), "2" (*ecx)
+	    : "memory");
 }
 
 static inline void load_cr3(pgd_t *pgdir)
@@ -1041,5 +1043,10 @@ static inline uint32_t hypervisor_cpuid_base(const char *sig, uint32_t leaves)
 
 	return 0;
 }
+
+extern void (*set_cpuid_faulting_cb)(bool enable);
+extern void set_cpuid_faulting(bool enable);
+
+extern void get_cpu_cap_masked(u32 *val);
 
 #endif /* _ASM_X86_PROCESSOR_H */

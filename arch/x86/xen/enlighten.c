@@ -61,6 +61,7 @@
 #include <asm/reboot.h>
 #include <asm/stackprotector.h>
 #include <asm/hypervisor.h>
+#include <asm/mwait.h>
 
 #include "xen-ops.h"
 #include "mmu.h"
@@ -106,6 +107,14 @@ struct shared_info *HYPERVISOR_shared_info = (void *)&xen_dummy_shared_info;
  */
 static int have_vcpu_info_placement = 1;
 
+static void clamp_max_cpus(void)
+{
+#ifdef CONFIG_SMP
+	if (setup_max_cpus > MAX_VIRT_CPUS)
+		setup_max_cpus = MAX_VIRT_CPUS;
+#endif
+}
+
 static void xen_vcpu_setup(int cpu)
 {
 	struct vcpu_register_vcpu_info info;
@@ -113,13 +122,32 @@ static void xen_vcpu_setup(int cpu)
 	struct vcpu_info *vcpup;
 
 	BUG_ON(HYPERVISOR_shared_info == &xen_dummy_shared_info);
-	per_cpu(xen_vcpu, cpu) = &HYPERVISOR_shared_info->vcpu_info[cpu];
 
-	if (!have_vcpu_info_placement)
-		return;		/* already tested, not available */
+	/*
+	 * This path is called twice on PVHVM - first during bootup via
+	 * smp_init -> xen_hvm_cpu_notify, and then if the VCPU is being
+	 * hotplugged: cpu_up -> xen_hvm_cpu_notify.
+	 * As we can only do the VCPUOP_register_vcpu_info once lets
+	 * not over-write its result.
+	 *
+	 * For PV it is called during restore (xen_vcpu_restore) and bootup
+	 * (xen_setup_vcpu_info_placement). The hotplug mechanism does not
+	 * use this function.
+	 */
+	if (xen_hvm_domain()) {
+		if (per_cpu(xen_vcpu, cpu) == &per_cpu(xen_vcpu_info, cpu))
+			return;
+	}
+	if (cpu < MAX_VIRT_CPUS)
+		per_cpu(xen_vcpu,cpu) = &HYPERVISOR_shared_info->vcpu_info[cpu];
+
+	if (!have_vcpu_info_placement) {
+		if (cpu >= MAX_VIRT_CPUS)
+			clamp_max_cpus();
+		return;
+	}
 
 	vcpup = &per_cpu(xen_vcpu_info, cpu);
-
 	info.mfn = arbitrary_virt_to_mfn(vcpup);
 	info.offset = offset_in_page(vcpup);
 
@@ -134,6 +162,7 @@ static void xen_vcpu_setup(int cpu)
 	if (err) {
 		printk(KERN_DEBUG "register_vcpu_info failed: err=%d\n", err);
 		have_vcpu_info_placement = 0;
+		clamp_max_cpus();
 	} else {
 		/* This cpu is using the registered vcpu info, even if
 		   later ones fail to. */
@@ -184,6 +213,9 @@ static void __init xen_banner(void)
 	       xen_feature(XENFEAT_mmu_pt_update_preserve_ad) ? " (preserve-AD)" : "");
 }
 
+#define CPUID_THERM_POWER_LEAF 6
+#define APERFMPERF_PRESENT 0
+
 static __read_mostly unsigned int cpuid_leaf1_edx_mask = ~0;
 static __read_mostly unsigned int cpuid_leaf1_ecx_mask = ~0;
 static __read_mostly unsigned int cpuid_leaf81_edx_mask = ~0;
@@ -206,8 +238,14 @@ static void xen_cpuid(unsigned int *ax, unsigned int *bx,
 		maskedx = cpuid_leaf1_edx_mask;
 		break;
 
-	case 5: /* CPUID_MWAIT_LEAF */
-		maskecx = maskedx = 0;
+	case CPUID_MWAIT_LEAF:
+		*ax = *bx = *cx = *dx = 0;
+		return;
+
+	case CPUID_THERM_POWER_LEAF:
+		/* Disabling APERFMPERF for kernel usage */
+		maskecx = ~(1 << APERFMPERF_PRESENT);
+		break;
 
 	case 0xb:
 		/* Suppress extended topology stuff */
@@ -238,15 +276,14 @@ static void xen_cpuid(unsigned int *ax, unsigned int *bx,
 static __init void xen_init_cpuid_mask(void)
 {
 	unsigned int ax, bx, cx, dx;
+	unsigned int xsave_mask;
 
-	cpuid_leaf1_ecx_mask =
-		~((1 << (X86_FEATURE_MWAIT % 32)) |
-		  (1 << (X86_FEATURE_AVX % 32)));
+	cpuid_leaf1_ecx_mask = ~(1 << (X86_FEATURE_MWAIT % 32));
+	cpuid_leaf81_edx_mask = ~(1 << (X86_FEATURE_GBPAGES % 32));
 
 	cpuid_leaf1_edx_mask =
-		~(1 << X86_FEATURE_ACC);   /* thermal monitoring */
-
-	cpuid_leaf81_edx_mask = ~(1 << (X86_FEATURE_GBPAGES % 32));
+		~((1 << X86_FEATURE_MTRR) |  /* disable MTRR */
+		  (1 << X86_FEATURE_ACC));   /* thermal monitoring */
 
 	if (!xen_initial_domain())
 		cpuid_leaf1_edx_mask &=
@@ -255,23 +292,19 @@ static __init void xen_init_cpuid_mask(void)
 			  (1 << X86_FEATURE_APIC) |  /* disable local APIC */
 			  (1 << X86_FEATURE_ACPI));  /* disable ACPI */
 
+	cpuid_leaf1_ecx_mask &= ~(1 << (X86_FEATURE_X2APIC % 32));
+
 	ax = 1;
 	cx = 0;
 	xen_cpuid(&ax, &bx, &cx, &dx);
 
-	/* cpuid claims we support xsave; try enabling it to see what happens */
-	if (cx & (1 << (X86_FEATURE_XSAVE % 32))) {
-		unsigned long cr4;
+	xsave_mask =
+		(1 << (X86_FEATURE_XSAVE % 32)) |
+		(1 << (X86_FEATURE_OSXSAVE % 32));
 
-		set_in_cr4(X86_CR4_OSXSAVE);
-		
-		cr4 = read_cr4();
-
-		if ((cr4 & X86_CR4_OSXSAVE) == 0)
-			cpuid_leaf1_ecx_mask &= ~(1 << (X86_FEATURE_XSAVE % 32));
-
-		clear_in_cr4(X86_CR4_OSXSAVE);
-	}
+	/* Xen will set CR4.OSXSAVE if supported and not disabled by force */
+	if ((cx & xsave_mask) != xsave_mask)
+		cpuid_leaf1_ecx_mask &= ~xsave_mask; /* disable XSAVE & OSXSAVE */
 }
 
 static void xen_set_debugreg(int reg, unsigned long val)
@@ -821,7 +854,6 @@ static void xen_write_cr4(unsigned long cr4)
 {
 	cr4 &= ~X86_CR4_PGE;
 	cr4 &= ~X86_CR4_PSE;
-	cr4 &= ~X86_CR4_OSXSAVE;
 
 	native_write_cr4(cr4);
 }
@@ -1298,6 +1330,14 @@ uint32_t xen_cpuid_base(void)
 	return 0;
 }
 
+uint32_t xen_version(void)
+{
+	uint32_t eax, ebx, ecx, edx, base;
+	base = xen_cpuid_base();
+	cpuid(base + 1, &eax, &ebx, &ecx, &edx);
+	return eax;
+}
+
 static int init_hvm_pv_info(int *major, int *minor)
 {
 	uint32_t eax, ebx, ecx, edx, pages, msr, base;
@@ -1351,6 +1391,9 @@ void xen_hvm_init_shared_info(void)
 	 * online but xen_hvm_init_shared_info is run at resume time too and
 	 * in that case multiple vcpus might be online. */
 	for_each_online_cpu(cpu) {
+		/* Leave it to be NULL. */
+		if (cpu >= MAX_VIRT_CPUS)
+			continue;
 		per_cpu(xen_vcpu, cpu) = &HYPERVISOR_shared_info->vcpu_info[cpu];
 	}
 }
@@ -1361,7 +1404,9 @@ static int __cpuinit xen_hvm_cpu_notify(struct notifier_block *self,
 	int cpu = (long)hcpu;
 	switch (action) {
 	case CPU_UP_PREPARE:
-		per_cpu(xen_vcpu, cpu) = &HYPERVISOR_shared_info->vcpu_info[cpu];
+		xen_vcpu_setup(cpu);
+		if (xen_have_vector_callback)
+			xen_init_lock_cpu(cpu);
 		break;
 	default:
 		break;
@@ -1397,8 +1442,8 @@ void __init xen_hvm_guest_init(void)
 
 	if (xen_feature(XENFEAT_hvm_callback_vector))
 		xen_have_vector_callback = 1;
+	xen_hvm_smp_init();
 	register_cpu_notifier(&xen_hvm_cpu_notifier);
 	xen_unplug_emulated_devices();
-	have_vcpu_info_placement = 0;
 	x86_init.irqs.intr_init = xen_init_IRQ;
 }

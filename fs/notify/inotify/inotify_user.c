@@ -41,6 +41,7 @@
 #include <linux/poll.h>
 #include <linux/wait.h>
 #include <linux/module.h>
+#include <linux/fs_struct.h>
 
 #include "inotify.h"
 
@@ -541,36 +542,58 @@ int __inotify_new_watch(struct fsnotify_group *group,
 	struct inotify_inode_mark_entry *tmp_ientry;
 	char *kwd_path = NULL, *wd_path = NULL;
 	u32 start_wd;
-	int ret;
+	int ret, wd_local;
 
 	if (unlikely(!mask))
 		return -EINVAL;
 
-	kwd_path = kmalloc(PATH_MAX, GFP_KERNEL);
-	if (!kwd_path)
-		return -ENOMEM;
+	if (!ve_is_super(get_exec_env())) {
+		struct path old_root;
 
-	wd_path = d_path(path, kwd_path, PATH_MAX);
-	if (IS_ERR(wd_path)) {
+		kwd_path = kmalloc(PATH_MAX, GFP_KERNEL);
+		if (!kwd_path)
+			return -ENOMEM;
+
+		/*
+		 * The application might have done chroot()
+		 * call so the path should be fetched relative
+		 * the VE's root, otherwise we might hit mark
+		 * clash. Imagine two marks '/', and '/etc/avahi/services'
+		 * (as it was found in bug report): the avahi has chroot'ed
+		 * to /etc/avahi/ and in result we saw two '/' identical
+		 * marks.
+		 */
+		get_fs_root(current->fs, &old_root);
+		set_fs_root(current->fs, &get_exec_env()->root_path);
+		wd_path = d_path(path, kwd_path, PATH_MAX);
+		set_fs_root(current->fs, &old_root);
+		path_put(&old_root);
+
+		if (IS_ERR(wd_path)) {
+			kfree(kwd_path);
+			return PTR_ERR(wd_path);
+		}
+
+		wd_path = kstrdup(wd_path, GFP_KERNEL);
+		if (!wd_path) {
+			kfree(kwd_path);
+			return -ENOMEM;
+		}
+
 		kfree(kwd_path);
-		return PTR_ERR(wd_path);
 	}
 
 	tmp_ientry = kmem_cache_alloc(inotify_inode_mark_cachep, GFP_KERNEL);
-	if (unlikely(!tmp_ientry))
+	if (unlikely(!tmp_ientry)) {
+		kfree(wd_path);
 		return -ENOMEM;
+	}
 
 	fsnotify_init_mark(&tmp_ientry->fsn_entry, inotify_free_mark);
 	tmp_ientry->fsn_entry.mask = mask;
 	tmp_ientry->wd = -1;
 	tmp_ientry->cpt_wd_path = NULL;
 	tmp_ientry->cpt_wd_mnt = NULL;
-
-	wd_path = kstrdup(wd_path, GFP_KERNEL);
-	if (!wd_path) {
-		ret = -ENOMEM;
-		goto out_err;
-	}
 
 	ret = -ENOSPC;
 	if (atomic_read(&group->inotify_data.user->inotify_watches) >= inotify_max_user_watches)
@@ -591,10 +614,20 @@ retry:
 	spin_lock(&group->inotify_data.idr_lock);
 	ret = idr_get_new_above(&group->inotify_data.idr, &tmp_ientry->fsn_entry,
 				start_wd, &tmp_ientry->wd);
+	if (!ret) {
+		wd_local = tmp_ientry->wd;
+		/* update the idr hint, who cares about races, it's just a hint */
+		group->inotify_data.last_wd = tmp_ientry->wd;
+
+		/* increment the number of watches the user has */
+		atomic_inc(&group->inotify_data.user->inotify_watches);
+	}
 	spin_unlock(&group->inotify_data.idr_lock);
 	if (ret) {
 		/* we didn't get on the idr, drop the idr reference */
 		fsnotify_put_mark(&tmp_ientry->fsn_entry);
+
+		atomic_dec(&group->inotify_data.user->inotify_watches);
 
 		/* idr was out of memory allocate and try again */
 		if (ret == -EAGAIN)
@@ -617,12 +650,6 @@ retry:
 		goto out_err;
 	}
 
-	/* update the idr hint, who cares about races, it's just a hint */
-	group->inotify_data.last_wd = tmp_ientry->wd;
-
-	/* increment the number of watches the user has */
-	atomic_inc(&group->inotify_data.user->inotify_watches);
-
 	if (!ve_is_super(get_exec_env())) {
 		tmp_ientry->cpt_wd_path = wd_path;
 		mnt_pin(path->mnt);
@@ -630,7 +657,7 @@ retry:
 	}
 
 	/* return the watch descriptor for this new entry */
-	ret = tmp_ientry->wd;
+	ret = wd_local;
 
 	/* match the ref from fsnotify_init_markentry() */
 	fsnotify_put_mark(&tmp_ientry->fsn_entry);
@@ -644,7 +671,6 @@ out_err:
 		kfree(wd_path);
 		kmem_cache_free(inotify_inode_mark_cachep, tmp_ientry);
 	}
-	kfree(kwd_path);
 
 	return ret;
 }

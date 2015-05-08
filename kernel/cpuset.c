@@ -100,6 +100,9 @@ struct cpuset {
 	cpumask_var_t cpuset_cpus_allowed;
 	nodemask_t cpuset_mems_allowed;
 
+	cpumask_var_t ve_cpus_allowed;
+	nodemask_t ve_mems_allowed;
+
 	struct cpuset *parent;		/* my parent */
 
 	struct fmeter fmeter;		/* memory_pressure filter */
@@ -338,13 +341,13 @@ static void cpuset_update_task_spread_flag(struct cpuset *cs,
 					struct task_struct *tsk)
 {
 	if (is_spread_page(cs))
-		tsk->flags |= PF_SPREAD_PAGE;
+		task_set_spread_page(tsk);
 	else
-		tsk->flags &= ~PF_SPREAD_PAGE;
+		task_clear_spread_page(tsk);
 	if (is_spread_slab(cs))
-		tsk->flags |= PF_SPREAD_SLAB;
+		task_set_spread_slab(tsk);
 	else
-		tsk->flags &= ~PF_SPREAD_SLAB;
+		task_clear_spread_slab(tsk);
 }
 
 /*
@@ -886,6 +889,17 @@ static int update_cpumask(struct cpuset *cs,
 	if (cs == &top_cpuset)
 		return -EACCES;
 
+	/*
+	 * If we are in CT use fake cpu mask
+	 * can set and read, but no effect
+	 */
+	if (!ve_is_super(get_exec_env())) {
+		if (update_allowed)
+			return -EACCES;
+		cpumask_copy(cs->ve_cpus_allowed, cpus_allowed);
+		return 0;
+	}
+
 	if (!cpumask_empty(cs->cpuset_cpus_allowed) && !update_allowed)
 		cpuset_cpus_allowed = cs->cpuset_cpus_allowed;
 
@@ -1133,6 +1147,17 @@ static int update_nodemask(struct cpuset *cs,
 	 */
 	if (cs == &top_cpuset)
 		return -EACCES;
+
+	/*
+	 * If we are in CT use fake node mask
+	 * can set and read, but no effect
+	 */
+	if (!ve_is_super(get_exec_env())) {
+		if (update_allowed)
+			return -EACCES;
+		cs->ve_mems_allowed = *mems_allowed;
+		return 0;
+	}
 
 	if (!nodes_empty(cs->cpuset_mems_allowed) && !update_allowed)
 		cpuset_mems_allowed = &cs->cpuset_mems_allowed;
@@ -1523,6 +1548,9 @@ static int cpuset_write_u64(struct cgroup *cgrp, struct cftype *cft, u64 val)
 	struct cpuset *cs = cgroup_cs(cgrp);
 	cpuset_filetype_t type = cft->private;
 
+	if (!ve_is_super(get_exec_env()))
+		return -EACCES;
+
 	if (!cgroup_lock_live_group(cgrp))
 		return -ENODEV;
 
@@ -1567,6 +1595,9 @@ static int cpuset_write_s64(struct cgroup *cgrp, struct cftype *cft, s64 val)
 	int retval = 0;
 	struct cpuset *cs = cgroup_cs(cgrp);
 	cpuset_filetype_t type = cft->private;
+
+	if (!ve_is_super(get_exec_env()))
+		return -EACCES;
 
 	if (!cgroup_lock_live_group(cgrp))
 		return -ENODEV;
@@ -1706,6 +1737,9 @@ static int cpuset_sprintf_cpulist(char *page, struct cpuset *cs)
 {
 	int ret;
 
+	if (!ve_is_super(get_exec_env()))
+		return cpulist_scnprintf(page, PAGE_SIZE, cs->ve_cpus_allowed);
+
 	mutex_lock(&callback_mutex);
 	ret = cpulist_scnprintf(page, PAGE_SIZE, cs->cpus_allowed);
 	mutex_unlock(&callback_mutex);
@@ -1716,6 +1750,11 @@ static int cpuset_sprintf_cpulist(char *page, struct cpuset *cs)
 static int cpuset_sprintf_memlist(char *page, struct cpuset *cs)
 {
 	nodemask_t mask;
+
+	if (!ve_is_super(get_exec_env())) {
+		mask = cs->ve_mems_allowed;
+		return nodelist_scnprintf(page, PAGE_SIZE, mask);
+	}
 
 	mutex_lock(&callback_mutex);
 	mask = cs->mems_allowed;
@@ -1751,6 +1790,10 @@ static ssize_t cpuset_common_file_read(struct cgroup *cont,
 	char *page;
 	ssize_t retval = 0;
 	char *s;
+
+	if (!ve_is_super(get_exec_env()) &&
+	    type != FILE_CPULIST && type != FILE_MEMLIST)
+		return -EACCES;
 
 	if (!(page = (char *)__get_free_page(GFP_TEMPORARY)))
 		return -ENOMEM;
@@ -1789,6 +1832,8 @@ static u64 cpuset_read_u64(struct cgroup *cont, struct cftype *cft)
 {
 	struct cpuset *cs = cgroup_cs(cont);
 	cpuset_filetype_t type = cft->private;
+	if (!ve_is_super(get_exec_env()))
+		return -EACCES;
 	switch (type) {
 	case FILE_CPU_EXCLUSIVE:
 		return is_cpu_exclusive(cs);
@@ -1820,6 +1865,8 @@ static s64 cpuset_read_s64(struct cgroup *cont, struct cftype *cft)
 {
 	struct cpuset *cs = cgroup_cs(cont);
 	cpuset_filetype_t type = cft->private;
+	if (!ve_is_super(get_exec_env()))
+		return -EACCES;
 	switch (type) {
 	case FILE_SCHED_RELAX_DOMAIN_LEVEL:
 		return cs->relax_domain_level;
@@ -2031,6 +2078,12 @@ static struct cgroup_subsys_state *cpuset_create(
 		kfree(cs);
 		return ERR_PTR(-ENOMEM);
 	}
+	if (!alloc_cpumask_var(&cs->ve_cpus_allowed, GFP_KERNEL)) {
+		free_cpumask_var(cs->cpus_allowed);
+		free_cpumask_var(cs->cpuset_cpus_allowed);
+		kfree(cs);
+		return ERR_PTR(-ENOMEM);
+	}
 
 	cs->flags = 0;
 	if (is_spread_page(parent))
@@ -2042,6 +2095,8 @@ static struct cgroup_subsys_state *cpuset_create(
 	nodes_clear(cs->mems_allowed);
 	cpumask_clear(cs->cpuset_cpus_allowed);
 	nodes_clear(cs->cpuset_mems_allowed);
+	cpumask_clear(cs->ve_cpus_allowed);
+	nodes_clear(cs->ve_mems_allowed);
 	fmeter_init(&cs->fmeter);
 	cs->relax_domain_level = -1;
 
@@ -2064,6 +2119,7 @@ static void cpuset_destroy(struct cgroup_subsys *ss, struct cgroup *cont)
 		update_flag(CS_SCHED_LOAD_BALANCE, cs, 0);
 
 	number_of_cpusets--;
+	free_cpumask_var(cs->ve_cpus_allowed);
 	free_cpumask_var(cs->cpuset_cpus_allowed);
 	free_cpumask_var(cs->cpus_allowed);
 	kfree(cs);
@@ -2098,11 +2154,15 @@ int __init cpuset_init(void)
 		BUG();
 	if (!alloc_cpumask_var(&top_cpuset.cpuset_cpus_allowed, GFP_KERNEL))
 		BUG();
+	if (!alloc_cpumask_var(&top_cpuset.ve_cpus_allowed, GFP_KERNEL))
+		BUG();
 
 	cpumask_setall(top_cpuset.cpus_allowed);
 	nodes_setall(top_cpuset.mems_allowed);
 	cpumask_clear(top_cpuset.cpuset_cpus_allowed);
 	nodes_clear(top_cpuset.cpuset_mems_allowed);
+	cpumask_clear(top_cpuset.ve_cpus_allowed);
+	nodes_clear(top_cpuset.ve_mems_allowed);
 
 	fmeter_init(&top_cpuset.fmeter);
 	set_bit(CS_SCHED_LOAD_BALANCE, &top_cpuset.flags);

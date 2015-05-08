@@ -169,6 +169,8 @@ static inline int is_unevictable_lru(enum lru_list l)
 #define ISOLATE_ACTIVE		((__force isolate_mode_t)0x2)
 /* Isolate clean file */
 #define ISOLATE_CLEAN		((__force isolate_mode_t)0x4)
+/* Isolate unmapped file */
+#define ISOLATE_UNMAPPED	((__force isolate_mode_t)0x8)
 /* Isolate for asynchronous migration */
 #define ISOLATE_ASYNC_MIGRATE	((__force isolate_mode_t)0x10)
 
@@ -400,6 +402,7 @@ struct gang {
 	unsigned long		timestamp[NR_EVICTABLE_LRU_LISTS];
 	unsigned int		last_milestone;
 	unsigned long		committed;
+	unsigned long		present;
 	unsigned long		portion;
 	struct gang		*shadow;
 #endif
@@ -492,6 +495,7 @@ struct zone {
 	unsigned long		eldest_timestamp;
 	unsigned long		committed;
 	unsigned int		nr_unlimited_gangs;
+	bool			force_scan;
 #endif /* CONFIG_MEMORY_GANGS */
 
 	atomic_long_t		pages_scanned;     /* since last reclaim */

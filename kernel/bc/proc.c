@@ -225,8 +225,8 @@ static int bc_proc_nodeinfo_show(struct seq_file *f, void *v)
 	ub = seq_beancounter(f);
 	for_each_node_state(nid, N_HIGH_MEMORY) {
 		nodemask = nodemask_of_node(nid);
-		gang_page_stat(&ub->gang_set, &nodemask, pages, shadow);
-		gang_idle_page_stat(&ub->gang_set, &nodemask, &idle);
+		gang_page_stat(&ub->gang_set, true, &nodemask, pages, shadow);
+		gang_idle_page_stat(&ub->gang_set, true, &nodemask, &idle);
 		seq_printf(f,
 			"Node %d Active:         %8lu kB\n"
 			"Node %d Inactive:       %8lu kB\n"
@@ -291,6 +291,11 @@ static int bc_dcache_show(struct seq_file *f, void *v)
 
 	spin_lock(&dcache_lock);
 	list_for_each_entry(dentry, &ub->ub_dentry_top, d_bclru) {
+		struct super_block *sb = dentry->d_sb;
+
+		/* Prevent race with shrink_dcache_for_umount_subtree() */
+		if (!down_read_trylock(&sb->s_umount))
+			continue;
 		dget(dentry);
 		spin_unlock(&dcache_lock);
 		dput(prev);
@@ -322,6 +327,8 @@ static int bc_dcache_show(struct seq_file *f, void *v)
 		seq_putc(f, '\n');
 
 		path_put(&root);
+		up_read(&sb->s_umount);
+
 		spin_lock(&dcache_lock);
 		if (dentry->d_ub != ub)
 			break;
@@ -383,10 +390,10 @@ static void *ub_start(struct seq_file *f, loff_t *ppos)
 	if (pos == 0)
 		ub_show_header(f);
 
-	exec_ub = get_exec_ub();
+	exec_ub = get_exec_ub_top();
 
 	rcu_read_lock();
-	for_each_beancounter(ub) {
+	for_each_top_beancounter(ub) {
 		if (!ub_accessible(exec_ub, ub))
 			continue;
 		if (pos-- == 0)
@@ -401,12 +408,12 @@ static void *ub_next(struct seq_file *f, void *v, loff_t *ppos)
 	struct list_head *entry;
 	struct user_beancounter *exec_ub;
 
-	exec_ub = get_exec_ub();
+	exec_ub = get_exec_ub_top();
 	ub = (struct user_beancounter *)v;
 
 	entry = &ub->ub_list;
 
-	list_for_each_continue_rcu(entry, &ub_list_head) {
+	list_for_each_continue_rcu(entry, &ub_top_list) {
 		ub = list_entry(entry, struct user_beancounter, ub_list);
 		if (!ub_accessible(exec_ub, ub))
 			continue;
@@ -591,7 +598,7 @@ static int bc_readdir(struct file *file, filldir_t filler, void *data,
 
 	rcu_read_lock();
 	prev = NULL;
-	ub = list_entry(&ub_list_head, struct user_beancounter, ub_list);
+	ub = list_entry(&ub_top_list, struct user_beancounter, ub_list);
 	while (1) {
 		int len;
 		unsigned long ino;
@@ -599,7 +606,7 @@ static int bc_readdir(struct file *file, filldir_t filler, void *data,
 
 		ub = list_entry(rcu_dereference(ub->ub_list.next),
 				struct user_beancounter, ub_list);
-		if (&ub->ub_list == &ub_list_head)
+		if (&ub->ub_list == &ub_top_list)
 			break;
 
 		if (!get_beancounter_rcu(ub))

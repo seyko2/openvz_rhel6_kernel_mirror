@@ -25,7 +25,7 @@ struct user_beancounter *rst_lookup_ubc(__u64 pos, struct cpt_context *ctx)
 	obj = lookup_cpt_obj_bypos(CPT_OBJ_UBC, pos, ctx);
 	if (obj == NULL) {
 		eprintk("RST: unknown ub @%Ld\n", (long long)pos);
-		return get_beancounter(get_exec_ub());
+		return get_beancounter(get_exec_ub_top());
 	}
 	return get_beancounter(obj->o_obj);
 }
@@ -54,7 +54,7 @@ static int restore_one_bc(struct cpt_beancounter_image *v,
 		 */
 		return 0;
 	} else {
-		bc = get_exec_ub();
+		bc = get_exec_ub_top();
 		get_beancounter(bc);
 	}
 	if (bc == NULL)

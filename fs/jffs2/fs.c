@@ -355,7 +355,7 @@ error:
 	return ERR_PTR(ret);
 }
 
-void jffs2_dirty_inode(struct inode *inode)
+void jffs2_dirty_inode(struct inode *inode, int flags)
 {
 	struct iattr iattr;
 

@@ -539,6 +539,7 @@ static int encode_siginfo(struct cpt_siginfo_image *si, siginfo_t *info)
 	si->cpt_errno = info->si_errno;
 	si->cpt_code = info->si_code;
 
+	/* Allow old kernels (i.e. which does not save _sifields) to restore */
 	switch(si->cpt_code & __SI_MASK) {
 	case __SI_POLL:
 		si->cpt_pid = info->si_band;
@@ -566,6 +567,11 @@ static int encode_siginfo(struct cpt_siginfo_image *si, siginfo_t *info)
 		si->cpt_sigval = cpt_ptr_export(info->si_ptr);
 		break;
 	}
+
+	/* Modern kernel will restore whole _sifields */
+	memcpy(si->cpt_sifields, &info->_sifields, sizeof(info->_sifields));
+	BUILD_BUG_ON(sizeof(info->_sifields) != sizeof(si->cpt_sifields));
+
 	return 0;
 }
 
@@ -719,6 +725,16 @@ static int dump_one_signal_struct(cpt_object_t *obj, struct cpt_context *ctx)
 	v->cpt_maj_flt = sig->maj_flt;
 	v->cpt_cmin_flt = sig->cmin_flt;
 	v->cpt_cmaj_flt = sig->cmaj_flt;
+
+	v->cpt_flags = 0;
+	if (sig->flags & SIGNAL_STOP_STOPPED)
+		v->cpt_flags |= CPT_SIGNAL_STOP_STOPPED;
+	if (sig->flags & SIGNAL_STOP_CONTINUED)
+		v->cpt_flags |= CPT_SIGNAL_STOP_CONTINUED;
+	if (sig->flags & SIGNAL_CLD_STOPPED)
+		v->cpt_flags |= CPT_SIGNAL_CLD_STOPPED;
+	if (sig->flags & SIGNAL_CLD_CONTINUED)
+		v->cpt_flags |= CPT_SIGNAL_CLD_CONTINUED;
 
 	if (RLIM_NLIMITS > CPT_RLIM_NLIMITS)
 		__asm__("undefined\n");
@@ -959,6 +975,7 @@ static int dump_one_process(cpt_object_t *obj, struct cpt_context *ctx)
 			/* Shame... I did a simplified version and _forgot_
 			 * about this. Later, later. */
 			eprintk_ctx("too many of groups " CPT_FID "\n", CPT_TID(tsk));
+			cpt_release_buf(ctx);
 			return -EINVAL;
 		}
 		v->cpt_ngids = i;
@@ -975,6 +992,7 @@ static int dump_one_process(cpt_object_t *obj, struct cpt_context *ctx)
 	memcpy(&v->cpt_ecap, &cred->cap_effective, 8);
 	memcpy(&v->cpt_icap, &cred->cap_inheritable, 8);
 	memcpy(&v->cpt_pcap, &cred->cap_permitted, 8);
+	memcpy(&v->cpt_bcap, &cred->cap_bset, 8);
 	v->cpt_keepcap = cred->securebits;
 
 	v->cpt_did_exec = tsk->did_exec;
@@ -1078,6 +1096,7 @@ static int dump_one_process(cpt_object_t *obj, struct cpt_context *ctx)
 			goto continue_dump;
 		}
 		eprintk_ctx("unknown restart block %pS\n", rb->fn);
+		cpt_release_buf(ctx);
 		return -EINVAL;
 	}
 
@@ -1171,11 +1190,11 @@ continue_dump:
 
 #ifdef CONFIG_BEANCOUNTERS
 	if (tsk->mm)
-		v->cpt_mm_ub = cpt_lookup_ubc(tsk->mm->mm_ub, ctx);
+		v->cpt_mm_ub = cpt_lookup_ubc(mm_ub_top(tsk->mm), ctx);
 	else
 		v->cpt_mm_ub = CPT_NULL;
-	v->cpt_task_ub = cpt_lookup_ubc(tsk->task_bc.task_ub, ctx);
-	v->cpt_exec_ub = cpt_lookup_ubc(tsk->task_bc.exec_ub, ctx);
+	v->cpt_task_ub = cpt_lookup_ubc(top_beancounter(tsk->task_bc.task_ub), ctx);
+	v->cpt_exec_ub = cpt_lookup_ubc(top_beancounter(tsk->task_bc.exec_ub), ctx);
 	v->cpt_fork_sub = v->cpt_exec_ub;
 #endif
 

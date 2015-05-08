@@ -46,6 +46,15 @@ static void __cpuinit early_init_intel(struct cpuinfo_x86 *c)
 		(c->x86 == 0x6 && c->x86_model >= 0x0e))
 		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
 
+	if (c->x86 >= 6 && !cpu_has(c, X86_FEATURE_IA64)) {
+		unsigned lower_word;
+
+		wrmsr(MSR_IA32_UCODE_REV, 0, 0);
+		/* Required by the SDM */
+		sync_core();
+		rdmsr(MSR_IA32_UCODE_REV, lower_word, c->microcode);
+	}
+
 	/*
 	 * Atom erratum AAE44/AAF40/AAG38/AAH41:
 	 *
@@ -356,6 +365,31 @@ static void __cpuinit detect_vmx_virtcap(struct cpuinfo_x86 *c)
 	}
 }
 
+static void intel_set_cpuid_faulting(bool enable)
+{
+	unsigned int l1, l2;
+
+	rdmsr(MSR_MISC_FEATURES_ENABLES, l1, l2);
+	l1 &= ~1;
+	if (enable)
+		l1 |= 1;
+	wrmsr(MSR_MISC_FEATURES_ENABLES, l1, l2);
+}
+
+static void __cpuinit intel_cpuid_faulting_init(struct cpuinfo_x86 *c)
+{
+	unsigned int l1, l2;
+
+	if (rdmsr_safe(MSR_PLATFORM_INFO, &l1, &l2) != 0 ||
+	    !(l1 & (1 << 31)))
+		return;
+
+	set_cpu_cap(c, X86_FEATURE_CPUID_FAULTING);
+	set_cpuid_faulting_cb = intel_set_cpuid_faulting;
+
+	intel_set_cpuid_faulting(false);
+}
+
 static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
@@ -456,6 +490,8 @@ static void __cpuinit init_intel(struct cpuinfo_x86 *c)
 
 	if (cpu_has(c, X86_FEATURE_VMX))
 		detect_vmx_virtcap(c);
+
+	intel_cpuid_faulting_init(c);
 }
 
 #ifdef CONFIG_X86_32

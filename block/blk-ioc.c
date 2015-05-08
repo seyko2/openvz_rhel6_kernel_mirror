@@ -113,7 +113,7 @@ struct io_context *alloc_io_context(gfp_t gfp_flags, int node)
 		ret->cgroup_changed = 0;
 #endif
 #ifdef CONFIG_BEANCOUNTERS
-		ret->ioc_ub = get_beancounter(get_exec_ub());
+		ret->ioc_ub = get_beancounter(get_exec_ub_top());
 #endif
 	}
 

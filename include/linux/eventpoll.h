@@ -121,8 +121,12 @@ struct eventpoll {
  * have an entry of this type linked to the "rbr" RB tree.
  */
 struct epitem {
-	/* RB tree node used to link this structure to the eventpoll RB tree */
-	struct rb_node rbn;
+	union {
+		/* RB tree node links this structure to the eventpoll RB tree */
+		struct rb_node rbn;
+		/* Used to free the struct epitem */
+		struct rcu_head rcu;
+	};
 
 	/* List header used to link this structure to the eventpoll ready list */
 	struct list_head rdllink;
@@ -159,7 +163,7 @@ extern struct semaphore epsem;
 extern const struct file_operations eventpoll_fops;
 extern struct epitem *ep_find(struct eventpoll *ep, struct file *file, int fd);
 extern int ep_insert(struct eventpoll *ep, struct epoll_event *event,
-		     struct file *tfile, int fd);
+		     struct file *tfile, int fd, int full_check);
 extern void clear_tfile_check_list(void);
 
 /* Used to release the epoll bits inside the "struct file" */

@@ -235,8 +235,8 @@ extern unsigned long totalram_pages;
 extern unsigned long totalreserve_pages;
 extern int min_free_kbytes;
 extern int extra_free_kbytes;
-extern unsigned int nr_free_buffer_pages(void);
-extern unsigned int nr_free_pagecache_pages(void);
+extern unsigned long nr_free_buffer_pages(void);
+extern unsigned long nr_free_pagecache_pages(void);
 
 /* Definition of global_page_state not available yet */
 #define nr_free_pages() global_page_state(NR_FREE_PAGES)
@@ -301,7 +301,7 @@ extern int __isolate_lru_page(struct page *page, isolate_mode_t mode,
 extern unsigned long shrink_all_memory(unsigned long nr_pages);
 extern int vm_swappiness;
 extern int remove_mapping(struct address_space *mapping, struct page *page);
-extern long vm_total_pages;
+extern unsigned long vm_total_pages;
 extern int vm_sync_reclaim;
 
 #ifdef CONFIG_NUMA
@@ -371,6 +371,7 @@ extern struct address_space swapper_space;
 #define total_swapcache_pages  swapper_space.nrpages
 extern void show_swap_cache_info(void);
 extern int add_to_swap(struct page *, struct user_beancounter *ub);
+extern int __add_to_swap_cache(struct page *, swp_entry_t);
 extern int add_to_swap_cache(struct page *, swp_entry_t, gfp_t);
 extern void __delete_from_swap_cache(struct page *);
 extern void delete_from_swap_cache(struct page *);
@@ -521,6 +522,11 @@ static inline struct page *lookup_swap_cache(swp_entry_t swp)
 static inline int add_to_swap(struct page *page, struct user_beancounter *ub)
 {
 	return 0;
+}
+
+static inline int __add_to_swap_cache(struct page *page, swp_entry_t entry)
+{
+	return -1;
 }
 
 static inline int add_to_swap_cache(struct page *page, swp_entry_t entry,
