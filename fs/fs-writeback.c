@@ -367,8 +367,6 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	}
 	BUG_ON(inode->i_state & I_SYNC);
 
-	if (!(inode->i_state & I_DIRTY_ALL) &&(wbc->sync_mode != WB_SYNC_ALL))
-		return 0;
 
 	/* Set I_SYNC, reset I_DIRTY_PAGES */
 	inode->i_state |= I_SYNC;
@@ -466,7 +464,7 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 }
 
 static int
-writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
+writeback_single_inode_ub(struct inode *inode, struct writeback_control *wbc)
 {
 	struct user_beancounter *ub = inode->i_mapping->dirtied_ub;
 	int ret;
@@ -480,6 +478,15 @@ writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 		put_beancounter(set_exec_ub(ub));
 
 	return ret;
+}
+
+static int
+writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	if (!(inode->i_state & I_DIRTY_ALL) &&(wbc->sync_mode != WB_SYNC_ALL))
+		return 0;
+
+	return writeback_single_inode_ub(inode, wbc);
 }
 
 /*
@@ -561,7 +568,7 @@ static int writeback_sb_inodes(struct super_block *sb, struct bdi_writeback *wb,
 		BUG_ON(inode->i_state & (I_FREEING | I_CLEAR));
 		__iget(inode);
 		pages_skipped = wbc->pages_skipped;
-		writeback_single_inode(inode, wbc);
+		writeback_single_inode_ub(inode, wbc);
 		if (wbc->pages_skipped != pages_skipped) {
 			/*
 			 * writeback is not making progress due to locked

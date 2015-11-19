@@ -205,6 +205,7 @@ pid_t vpid_to_pid(pid_t);
  _rst_get_object((type), (pos), (tmp), sizeof(*(tmp)), (ctx))
 
 extern int debug_level;
+extern int swap_percent;
 
 #define cpt_printk(lvl, fmt, args...)	do {	\
 		if (lvl <= debug_level)		\

@@ -722,6 +722,14 @@ static ctl_table tunables_table[] = {
 		.extra1		= &zero,
 		.extra2		= &one,
 	},
+	{
+                .ctl_name       = CTL_UNNUMBERED,
+                .procname       = "iter_swap_percent",
+                .data           = &swap_percent,
+                .maxlen         = sizeof(swap_percent),
+                .mode           = 0644,
+                .proc_handler   = &proc_dointvec,
+	},
 	{ .ctl_name = 0 }
 };
 static ctl_table control_table[] = {

@@ -1133,9 +1133,9 @@ NORET_TYPE void do_exit(long code)
 	tsk->state = TASK_DEAD;
 	if (tsk->flags & PF_EXIT_RESTART) {
 		struct restart_block *rb = &task_thread_info(tsk)->restart_block;
-		struct completion *z = (struct completion *)&rb->arg0;
 
-		complete(z);
+		if (rb->arg1 == (unsigned long)&do_exit)
+			complete((struct completion *)rb->arg0);
 	}
 	schedule();
 	BUG();

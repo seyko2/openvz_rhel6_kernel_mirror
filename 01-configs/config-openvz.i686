@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
-# Linux kernel version: 2.6.32-042stab108.1
-# Thu Apr 23 19:15:54 2015
+# Linux kernel version: 2.6.32-042stab111.12
+# Thu Sep 17 11:36:44 2015
 #
 # CONFIG_64BIT is not set
 CONFIG_X86_32=y
@@ -223,6 +223,7 @@ CONFIG_BLK_DEV_BSG=y
 CONFIG_BLK_DEV_BSGLIB=y
 CONFIG_BLK_DEV_INTEGRITY=y
 CONFIG_BLK_DEV_THROTTLING=y
+CONFIG_BLK_DEV_CBT=y
 
 #
 # IO Schedulers

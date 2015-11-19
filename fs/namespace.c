@@ -2963,6 +2963,7 @@ static void mntns_put(void *ns)
 
 static int mntns_install(struct nsproxy *nsproxy, void *ns)
 {
+	struct path *ve_path = &get_exec_env()->root_path;
 	struct fs_struct *fs = current->fs;
 	struct mnt_namespace *mnt_ns = ns;
 	struct path root;
@@ -2978,8 +2979,13 @@ static int mntns_install(struct nsproxy *nsproxy, void *ns)
 	nsproxy->mnt_ns = mnt_ns;
 
 	/* Find the root */
-	root.mnt    = mnt_ns->root;
-	root.dentry = mnt_ns->root->mnt_root;
+	if (ve_path->mnt->mnt_ns == mnt_ns) {
+		root.mnt = ve_path->mnt;
+		root.dentry = ve_path->dentry;
+	} else {
+		root.mnt    = mnt_ns->root;
+		root.dentry = mnt_ns->root->mnt_root;
+	}
 	path_get(&root);
 	while(d_mountpoint(root.dentry) && follow_down(&root))
 		;

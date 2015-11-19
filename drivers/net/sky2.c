@@ -4832,14 +4832,14 @@ static int sky2_resume(struct pci_dev *pdev)
 	for (i = 0; i < hw->ports; i++) {
 		err = sky2_reattach(hw->dev[i]);
 		if (err)
-			goto out;
+			goto out_lock;
 	}
 	rtnl_unlock();
 
 	return 0;
-out:
+out_lock:
 	rtnl_unlock();
-
+out:
 	dev_err(&pdev->dev, "resume failed (%d)\n", err);
 	pci_disable_device(pdev);
 	return err;

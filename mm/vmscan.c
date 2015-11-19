@@ -661,7 +661,7 @@ page_check_references(struct page *page, struct scan_control *sc)
 	}
 
 	/* Reclaim if clean, defer dirty pages to writeback */
-	if (referenced_page)
+	if (referenced_page && !PageSwapBacked(page))
 		return PAGEREF_RECLAIM_CLEAN;
 
 	return PAGEREF_RECLAIM;
@@ -3092,7 +3092,7 @@ loop_again:
 	}
 #endif /* CONFIG_MEMORY_GANGS */
 
-	for (sc.priority = sc.max_priority; sc.priority >= 1; sc.priority--) {
+	for (sc.priority = sc.max_priority; sc.priority >= 0; sc.priority--) {
 		int end_zone = 0;	/* Inclusive.  0 = ZONE_DMA */
 		unsigned long lru_pages = 0;
 		int has_under_min_watermark_zone = 0;

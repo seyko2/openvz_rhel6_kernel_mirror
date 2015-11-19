@@ -602,9 +602,10 @@ out_sock:
 
 	if (!err && (ti->cpt_state & (EXIT_ZOMBIE|EXIT_DEAD))) {
 		struct restart_block *rb = &task_thread_info(current)->restart_block;
-		struct completion *z = (struct completion *)&rb->arg0;
+		DECLARE_COMPLETION_ONSTACK(task_is_dead);
+		rb->arg0 = (unsigned long) &task_is_dead;
+		rb->arg1 = (unsigned long) &do_exit;
 
-		init_completion(z);
 		current->flags |= PF_EXIT_RESTART;
 		do_exit(ti->cpt_exit_code);
 	} else if (!err) {

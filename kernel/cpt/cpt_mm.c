@@ -553,7 +553,8 @@ int dump_page_block(struct vm_area_struct *vma, struct page_area *pa,
 	pgb.cpt_content = (pa->type == PD_COPY) ?
 			CPT_CONTENT_DATA : CPT_CONTENT_VOID;
 #ifdef CONFIG_PRAM
-	if (pa->type == PD_COPY && ctx->pram_stream)
+	if (pa->type == PD_COPY && ctx->pram_stream &&
+	    !is_packet_sock_vma(vma))
 		pgb.cpt_content = CPT_CONTENT_PRAM;
 #endif
 	pgb.cpt_start = pa->start;

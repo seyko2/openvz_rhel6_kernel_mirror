@@ -712,7 +712,7 @@ preallocate_bio(struct bio * orig_bio, struct ploop_device * plo)
 	}
 
 	if (nbio == NULL)
-		nbio = bio_alloc(GFP_NOFS, max(orig_bio->bi_max_vecs, block_vecs(plo)));
+		nbio = bio_alloc(GFP_NOIO, max(orig_bio->bi_max_vecs, block_vecs(plo)));
 	return nbio;
 }
 
@@ -816,7 +816,7 @@ static int ploop_make_request(struct request_queue *q, struct bio *bio)
 	nbio = preallocate_bio(bio, plo);
 
 	if (!current->io_context)
-		(void)current_io_context(GFP_NOFS, -1);
+		(void)current_io_context(GFP_NOIO, -1);
 
 	spin_lock_irq(&plo->lock);
 	ploop_acc_ff_in_locked(plo, rw);
@@ -2266,6 +2266,19 @@ static void ploop_req_state_process(struct ploop_request * preq)
 		sec = (sector_t)preq->track_cluster << plo->cluster_log;
 		if (sec < plo->track_end)
 			ploop_tracker_notify(plo, sec);
+	}
+
+	/* trick: preq->prealloc_size is actually new pos of eof */
+	if (unlikely(preq->prealloc_size && !preq->error)) {
+		struct ploop_io *io = &ploop_top_delta(plo)->io;
+		int log = preq->plo->cluster_log + 9;
+
+		BUG_ON(preq != io->prealloc_preq);
+		io->prealloc_preq = NULL;
+
+		io->prealloced_size = preq->prealloc_size -
+				      ((loff_t)io->alloc_head << log);
+		preq->prealloc_size = 0; /* only for sanity */
 	}
 
 restart:

@@ -1400,7 +1400,7 @@ int rst_restore_process(struct cpt_context *ctx)
 		/* waiting for restored zombie will be dead finally */
 		if (ti->cpt_state & (EXIT_ZOMBIE|EXIT_DEAD)) {
 			struct restart_block *rb = &task_thread_info(tsk)->restart_block;
-			struct completion *z = (struct completion *)&rb->arg0;
+			struct completion *z = (struct completion *)rb->arg0;
 
 			wait_for_completion(z);
 		}

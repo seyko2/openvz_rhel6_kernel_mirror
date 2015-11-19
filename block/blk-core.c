@@ -1744,6 +1744,7 @@ static inline void __generic_make_request(struct bio *bio)
 			break;  /* throttled, will be resubmitted later */
 
 		trace_block_bio_queue(q, bio);
+		blk_cbt_bio_queue(q, bio);
 
 		ret = q->make_request_fn(q, bio);
 	} while (ret);

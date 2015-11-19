@@ -1049,7 +1049,9 @@ static void __net_exit ip6mr_net_exit(struct net *net)
 	proc_net_remove(net, "ip6_mr_cache");
 	proc_net_remove(net, "ip6_mr_vif");
 #endif
+	rtnl_lock();
 	mroute_clean_tables(net);
+	rtnl_unlock();
 	kfree(net->ipv6.mfc6_cache_array);
 	kfree(net->ipv6.vif6_table);
 }

@@ -25,6 +25,7 @@
 #include "cpt_syscalls.h"
 
 int debug_level = 1;
+int swap_percent = 25;
 
 #ifdef CONFIG_X86_32
 

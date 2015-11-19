@@ -516,11 +516,6 @@ static inline int entity_before(struct sched_entity *a,
 	return (s64)(a->vruntime - b->vruntime) < 0;
 }
 
-static inline s64 entity_key(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-	return se->vruntime - cfs_rq->min_vruntime;
-}
-
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
 {
 	u64 vruntime = cfs_rq->min_vruntime;
@@ -550,7 +545,6 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	struct rb_node **link = &cfs_rq->tasks_timeline.rb_node;
 	struct rb_node *parent = NULL;
 	struct sched_entity *entry;
-	s64 key = entity_key(cfs_rq, se);
 	int leftmost = 1;
 
 	/*
@@ -563,7 +557,7 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		 * We dont care about collisions. Nodes with
 		 * the same key stay together.
 		 */
-		if (key < entity_key(cfs_rq, entry)) {
+		if (entity_before(se, entry)) {
 			link = &parent->rb_left;
 		} else {
 			link = &parent->rb_right;
@@ -3068,6 +3062,13 @@ static int trigger_cpulimit_balance(struct rq *this_rq, struct task_struct *p)
 #endif
 }
 
+static void pre_schedule_fair(struct rq *rq, struct task_struct *task)
+{
+	if (task->se.on_rq &&
+	    check_cpulimit_spread(task_cfs_rq(task), cpu_of(rq)) < 0)
+		trigger_cpulimit_balance(rq, task);
+}
+
 /*
  * Account for a descheduled task:
  */
@@ -3080,10 +3081,6 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 		cfs_rq = cfs_rq_of(se);
 		put_prev_entity(cfs_rq, se);
 	}
-
-	if (prev->se.on_rq &&
-	    check_cpulimit_spread(task_cfs_rq(prev), cpu_of(rq)) < 0)
-		trigger_cpulimit_balance(rq, prev);
 }
 
 /*
@@ -3694,6 +3691,7 @@ static const struct sched_class fair_sched_class = {
 
 	.load_balance		= load_balance_fair,
 	.move_one_task		= move_one_task_fair,
+	.pre_schedule		= pre_schedule_fair,
 	.rq_online		= rq_online_fair,
 	.rq_offline		= rq_offline_fair,
 

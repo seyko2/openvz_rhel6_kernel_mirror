@@ -170,8 +170,6 @@ struct br_mdb_entry {
 #define BR_ALREADY_SEEN 1
 
 extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __user *));
-extern struct sk_buff *(*br_handle_frame_hook)(struct net_bridge_port *p,
-					       struct sk_buff *skb);
 extern int (*br_should_route_hook)(struct sk_buff *skb);
 
 /*

@@ -169,10 +169,8 @@ getname_flags(const char __user * filename, int flags)
 recopy:
 	len = do_getname(filename, kname, max);
 	if (len < 0) {
-		if (len != -ENOENT || !(flags & LOOKUP_EMPTY)) {
-			err = ERR_PTR(len);
-			goto error;
-		}
+		err = ERR_PTR(len);
+		goto error;
 	}
 
 	/*
@@ -197,8 +195,10 @@ recopy:
 	}
 
 	err = ERR_PTR(-ENOENT);
-	if (unlikely(!len))
-		goto error;
+	if (unlikely(!len)) {
+		if (!(flags & LOOKUP_EMPTY))
+			goto error;
+	}
 
 	err = ERR_PTR(-ENAMETOOLONG);
 	if (unlikely(len >= PATH_MAX))
@@ -439,6 +439,24 @@ void path_put(struct path *path)
 	mntput(path->mnt);
 }
 EXPORT_SYMBOL(path_put);
+
+/**
+ * path_connected - Verify that a path->dentry is below path->mnt.mnt_root
+ * @path: nameidate to verify
+ *
+ * Rename can sometimes move a file or directory outside of a bind
+ * mount, path_connected allows those cases to be detected.
+ */
+static bool path_connected(const struct path *path)
+{
+	struct vfsmount *mnt = path->mnt;
+
+	/* Only bind mounts can have disconnected paths */
+	if (mnt->mnt_root == mnt->mnt_sb->s_root)
+		return true;
+
+	return is_subdir(path->dentry, mnt->mnt_root);
+}
 
 /**
  * release_open_intent - free up open intent resources
@@ -964,7 +982,7 @@ int __follow_down(struct path *path, bool mounting_here)
 	return 0;
 }
 
-static __always_inline void follow_dotdot(struct nameidata *nd)
+static __always_inline int follow_dotdot(struct nameidata *nd)
 {
 	set_root(nd);
 
@@ -987,6 +1005,8 @@ static __always_inline void follow_dotdot(struct nameidata *nd)
 			nd->path.dentry = dget(nd->path.dentry->d_parent);
 			spin_unlock(&dcache_lock);
 			dput(old);
+			if (unlikely(!path_connected(&nd->path)))
+				return -ENOENT;
 			break;
 		}
 		spin_unlock(&dcache_lock);
@@ -1005,6 +1025,7 @@ static __always_inline void follow_dotdot(struct nameidata *nd)
 	}
 	if (!(nd->flags & LOOKUP_DIVE))
 		follow_mount(&nd->path);
+	return 0;
 }
 
 /*
@@ -1189,7 +1210,9 @@ static int __link_path_walk(struct filename *filename, struct nameidata *nd)
 			case 2:	
 				if (this.name[1] != '.')
 					break;
-				follow_dotdot(nd);
+				err = follow_dotdot(nd);
+				if (err)
+					goto out_pput;
 				inode = nd->path.dentry->d_inode;
 				/* fallthrough */
 			case 1:
@@ -1248,7 +1271,9 @@ last_component:
 			case 2:	
 				if (this.name[1] != '.')
 					break;
-				follow_dotdot(nd);
+				err = follow_dotdot(nd);
+				if (err)
+					goto out_pput;
 				inode = nd->path.dentry->d_inode;
 				/* fallthrough */
 			case 1:
@@ -1325,6 +1350,7 @@ out_dput:
 		path_put_conditional(&next, nd);
 		break;
 	}
+out_pput:
 	if (unlikely(!audit_dummy_context()) && nd->path.dentry->d_inode)
 		audit_inode(filename, nd->path.dentry,
 				nd->flags & LOOKUP_PARENT);
@@ -1693,7 +1719,9 @@ mountpoint_last(struct nameidata *nd, struct path *path)
 	nd->flags &= ~LOOKUP_PARENT;
 
 	if (unlikely(nd->last_type != LAST_NORM)) {
-		follow_dotdot(nd);
+		error = follow_dotdot(nd);
+		if (error)
+			goto out;
 		dentry = dget(nd->path.dentry);
 		goto done;
 	}

@@ -422,9 +422,10 @@ int rst_iteration(cpt_context_t *ctx)
 			page_cache_release(page);
 			continue;
 		}
-
-		if (nr_swap_pages*4 < total_swap_pages) {
+		
+		if (nr_swap_pages < total_swap_pages * swap_percent / 100) {
 			eprintk_ctx("Swap pages barrier\n");
+			eprintk_ctx("swap_percent = %d\n", swap_percent);
 			break;
 		}
 

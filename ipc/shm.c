@@ -416,7 +416,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	int shmid = params->id;
 	int error;
 	struct shmid_kernel *shp;
-	int numpages = (size + PAGE_SIZE -1) >> PAGE_SHIFT;
+	size_t numpages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	struct file * file;
 	char name[64];
 	int id;

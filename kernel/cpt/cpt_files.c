@@ -535,6 +535,9 @@ static int dump_one_flock(struct file_lock *fl, int owner,
 
 	if (delay && !fl->fl_ops)
 		delay = 0; /* no remote locks */
+	/* NFS4 is not supported yet, so we don't dump such locks */
+	if (delay && !fl->fl_ops->fl_owner_id)
+		return 0;
 
 	v = cpt_get_buf(ctx);
 
