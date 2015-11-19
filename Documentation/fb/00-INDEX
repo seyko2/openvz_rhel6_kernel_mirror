@@ -33,6 +33,8 @@ matroxfb.txt
 	- info on the Matrox frame buffer driver.
 pvr2fb.txt
 	- info on the PowerVR 2 frame buffer driver.
+fbcondecor.txt
+ 	- info on the Framebuffer Console Decoration
 pxafb.txt
 	- info on the driver for the PXA25x LCD controller.
 s3fb.txt

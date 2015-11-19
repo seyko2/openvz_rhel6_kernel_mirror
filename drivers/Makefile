@@ -9,6 +9,9 @@ obj-y				+= gpio/
 obj-$(CONFIG_PCI)		+= pci/
 obj-$(CONFIG_PARISC)		+= parisc/
 obj-$(CONFIG_RAPIDIO)		+= rapidio/
+# char/ comes before serial/ etc so that the VT console is the boot-time
+# default.
+obj-y				+= char/
 obj-y				+= video/
 obj-y				+= idle/
 
@@ -27,10 +30,6 @@ obj-$(CONFIG_HYPERV)		+= hv/
 
 # regulators early, since some subsystems rely on them to initialize
 obj-$(CONFIG_REGULATOR)		+= regulator/
-
-# char/ comes before serial/ etc so that the VT console is the boot-time
-# default.
-obj-y				+= char/
 
 # gpu/ comes after char for AGP vs DRM startup
 obj-y				+= gpu/

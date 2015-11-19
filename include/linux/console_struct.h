@@ -19,6 +19,7 @@
 struct vt_struct;
 
 #define NPAR 16
+#include <linux/console_decor.h>
 
 struct vc_data {
 	unsigned short	vc_num;			/* Console number */
@@ -106,6 +107,8 @@ struct vc_data {
 	unsigned long	vc_uni_pagedir;
 	unsigned long	*vc_uni_pagedir_loc;  /* [!] Location of uni_pagedir variable for this console */
 	bool vc_panic_force_write; /* when oops/panic this VC can accept forced output/blanking */
+ 
+ 	struct vc_decor vc_decor;
 	/* additional information is in vt_kern.h */
 };
 
