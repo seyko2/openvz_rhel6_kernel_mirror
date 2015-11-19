@@ -1708,6 +1708,7 @@ static const struct file_operations psched_fops = {
 	.llseek = seq_lseek,
 	.release = single_release,
 };
+
 static int __net_init psched_net_init(struct net *net)
 {
 	struct proc_dir_entry *e;

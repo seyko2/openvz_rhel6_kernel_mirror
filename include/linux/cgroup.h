@@ -407,7 +407,8 @@ struct cftype {
 struct cgroup_scanner {
 	struct cgroup *cg;
 	int (*test_task)(struct task_struct *p, struct cgroup_scanner *scan);
-	int (*process_task)(struct task_struct *p, struct cgroup_scanner *scan);
+	void (*process_task)(struct task_struct *p,
+			struct cgroup_scanner *scan);
 	struct ptr_heap *heap;
 	void *data;
 };

@@ -220,6 +220,9 @@ struct ve_struct {
 
 	atomic_t		mnt_nr;
 
+	wait_queue_head_t	mnt_poll;
+	int			mnt_event;
+
 	void			*lve;
 
 	spinlock_t		aio_nr_lock;

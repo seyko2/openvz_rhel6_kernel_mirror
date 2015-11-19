@@ -33,7 +33,7 @@
 #define FUSE_NAME_MAX 1024
 
 /** Number of dentries for each connection in the control filesystem */
-#define FUSE_CTL_NUM_DENTRIES 11
+#define FUSE_CTL_NUM_DENTRIES 10
 
 /** If the FUSE_DEFAULT_PERMISSIONS flag is given, the filesystem
     module will check permissions based on the file mode.  Otherwise no
@@ -43,9 +43,6 @@
 /** If the FUSE_ALLOW_OTHER flag is given, then not only the user
     doing the mount will be allowed to access the filesystem */
 #define FUSE_ALLOW_OTHER         (1 << 1)
-
-/* This means, that the userspace can reconnect back to the mountpoint */
-#define FUSE_CAN_RECONNECT	(1 << 2)
 
 /* Enable write-back cache */
 #define FUSE_WBCACHE		(1 << 3)
@@ -832,7 +829,6 @@ void fuse_request_send_background_locked(struct fuse_conn *fc,
 
 /* Abort all requests */
 void fuse_abort_conn(struct fuse_conn *fc);
-int fuse_reconnect_fd(int fd, struct fuse_conn *fc);
 
 /**
  * Invalidate inode attributes

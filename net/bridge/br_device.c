@@ -51,6 +51,10 @@ netdev_tx_t br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (is_broadcast_ether_addr(dest))
 		br_flood_deliver(br, skb);
 	else if (is_multicast_ether_addr(dest)) {
+		if (unlikely(netpoll_tx_running(dev))) {
+			br_flood_deliver(br, skb);
+			goto out;
+		}
 		if (br_multicast_rcv(br, NULL, skb)) {
 			kfree_skb(skb);
 			goto out;
@@ -58,7 +62,7 @@ netdev_tx_t br_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		mdst = br_mdb_get(br, skb);
 		if ((mdst || BR_INPUT_SKB_CB(skb)->mrouters_only) &&
-		    br_multicast_querier_exists(br))
+		    br_multicast_querier_exists(br, eth_hdr(skb)))
 			br_multicast_deliver(mdst, skb);
 		else
 			br_flood_deliver(br, skb);
@@ -179,6 +183,87 @@ static u32 br_fix_features(struct net_device *dev, u32 features)
 
 	return br_features_recompute(br, features);
 }
+
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void br_poll_controller(struct net_device *br_dev)
+{
+}
+
+static void br_netpoll_cleanup(struct net_device *dev)
+{
+	struct net_bridge *br = netdev_priv(dev);
+	struct net_bridge_port *p, *n;
+
+	list_for_each_entry_safe(p, n, &br->port_list, list) {
+		br_netpoll_disable(p);
+	}
+}
+
+static int br_netpoll_setup(struct net_device *dev, struct netpoll_info *ni,
+			    gfp_t gfp)
+{
+	struct net_bridge *br = netdev_priv(dev);
+	struct net_bridge_port *p, *n;
+	int err = 0;
+
+	br->dev->npinfo = NULL;
+	list_for_each_entry_safe(p, n, &br->port_list, list) {
+		if (!p->dev)
+			continue;
+		err = br_netpoll_enable(p, gfp);
+		if (err)
+			goto fail;
+	}
+
+out:
+	return err;
+
+fail:
+	br_netpoll_cleanup(dev);
+	goto out;
+}
+
+int br_netpoll_enable(struct net_bridge_port *p, gfp_t gfp)
+{
+	struct netpoll *np;
+	int err = 0;
+
+	np = kzalloc(sizeof(*p->np), gfp);
+	err = -ENOMEM;
+	if (!np)
+		goto out;
+
+	np->dev = p->dev;
+
+	err = __netpoll_setup(np, p->dev, gfp);
+	if (err) {
+		kfree(np);
+		goto out;
+	}
+
+	p->np = np;
+
+out:
+	return err;
+}
+
+void br_netpoll_disable(struct net_bridge_port *p)
+{
+	struct netpoll *np = p->np;
+
+	if (!np)
+		return;
+
+	p->np = NULL;
+
+	/* Wait for transmitting packets to finish before freeing. */
+	synchronize_rcu_bh();
+
+	__netpoll_cleanup(np);
+	kfree(np);
+}
+
+#endif
 
 static void br_vlan_rx_register(struct net_device *br_dev, struct vlan_group *grp)
 {
@@ -366,6 +451,10 @@ static const struct net_device_ops br_netdev_ops = {
 	.ndo_do_ioctl		 = br_dev_ioctl,
 	.ndo_vlan_rx_register	 = br_vlan_rx_register,
 	.ndo_cpt		 = br_cpt,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_netpoll_cleanup	 = br_netpoll_cleanup,
+	.ndo_poll_controller	 = br_poll_controller,
+#endif
 };
 
 static const struct net_device_ops_ext br_netdev_ops_ext = {
@@ -389,6 +478,9 @@ void br_dev_setup(struct net_device *dev)
 
 	dev->netdev_ops = &br_netdev_ops;
 	set_netdev_ops_ext(dev, &br_netdev_ops_ext);
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	netdev_extended(dev)->netpoll_data.ndo_netpoll_setup = br_netpoll_setup;
+#endif
 	dev->destructor = br_dev_free;
 	SET_ETHTOOL_OPS(dev, &br_ethtool_ops);
 	dev->tx_queue_len = 0;

@@ -105,6 +105,9 @@ struct inodes_stat_t {
 /* Expect random access pattern */
 #define FMODE_RANDOM		((__force fmode_t)4096)
 
+/* File needs atomic accesses to f_pos */
+#define FMODE_ATOMIC_POS	((__force fmode_t)0x8000)
+
 /* Can do sys_quotactl (for devperms) */
 #define FMODE_QUOTACTL		((__force fmode_t)0x2000)
 
@@ -1212,6 +1215,9 @@ struct file {
 	struct address_space	*f_mapping;
 #ifdef CONFIG_DEBUG_WRITECOUNT
 	unsigned long f_mnt_write_state;
+#endif
+#ifndef __GENKSYMS__
+	struct mutex		f_pos_lock;
 #endif
 };
 

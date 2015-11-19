@@ -636,9 +636,8 @@ struct fuse_copy_state {
 	unsigned long seglen;
 	unsigned long addr;
 	struct page *pg;
-	void *mapaddr;
-	void *buf;
 	unsigned len;
+	unsigned offset;
 	unsigned move_pages:1;
 };
 
@@ -659,23 +658,17 @@ static void fuse_copy_finish(struct fuse_copy_state *cs)
 	if (cs->currbuf) {
 		struct pipe_buffer *buf = cs->currbuf;
 
-		if (!cs->write) {
-			buf->ops->unmap(cs->pipe, buf, cs->mapaddr);
-		} else {
-			kunmap_atomic(cs->mapaddr, KM_USER0);
+		if (cs->write)
 			buf->len = PAGE_SIZE - cs->len;
-		}
 		cs->currbuf = NULL;
-		cs->mapaddr = NULL;
-	} else if (cs->mapaddr) {
-		kunmap_atomic(cs->mapaddr, KM_USER0);
+	} else if (cs->pg) {
 		if (cs->write) {
 			flush_dcache_page(cs->pg);
 			set_page_dirty_lock(cs->pg);
 		}
 		put_page(cs->pg);
-		cs->mapaddr = NULL;
 	}
+	cs->pg = NULL;
 }
 
 /*
@@ -684,7 +677,7 @@ static void fuse_copy_finish(struct fuse_copy_state *cs)
  */
 static int fuse_copy_fill(struct fuse_copy_state *cs)
 {
-	unsigned long offset;
+	struct page *page;
 	int err;
 
 	unlock_request(cs->fc, cs->req);
@@ -699,14 +692,12 @@ static int fuse_copy_fill(struct fuse_copy_state *cs)
 
 			BUG_ON(!cs->nr_segs);
 			cs->currbuf = buf;
-			cs->mapaddr = buf->ops->map(cs->pipe, buf, 1);
+			cs->pg = buf->page;
+			cs->offset = buf->offset;
 			cs->len = buf->len;
-			cs->buf = cs->mapaddr + buf->offset;
 			cs->pipebufs++;
 			cs->nr_segs--;
 		} else {
-			struct page *page;
-
 			if (cs->nr_segs == PIPE_BUFFERS)
 				return -EIO;
 
@@ -719,8 +710,8 @@ static int fuse_copy_fill(struct fuse_copy_state *cs)
 			buf->len = 0;
 
 			cs->currbuf = buf;
-			cs->mapaddr = kmap_atomic(page, KM_USER0);
-			cs->buf = cs->mapaddr;
+			cs->pg = page;
+			cs->offset = 0;
 			cs->len = PAGE_SIZE;
 			cs->pipebufs++;
 			cs->nr_segs++;
@@ -733,14 +724,13 @@ static int fuse_copy_fill(struct fuse_copy_state *cs)
 			cs->iov++;
 			cs->nr_segs--;
 		}
-		err = get_user_pages_fast(cs->addr, 1, cs->write, &cs->pg);
+		err = get_user_pages_fast(cs->addr, 1, cs->write, &page);
 		if (err < 0)
 			return err;
 		BUG_ON(err != 1);
-		offset = cs->addr % PAGE_SIZE;
-		cs->mapaddr = kmap_atomic(cs->pg, KM_USER0);
-		cs->buf = cs->mapaddr + offset;
-		cs->len = min(PAGE_SIZE - offset, cs->seglen);
+		cs->pg = page;
+		cs->offset = cs->addr % PAGE_SIZE;
+		cs->len = min(PAGE_SIZE - cs->offset, cs->seglen);
 		cs->seglen -= cs->len;
 		cs->addr += cs->len;
 	}
@@ -753,15 +743,20 @@ static int fuse_copy_do(struct fuse_copy_state *cs, void **val, unsigned *size)
 {
 	unsigned ncpy = min(*size, cs->len);
 	if (val) {
+		void *pgaddr = kmap_atomic(cs->pg, KM_USER0);
+		void *buf = pgaddr + cs->offset;
+
 		if (cs->write)
-			memcpy(cs->buf, *val, ncpy);
+			memcpy(buf, *val, ncpy);
 		else
-			memcpy(*val, cs->buf, ncpy);
+			memcpy(*val, buf, ncpy);
+
+		kunmap_atomic(pgaddr, KM_USER0);
 		*val += ncpy;
 	}
 	*size -= ncpy;
 	cs->len -= ncpy;
-	cs->buf += ncpy;
+	cs->offset += ncpy;
 	return ncpy;
 }
 
@@ -874,8 +869,8 @@ static int fuse_try_move_page(struct fuse_copy_state *cs, struct page **pagep)
 out_fallback_unlock:
 	unlock_page(newpage);
 out_fallback:
-	cs->mapaddr = buf->ops->map(cs->pipe, buf, 1);
-	cs->buf = cs->mapaddr + buf->offset;
+	cs->pg = buf->page;
+	cs->offset = buf->offset;
 
 	err = lock_request(cs->fc, cs->req);
 	if (err)
@@ -1763,22 +1758,6 @@ __acquires(&fc->lock)
 	}
 }
 
-static void requeue_requests(struct fuse_conn *fc)
-{
-	BUG_ON(!list_empty(&fc->io));
-	while (!list_empty(&fc->processing)) {
-		struct fuse_req *req;
-
-		/* take requests from the processing queue tail ... */
-		req = list_entry(fc->processing.prev, struct fuse_req, list);
-		BUG_ON(req->locked);
-		BUG_ON(req->state != FUSE_REQ_SENT);
-		/* ... and queue them back to the pending head */
-		req->state = FUSE_REQ_PENDING;
-		list_move(&req->list, &fc->pending);
-	}
-}
-
 /*
  * Abort requests under I/O
  *
@@ -1867,16 +1846,11 @@ int fuse_dev_release(struct inode *inode, struct file *file)
 	struct fuse_conn *fc = fuse_get_conn(file);
 	if (fc) {
 		spin_lock(&fc->lock);
-		if (!(fc->flags & FUSE_CAN_RECONNECT)) {
-			fc->connected = 0;
-			fc->blocked = 0;
-			fc->initialized = 1;
-			end_queued_requests(fc);
-			wake_up_all(&fc->blocked_waitq);
-		} else {
-			fc->connected = 2;
-			requeue_requests(fc);
-		}
+		fc->connected = 0;
+		fc->blocked = 0;
+		fc->initialized = 1;
+		end_queued_requests(fc);
+		wake_up_all(&fc->blocked_waitq);
 		spin_unlock(&fc->lock);
 		fuse_conn_put(fc);
 	}
@@ -1884,40 +1858,6 @@ int fuse_dev_release(struct inode *inode, struct file *file)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(fuse_dev_release);
-
-int fuse_reconnect_fd(int fd, struct fuse_conn *fc)
-{
-	int err;
-	struct file *f;
-
-	err = -EBADF;
-	f = fget(fd);
-	if (!f)
-		goto out;
-
-	err = -EINVAL;
-	if (f->f_op != &fuse_dev_operations)
-		goto out_fput;
-
-	mutex_lock(&fuse_mutex);
-	err = -EBUSY;
-	if (fc->connected != 2)
-		goto out_unlock;
-
-	if (f->private_data)
-		goto out_unlock;
-
-	f->private_data = fuse_conn_get(fc);
-	fc->connected = 1;
-	err = 0;
-
-out_unlock:
-	mutex_unlock(&fuse_mutex);
-out_fput:
-	fput(f);
-out:
-	return err;
-}
 
 static int fuse_dev_fasync(int fd, struct file *file, int on)
 {

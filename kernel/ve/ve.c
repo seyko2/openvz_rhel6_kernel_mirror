@@ -97,6 +97,8 @@ struct ve_struct ve0 = {
 	.fsync_enable		= FSYNC_FILTERED,
 	.sync_mutex		= __MUTEX_INITIALIZER(ve0.sync_mutex),
 	.mnt_nr			= ATOMIC_INIT(0),
+	.mnt_poll		= __WAIT_QUEUE_HEAD_INITIALIZER(ve0.mnt_poll),
+	.mnt_event		= 0,
 	.aio_nr			= 0,
 	.aio_max_nr		= AIO_MAX_NR_DEFAULT,
 };

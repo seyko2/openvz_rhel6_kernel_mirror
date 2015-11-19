@@ -542,7 +542,7 @@ int __inotify_new_watch(struct fsnotify_group *group,
 	struct inotify_inode_mark_entry *tmp_ientry;
 	char *kwd_path = NULL, *wd_path = NULL;
 	u32 start_wd;
-	int ret, wd_local;
+	int ret, wd_local = 0;
 
 	if (unlikely(!mask))
 		return -EINVAL;

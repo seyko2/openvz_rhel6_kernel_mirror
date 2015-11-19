@@ -638,6 +638,7 @@ void release_pages(struct page **pages, int nr, int cold)
 
 	free_hot_cold_page_list(&pages_to_free, cold);
 }
+EXPORT_SYMBOL(release_pages);
 
 /*
  * The pages which we're about to release may be in the deferred lru-addition

@@ -147,6 +147,7 @@ extern int nr_threads;
 DECLARE_PER_CPU(unsigned long, process_counts);
 extern int nr_processes(void);
 extern unsigned long nr_running(void);
+extern bool single_task_running(void);
 extern unsigned long nr_sleeping(void);
 extern unsigned long nr_stopped(void);
 extern unsigned long nr_uninterruptible(void);
@@ -792,7 +793,9 @@ struct user_struct {
 	atomic_t inotify_devs;	/* How many inotify devs does this user have opened? */
 #endif
 #ifdef CONFIG_EPOLL
-	atomic_t epoll_watches;	/* The number of file descriptors currently watched */
+	atomic_t epoll_watches; /* Copy of epoll_watches_long, that may */
+				/* integer overflow, but is maintained for */
+				/* 3rd party modules who rely on it */
 #endif
 #ifdef CONFIG_POSIX_MQUEUE
 	/* protected by mq_lock	*/
@@ -821,6 +824,12 @@ struct user_struct {
 
 #ifdef CONFIG_PERF_EVENTS
 	atomic_long_t locked_vm;
+#endif
+#ifdef CONFIG_EPOLL
+#ifndef __GENKSYMS__
+	atomic_long_t epoll_watches_long;    /* The number of file */
+					     /* descriptors currently watched */
+#endif
 #endif
 };
 
@@ -2594,7 +2603,7 @@ static inline int task_detached(struct task_struct *p)
  * Protects ->fs, ->files, ->mm, ->group_info, ->comm, keyring
  * subscriptions and synchronises with wait4().  Also used in procfs.  Also
  * pins the final release of task.io_context.  Also protects ->cpuset and
- * ->cgroup.subsys[].
+ * ->cgroup.subsys[]. And ->vfork_done.
  *
  * Nests both inside and outside of read_lock(&tasklist_lock).
  * It must not be nested with write_lock_irq(&tasklist_lock),

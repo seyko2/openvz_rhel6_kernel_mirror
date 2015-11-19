@@ -10,18 +10,15 @@
 
 static int cgroup_index = 0;
 
-static int cpt_dump_one_cgroup_pid(struct task_struct *task,
-				   struct cgroup_scanner *scan)
+static void cpt_dump_one_cgroup_pid(struct task_struct *task,
+				struct cgroup_scanner *scan)
 {
 	struct cpt_context *ctx = scan->data;
 	u32 pid;
 
 	pid = cpt_task_pid_nr(task, PIDTYPE_PID);
-	if (pid)
-		ctx->write(&pid, sizeof(pid), ctx);
-	else
-		eprintk_ctx("Can't find pid for task '%s'\n", task->comm);
-	return pid ? 0 : -ENOENT;
+	BUG_ON(!pid);
+	ctx->write(&pid, sizeof(pid), ctx);
 }
 
 static int cpt_dump_one_cgroup(struct cgroup *cgrp, void *args)

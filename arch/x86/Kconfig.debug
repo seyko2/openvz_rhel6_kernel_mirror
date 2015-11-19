@@ -142,10 +142,6 @@ config 4KSTACKS
 	  on the VM subsystem for higher order allocations. This option
 	  will also use IRQ stacks to compensate for the reduced stackspace.
 
-config 16KSTACKS
-	bool "Use 16Kb for kernel stacks instead of 8Kb"
-	depends on X86_64
-
 config DOUBLEFAULT
 	default y
 	bool "Enable doublefault exception handler" if EMBEDDED

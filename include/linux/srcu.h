@@ -30,6 +30,8 @@
 #define _LINUX_SRCU_H
 
 #include <linux/mutex.h>
+
+#include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
 

@@ -520,7 +520,6 @@ enum {
 	OPT_GROUP_ID,
 	OPT_DEFAULT_PERMISSIONS,
 	OPT_ALLOW_OTHER,
-	OPT_CAN_RECONNECT,
 	OPT_MAX_READ,
 	OPT_BLKSIZE,
 	OPT_WBCACHE,
@@ -537,7 +536,6 @@ static const match_table_t tokens = {
 	{OPT_GROUP_ID,			"group_id=%u"},
 	{OPT_DEFAULT_PERMISSIONS,	"default_permissions"},
 	{OPT_ALLOW_OTHER,		"allow_other"},
-	{OPT_CAN_RECONNECT,		"can_reconnect"},
 	{OPT_MAX_READ,			"max_read=%u"},
 	{OPT_BLKSIZE,			"blksize=%u"},
 	{OPT_WBCACHE,			"writeback_enable"},
@@ -601,10 +599,6 @@ static int parse_fuse_opt(char *opt, struct fuse_mount_data *d, int is_bdev)
 			d->flags |= FUSE_ALLOW_OTHER;
 			break;
 
-		case OPT_CAN_RECONNECT:
-			d->flags |= FUSE_CAN_RECONNECT;
-			break;
-
 		case OPT_MAX_READ:
 			if (match_int(&args[0], &value))
 				return 0;
@@ -661,8 +655,6 @@ static int fuse_show_options(struct seq_file *m, struct vfsmount *mnt)
 		seq_puts(m, ",default_permissions");
 	if (fc->flags & FUSE_ALLOW_OTHER)
 		seq_puts(m, ",allow_other");
-	if (fc->flags & FUSE_CAN_RECONNECT)
-		seq_puts(m, ",can_reconnect");
 	if (fc->flags & FUSE_WBCACHE)
 		seq_puts(m, ",writeback_enable");
 	if (fc->flags & FUSE_ODIRECT)

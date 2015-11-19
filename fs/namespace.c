@@ -580,19 +580,45 @@ static inline int check_mnt(struct vfsmount *mnt)
 	return mnt->mnt_ns == current->nsproxy->mnt_ns;
 }
 
+#ifdef CONFIG_VE
+void get_mnt_poll(struct mnt_namespace *ns,
+		  wait_queue_head_t **ppoll, int **pevent)
+{
+	struct ve_struct *ve = get_exec_env();
+
+	if (ns == init_task.nsproxy->mnt_ns) {
+		*ppoll = &ve->mnt_poll;
+		*pevent = &ve->mnt_event;
+	} else {
+		*ppoll = &ns->poll;
+		*pevent = &ns->event;
+	}
+}
+#endif
+
 static void touch_mnt_namespace(struct mnt_namespace *ns)
 {
+	wait_queue_head_t *ppoll;
+	int *pevent;
+
 	if (ns) {
-		ns->event = ++event;
-		wake_up_interruptible(&ns->poll);
+		get_mnt_poll(ns, &ppoll, &pevent);
+		*pevent = ++event;
+		wake_up_interruptible(ppoll);
 	}
 }
 
 static void __touch_mnt_namespace(struct mnt_namespace *ns)
 {
-	if (ns && ns->event != event) {
-		ns->event = event;
-		wake_up_interruptible(&ns->poll);
+	wait_queue_head_t *ppoll;
+	int *pevent;
+
+	if (ns) {
+		get_mnt_poll(ns, &ppoll, &pevent);
+		if (*pevent != event) {
+			*pevent = event;
+			wake_up_interruptible(ppoll);
+		}
 	}
 }
 
@@ -1377,7 +1403,7 @@ SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 	if (!(flags & UMOUNT_NOFOLLOW))
 		lookup_flags |= LOOKUP_FOLLOW;
 
-	retval = user_path_at(AT_FDCWD, name, lookup_flags, &path);
+	retval = user_path_mountpoint_at(AT_FDCWD, name, lookup_flags, &path);
 	if (retval)
 		goto out;
 	retval = -EINVAL;

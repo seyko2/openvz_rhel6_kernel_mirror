@@ -49,6 +49,18 @@ extern const struct seq_operations mounts_op;
 extern const struct seq_operations mountinfo_op;
 extern const struct seq_operations mountstats_op;
 
+#ifdef CONFIG_VE
+extern void get_mnt_poll(struct mnt_namespace *ns,
+		wait_queue_head_t **ppoll, int **pevent);
+#else
+static inline void get_mnt_poll(struct mnt_namespace *ns,
+		wait_queue_head_t **ppoll, int **pevent)
+{
+	*ppoll = &ns->poll;
+	*pevent = &ns->event;
+}
+#endif
+
 extern struct rw_semaphore namespace_sem;
 
 #endif

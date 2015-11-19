@@ -790,6 +790,8 @@ static int mounts_open_common(struct inode *inode, struct file *file,
 	struct mnt_namespace *ns = NULL;
 	struct path root;
 	struct proc_mounts *p;
+	wait_queue_head_t *ppoll;
+	int *pevent;
 	int ret = -EINVAL;
 
 	if (task) {
@@ -821,10 +823,12 @@ static int mounts_open_common(struct inode *inode, struct file *file,
 	if (ret)
 		goto err_free;
 
+	get_mnt_poll(ns, &ppoll, &pevent);
+
 	p->m.private = p;
 	p->ns = ns;
 	p->root = root;
-	p->event = ns->event;
+	p->event = *pevent;
 	p->iter = NULL;
 	p->iter_pos = 0;
 	p->iter_advanced = 0;
@@ -856,12 +860,15 @@ static unsigned mounts_poll(struct file *file, poll_table *wait)
 	struct proc_mounts *p = file->private_data;
 	struct mnt_namespace *ns = p->ns;
 	unsigned res = POLLIN | POLLRDNORM;
+	wait_queue_head_t *ppoll;
+	int *pevent;
 
-	poll_wait(file, &ns->poll, wait);
+	get_mnt_poll(ns, &ppoll, &pevent);
+	poll_wait(file, ppoll, wait);
 
 	spin_lock(&vfsmount_lock);
-	if (p->event != ns->event) {
-		p->event = ns->event;
+	if (p->event != *pevent) {
+		p->event = *pevent;
 		res |= POLLERR | POLLPRI;
 	}
 	spin_unlock(&vfsmount_lock);
@@ -2385,7 +2392,7 @@ static int proc_fd_permission(struct inode *inode, int mask)
 	rv = generic_permission(inode, mask, NULL);
 	if (rv == 0)
 		return 0;
-	if (task_pid(current) == proc_pid(inode))
+	if (task_tgid(current) == proc_pid(inode))
 		rv = 0;
 	return rv;
 }

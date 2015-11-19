@@ -920,6 +920,9 @@ static int init_ve_struct(struct ve_struct *ve, envid_t veid,
 
 	atomic_set(&ve->mnt_nr, 0);
 
+	init_waitqueue_head(&ve->mnt_poll);
+	ve->mnt_event = 0;
+
 	spin_lock_init(&ve->aio_nr_lock);
 	ve->aio_nr = 0;
 	ve->aio_max_nr = AIO_MAX_NR_DEFAULT;

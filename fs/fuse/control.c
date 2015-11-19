@@ -205,42 +205,6 @@ static const struct file_operations fuse_conn_congestion_threshold_ops = {
 	.write = fuse_conn_congestion_threshold_write,
 };
 
-static ssize_t fuse_reconnect_write(struct file *file, const char __user *buf,
-		size_t count, loff_t *ppos)
-{
-	unsigned long t;
-	char tmp[32];
-	unsigned limit = (1 << 16) - 1;
-	int err;
-	struct fuse_conn *fc;
-
-	if (*ppos || count >= sizeof(tmp) - 1)
-		return -EINVAL;
-
-	if (copy_from_user(tmp, buf, count))
-		return -EINVAL;
-
-	tmp[count] = '\0';
-
-	err = strict_strtoul(tmp, 0, &t);
-	if (err)
-		return err;
-
-	fc = fuse_ctl_file_conn_get(file);
-	err = fuse_reconnect_fd(t, fc);
-	fuse_conn_put(fc);
-
-	if (err)
-		return err;
-
-	return count;
-}
-
-static const struct file_operations fuse_reconnect_ops = {
-	.open = nonseekable_open,
-	.write = fuse_reconnect_write,
-};
-
 struct fuse_conn_priv {
 	struct fuse_conn *conn;
 	struct list_head *req_list;
@@ -556,10 +520,7 @@ int fuse_ctl_add_conn(struct fuse_conn *fc)
 				&fuse_conn_files_ops) ||
 	    !fuse_ctl_add_dentry(parent, fc, "conn_info",
 			    	S_IFREG | 0600, 1, NULL,
-				&fuse_conn_info_ops) ||
-	    !fuse_ctl_add_dentry(parent, fc, "reconnect",
-			    	S_IFREG | 0600, 1, NULL,
-				&fuse_reconnect_ops)
+				&fuse_conn_info_ops)
 	    )
 		goto err;
 

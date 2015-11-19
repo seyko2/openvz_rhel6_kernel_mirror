@@ -133,6 +133,7 @@ extern void free_pid(struct pid *pid);
 extern int pid_ns_attach_init(struct pid_namespace *, struct task_struct *);
 extern int pid_ns_attach_task(struct pid_namespace *, struct task_struct *);
 pid_t pid_to_vpid(pid_t nr);
+extern void disable_pid_allocation(struct pid_namespace *ns);
 struct ve_struct;
 pid_t vpid_to_pid_ve(pid_t nr, struct ve_struct *);
 

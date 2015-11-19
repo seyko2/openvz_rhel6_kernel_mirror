@@ -843,11 +843,12 @@ static int cgroup_call_pre_destroy(struct cgroup *cgrp)
 
 	/*
 	 * Unregister events and notify userspace.
+	 * Notify userspace about cgroup removing only after rmdir of cgroup
+	 * directory to avoid race between userspace and kernelspace.
 	 */
 	spin_lock(&cgrp->event_list_lock);
 	list_for_each_entry_safe(event, tmp, &cgrp->event_list, list) {
-		list_del(&event->list);
-		eventfd_signal(event->eventfd, 1);
+		list_del_init(&event->list);
 		schedule_work(&event->remove);
 	}
 	spin_unlock(&cgrp->event_list_lock);
@@ -2887,7 +2888,6 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 			return retval;
 	}
 
-	retval = 0;
  again:
 	/*
 	 * Scan tasks in the cgroup, using the scanner's "test_task" callback
@@ -2945,8 +2945,8 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 				latest_time = q->start_time;
 				latest_task = q;
 			}
-			if (!retval)
-				retval = scan->process_task(q, scan);
+			/* Process the task per the caller's callback */
+			scan->process_task(q, scan);
 			put_task_struct(q);
 		}
 		/*
@@ -2960,7 +2960,7 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 	}
 	if (heap == &tmp_heap)
 		heap_free(&tmp_heap);
-	return retval;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(cgroup_scan_tasks);
 
@@ -3418,11 +3418,15 @@ static void cgroup_event_remove(struct work_struct *work)
 			remove);
 	struct cgroup *cgrp = event->cgrp;
 
+	remove_wait_queue(event->wqh, &event->wait);
+
 	/* TODO: check return code */
 	event->cft->unregister_event(cgrp, event->cft, event->eventfd);
 
+	/* Notify userspace the event is going away. */
+	eventfd_signal(event->eventfd, 1);
+
 	eventfd_ctx_put(event->eventfd);
-	remove_wait_queue(event->wqh, &event->wait);
 	kfree(event);
 }
 
@@ -3440,14 +3444,25 @@ static int cgroup_event_wake(wait_queue_t *wait, unsigned mode,
 	unsigned long flags = (unsigned long)key;
 
 	if (flags & POLLHUP) {
-		spin_lock(&cgrp->event_list_lock);
-		list_del(&event->list);
-		spin_unlock(&cgrp->event_list_lock);
 		/*
-		 * We are in atomic context, but cgroup_event_remove() may
-		 * sleep, so we have to call it in workqueue.
+		 * If the event has been detached at cgroup removal, we
+		 * can simply return knowing the other side will cleanup
+		 * for us.
+		 *
+		 * We can't race against event freeing since the other
+		 * side will require wqh->lock via remove_wait_queue(),
+		 * which we hold.
 		 */
-		schedule_work(&event->remove);
+		spin_lock(&cgrp->event_list_lock);
+		if (!list_empty(&event->list)) {
+			list_del_init(&event->list);
+			/*
+			 * We are in atomic context, but cgroup_event_remove()
+			 * may sleep, so we have to call it in workqueue.
+			 */
+			schedule_work(&event->remove);
+		}
+		spin_unlock(&cgrp->event_list_lock);
 	}
 
 	return 0;

@@ -161,6 +161,8 @@ static void del_nbp(struct net_bridge_port *p)
 	kobject_uevent(&p->kobj, KOBJ_REMOVE);
 	kobject_del(&p->kobj);
 
+	br_netpoll_disable(p);
+
 	call_rcu(&p->rcu, destroy_nbp_rcu);
 }
 
@@ -215,6 +217,8 @@ struct net_device *new_bridge_dev(struct net *net, const char *name)
 	memcpy(br->group_addr, br_reserved_address, ETH_ALEN);
 
 	br->stp_enabled = BR_NO_STP;
+	br->group_fwd_mask = BR_GROUPFWD_DEFAULT;
+
 	br->designated_root = br->bridge_id;
 	br->root_path_cost = 0;
 	br->root_port = 0;
@@ -424,6 +428,8 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	if (err)
 		goto put_back;
 
+	call_netdevice_notifiers(NETDEV_JOIN, dev);
+
 	err = kobject_init_and_add(&p->kobj, &brport_ktype, &(dev->dev.kobj),
 				   SYSFS_BRIDGE_PORT_ATTR);
 	if (err)
@@ -436,6 +442,9 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	err = br_sysfs_addif(p);
 	if (err)
 		goto err2;
+
+	if (br_netpoll_info(br) && ((err = br_netpoll_enable(p, GFP_KERNEL))))
+		goto err3;
 
 	rcu_assign_pointer(dev->br_port, p);
 
@@ -475,6 +484,8 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	return 0;
 err4:
 	rcu_assign_pointer(dev->br_port, NULL);
+err3:
+	sysfs_remove_link(br->ifobj, p->dev->name);
 err2:
 	br_fdb_delete_by_port(br, p, 1);
 err1:
