@@ -10,5 +10,5 @@
 	.globl vdso_linux_version_code
 ELFNOTE_START(Linux, 0, "a")
 vdso_linux_version_code:
-	.long LINUX_VERSION_CODE
+	.long LINUX_VERSION_CODE_VDSO
 ELFNOTE_END

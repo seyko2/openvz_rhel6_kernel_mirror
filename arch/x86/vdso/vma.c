@@ -257,7 +257,7 @@ static int uts_arch_setup_additional_pages(struct linux_binprm *bprm,
 		 * preallocated one.
 		 */
 		new_version = KERNEL_VERSION(n1, n2, n3);
-		if (new_version == LINUX_VERSION_CODE)
+		if (new_version <= LINUX_VERSION_CODE_VDSO)
 			goto map_init_uts;
 	} else {
 		/*

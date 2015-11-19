@@ -14,6 +14,14 @@ RHEL_RELEASE = 504
 # Comments in this file are targeted only to the developer, do not
 # expect to learn how to build the kernel reading this file.
 
+# A kernel version which is placed in vdso.
+# This version must be a version of the stock kernel which is equal
+# by features to the this RHEL kernel
+
+VERSION_VDSO = 3
+PATCHLEVEL_VDSO = 12
+SUBLEVEL_VDSO = 1
+
 # Do not:
 # o  use make's built-in rules and variables
 #    (this increases performance and avoids hard-to-debug behaviour);
@@ -1084,9 +1092,9 @@ define filechk_utsrelease.h
 endef
 
 define filechk_version.h
-	(echo \#define LINUX_VERSION_CODE $(shell                             \
-	expr $(VERSION) \* 65536 + $(PATCHLEVEL) \* 256 + $(SUBLEVEL));     \
-	echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))'; \
+	(echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))'; \
+	echo "#define LINUX_VERSION_CODE KERNEL_VERSION($(VERSION),$(PATCHLEVEL),$(SUBLEVEL))"; \
+	echo "#define LINUX_VERSION_CODE_VDSO KERNEL_VERSION($(VERSION_VDSO),$(PATCHLEVEL_VDSO),$(SUBLEVEL_VDSO))"; \
 	echo '#define RHEL_MAJOR $(RHEL_MAJOR)'; \
 	echo '#define RHEL_MINOR $(RHEL_MINOR)'; \
 	echo '#define RHEL_RELEASE_VERSION(a,b) (((a) << 8) + (b))'; \
