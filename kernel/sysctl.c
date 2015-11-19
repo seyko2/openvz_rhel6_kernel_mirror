@@ -185,8 +185,9 @@ static const int cap_last_cap = CAP_LAST_CAP;
 extern char modprobe_path[];
 extern int modules_disabled;
 #endif
-#ifdef CONFIG_FB_CON_DECOR
-extern char fbcon_decor_path[];
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
+char fbcon_decor_path[KMOD_PATH_LEN] = "/sbin/fbcondecor_helper";
+EXPORT_SYMBOL(fbcon_decor_path);
 #endif
 #ifdef CONFIG_CHR_DEV_SG
 extern int sg_big_buff;
@@ -365,17 +366,6 @@ static struct ctl_table root_table[] = {
 		.mode		= 0555,
 		.child		= dev_table,
 	},
-#ifdef CONFIG_FB_CON_DECOR
-	{
-		.ctl_name	= CTL_UNNUMBERED,
-		.procname	= "fbcondecor",
-		.data		= &fbcon_decor_path,
-		.maxlen		= KMOD_PATH_LEN,
-		.mode		= 0644,
-		.proc_handler	= &proc_dostring,
-		.strategy	= &sysctl_string,
-	},
-#endif
 
 /*
  * NOTE: do not add new entries to this table unless you have read
@@ -1381,6 +1371,17 @@ static struct ctl_table kern_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
+	},
+#endif
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
+	{
+		.ctl_name	= CTL_UNNUMBERED,
+		.procname	= "fbcondecor",
+		.data		= &fbcon_decor_path,
+		.maxlen		= KMOD_PATH_LEN,
+		.mode		= 0644,
+		.proc_handler	= &proc_dostring,
+		.strategy	= &sysctl_string,
 	},
 #endif
 /*

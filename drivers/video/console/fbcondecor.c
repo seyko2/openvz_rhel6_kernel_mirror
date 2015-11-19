@@ -44,7 +44,7 @@
 
 extern signed char con2fb_map[];
 static int fbcon_decor_enable(struct vc_data *vc);
-char fbcon_decor_path[KMOD_PATH_LEN] = "/sbin/fbcondecor_helper";
+extern char fbcon_decor_path[];
 static int initialized = 0;
 
 int fbcon_decor_call_helper(char* cmd, unsigned short vc)
@@ -99,8 +99,8 @@ int fbcon_decor_disable(struct vc_data *vc, unsigned char redraw)
 			      vc->vc_size_row * (vc->vc_bottom - vc->vc_top) / 2);
 	}
 
-	printk(KERN_INFO "fbcondecor: switched decor state to 'off' on console %d\n",
-			 vc->vc_num);
+	// printk(KERN_INFO "fbcondecor: switched decor state to 'off' on console %d\n",
+	//		 vc->vc_num);
 
 	return 0;
 }
@@ -129,8 +129,8 @@ static int fbcon_decor_enable(struct vc_data *vc)
 		fbcon_decor_clear_margins(vc, info, 0);
 	}
 
-	printk(KERN_INFO "fbcondecor: switched decor state to 'on' on console %d\n",
-			 vc->vc_num);
+	// printk(KERN_INFO "fbcondecor: switched decor state to 'on' on console %d\n",
+	//		 vc->vc_num);
 
 	return 0;
 }
@@ -198,8 +198,8 @@ static int fbcon_decor_ioctl_dosetcfg(struct vc_data *vc, struct vc_decor *cfg, 
 	if (origin == FBCON_DECOR_IO_ORIG_USER)
 		release_console_sem();
 
-	printk(KERN_INFO "fbcondecor: console %d using theme '%s'\n",
-			 vc->vc_num, vc->vc_decor.theme);
+	// printk(KERN_INFO "fbcondecor: console %d using theme '%s'\n",
+	//		 vc->vc_num, vc->vc_decor.theme);
 	return 0;
 }
 
@@ -557,5 +557,3 @@ int fbcon_decor_exit(void)
 	fbcon_decor_reset();
 	return 0;
 }
-
-EXPORT_SYMBOL(fbcon_decor_path);
