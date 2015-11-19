@@ -1371,13 +1371,15 @@ static void rs_insert(struct gfs2_inode *ip)
 static void rg_mblk_search(struct gfs2_rgrpd *rgd, struct gfs2_inode *ip,
 			   const struct gfs2_alloc_parms *ap)
 {
-	struct gfs2_rbm rbm = { .rgd = rgd, };
+	struct gfs2_rbm rbm = { 0, };
 	u64 goal;
 	struct gfs2_blkreserv *rs = ip->i_res;
 	u32 extlen;
 	u32 free_blocks = rgd->rd_free_clone - rgd->rd_reserved;
 	int ret;
 	struct inode *inode = &ip->i_inode;
+
+	rbm.rgd = rgd;
 
 	if (S_ISDIR(inode->i_mode))
 		extlen = 1;
@@ -1550,7 +1552,9 @@ static int gfs2_rbm_find(struct gfs2_rbm *rbm, u8 state, u32 *minext,
 	int n = 0;
 	int iters = rbm->rgd->rd_length;
 	int ret;
-	struct gfs2_extent maxext = { .rbm.rgd = rbm->rgd, };
+	struct gfs2_extent maxext = { .rbm.rgd = 0, };
+
+	maxext.rbm.rgd = rbm->rgd;
 
 	/* If we are not starting at the beginning of a bitmap, then we
 	 * need to add one to the bitmap count to ensure that we search
@@ -1654,7 +1658,10 @@ static void try_rgrp_unlink(struct gfs2_rgrpd *rgd, u64 *last_unlinked, u64 skip
 	struct gfs2_inode *ip;
 	int error;
 	int found = 0;
-	struct gfs2_rbm rbm = { .rgd = rgd, .bi = rgd->rd_bits, .offset = 0 };
+	struct gfs2_rbm rbm = { 0, };
+	
+	rbm.rgd = rgd;
+	rbm.bi = rgd->rd_bits;
 
 	while (1) {
 		down_write(&sdp->sd_log_flush_lock);
@@ -1858,9 +1865,10 @@ void gfs2_inplace_release(struct gfs2_inode *ip)
 
 static unsigned char gfs2_get_block_type(struct gfs2_rgrpd *rgd, u64 block)
 {
-	struct gfs2_rbm rbm = { .rgd = rgd, };
+	struct gfs2_rbm rbm = { 0, };
 	int ret;
 
+	rbm.rgd = rgd;
 	ret = gfs2_rbm_from_block(&rbm, block);
 	WARN_ON_ONCE(ret != 0);
 
@@ -1879,11 +1887,12 @@ static unsigned char gfs2_get_block_type(struct gfs2_rgrpd *rgd, u64 block)
 static void gfs2_alloc_extent(const struct gfs2_rbm *rbm, bool dinode,
 			     unsigned int *n)
 {
-	struct gfs2_rbm pos = { .rgd = rbm->rgd, };
+	struct gfs2_rbm pos = { 0, };
 	const unsigned int elen = *n;
 	u64 block;
 	int ret;
 
+	pos.rgd = rbm->rgd;
 	*n = 1;
 	block = gfs2_rbm_to_block(rbm);
 	gfs2_trans_add_meta(rbm->rgd->rd_gl, rbm->bi->bi_bh);
@@ -2032,13 +2041,14 @@ int gfs2_alloc_blocks(struct gfs2_inode *ip, u64 *bn, unsigned int *nblocks,
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 	struct buffer_head *dibh;
-	struct gfs2_rbm rbm = { .rgd = ip->i_rgd, };
+	struct gfs2_rbm rbm = { 0, };
 	unsigned int ndata;
 	u64 goal;
 	u64 block; /* block, within the file system scope */
 	int error;
 	int quota_initial_reserve = *nblocks;
 
+	rbm.rgd = ip->i_rgd;
 	if (do_reserve) {
 		if (vfs_dq_reserve_block(&ip->i_inode, *nblocks))
 			return -EDQUOT;
