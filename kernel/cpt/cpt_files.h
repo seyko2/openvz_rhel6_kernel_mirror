@@ -3,7 +3,7 @@ int cpt_collect_fs(cpt_context_t *);
 int cpt_collect_namespace(cpt_context_t *);
 int cpt_collect_sysvsem_undo(cpt_context_t *);
 int cpt_collect_tty(struct file *, cpt_context_t *);
-void cpt_stop_tracker(struct cpt_context *);
+//void cpt_stop_tracker(struct cpt_context *);
 int cpt_dump_files(struct cpt_context *ctx);
 int cpt_dump_files_struct(struct cpt_context *ctx);
 int cpt_dump_fs_struct(struct cpt_context *ctx);

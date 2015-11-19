@@ -67,14 +67,12 @@
 static cpt_object_t *
 cpt_lookup_bind_source(struct vfsmount *mnt, cpt_context_t *ctx);
 
+#if 0
 void (*vefs_track_notify_hook)(struct dentry *vdentry, int track_cow);
 void (*vefs_track_force_stop_hook)(struct super_block *super);
 struct dentry * (*vefs_replaced_dentry_hook)(struct dentry *de);
 int (*vefs_is_renamed_dentry_hook)(struct dentry *vde, struct dentry *pde);
-EXPORT_SYMBOL(vefs_track_notify_hook);
-EXPORT_SYMBOL(vefs_track_force_stop_hook);
-EXPORT_SYMBOL(vefs_replaced_dentry_hook);
-EXPORT_SYMBOL(vefs_is_renamed_dentry_hook);
+#endif
 
 static inline int is_signalfd_file(struct file *file)
 {
@@ -168,6 +166,7 @@ int cpt_need_vfsmount(struct dentry *dentry, struct vfsmount *vfsmnt)
 	}
 }
 
+#if 0
 static int
 cpt_replaced(struct dentry * de, struct vfsmount *mnt, cpt_context_t * ctx)
 {
@@ -215,6 +214,13 @@ cpt_replaced(struct dentry * de, struct vfsmount *mnt, cpt_context_t * ctx)
 	free_page(pg);
 	return result;
 }
+#else
+static int
+cpt_replaced(struct dentry * de, struct vfsmount *mnt, cpt_context_t * ctx)
+{
+    return 0;
+}
+#endif
 
 static int cpt_dump_path(struct dentry *d, struct vfsmount *mnt,
 			   int replaced, cpt_context_t *ctx)
@@ -833,9 +839,12 @@ static int dump_one_file(cpt_object_t *obj, struct file *file, cpt_context_t *ct
 				replaced, ctx);
 		if (err)
 			return err;
+
+		#if 0
 		if ((file->f_mode & FMODE_WRITE) &&
 				file->f_dentry->d_inode->i_sb->s_magic == FSMAGIC_VEFS)
 			vefs_track_notify_hook(file->f_dentry, 1);
+		#endif
 	}
 
 	if (is_timerfd_file(file))
@@ -1481,6 +1490,7 @@ static int dump_one_inode(struct file *file, struct dentry *d,
 	return err;
 }
 
+#if 0
 static void cpt_stop_vzfs_trackers(struct cpt_context *ctx)
 {
 	cpt_object_t *obj;
@@ -1509,6 +1519,7 @@ void cpt_stop_tracker(struct cpt_context *ctx)
 
 	cpt_stop_vzfs_trackers(ctx);
 }
+#endif
 
 int cpt_dump_files(struct cpt_context *ctx)
 {
@@ -1599,7 +1610,9 @@ int cpt_dump_files(struct cpt_context *ctx)
 	}
 	cpt_close_section(ctx);
 
+	#if 0
 	cpt_stop_vzfs_trackers(ctx);
+	#endif
 
 	return 0;
 }

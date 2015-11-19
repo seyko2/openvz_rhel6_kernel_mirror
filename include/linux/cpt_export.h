@@ -32,10 +32,12 @@ struct rst_ops {
 
 extern struct rst_ops rst_ops;
 
+#if 0
 extern void (*vefs_track_notify_hook)(struct dentry *vdentry, int track_cow);
 extern void (*vefs_track_force_stop_hook)(struct super_block *super);
 extern struct dentry * (*vefs_replaced_dentry_hook)(struct dentry *de);
 extern int (*vefs_is_renamed_dentry_hook)(struct dentry *vde, struct dentry *pde);
+#endif
 
 #endif
 

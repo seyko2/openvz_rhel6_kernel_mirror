@@ -497,12 +497,14 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 		ctx->dst_cpu_flags = arg;
 		ctx->src_cpu_flags = test_cpu_caps_and_features();
 		break;
+	#if 0
 	case CPT_SET_PRAM:
 		if (arg)
 			err = cpt_open_pram(ctx);
 		else
 			cpt_close_pram(ctx, -1);
 		break;
+	#endif
 	case CPT_SUSPEND:
 		if (cpt_context_lookup_veid(ctx->ve_id) ||
 		    ctx->ctx_state > 0) {
@@ -530,6 +532,7 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 			ctx->ctx_state = CPT_CTX_SUSPENDED;
 		}
 		break;
+	#if 0
 	case CPT_STOP_TRACKER:
 		if (ctx->ctx_state != CPT_CTX_SUSPENDED) {
 			err = -EBADRQC;
@@ -537,6 +540,7 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 		}
 		cpt_stop_tracker(ctx);
 		break;
+	#endif
 	case CPT_DUMP:
 		if (!ctx->ctx_state) {
 			err = -ENOENT;
