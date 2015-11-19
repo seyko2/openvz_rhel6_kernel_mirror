@@ -113,21 +113,26 @@ int chrdev_is_tty(dev_t dev)
 }
 EXPORT_SYMBOL(chrdev_is_tty);
 
-void cpt_printk_dentry(struct dentry *d, struct vfsmount *mnt)
+static void cpt_printk_dentry(struct dentry *d, struct vfsmount *mnt, cpt_context_t *ctx)
 {
 	char *path;
 	struct path p;
 	unsigned long pg = __get_free_page(GFP_KERNEL);
 
-	if (!pg)
+	if (!pg) {
+		eprintk_ctx("__get_free_page() failed in %s\n", __FUNCTION__);
 		return;
+	}
 
 	p.dentry = d;
 	p.mnt = mnt;
-	path = d_path(&p, (char *)pg, PAGE_SIZE);
+	path = d_path_ve(&p, (char *)pg, PAGE_SIZE, 0);
 
 	if (!IS_ERR(path))
-		eprintk("<%s>\n", path);
+		eprintk_ctx("<%s>\n", path);
+	else
+		eprintk_ctx("d_path_ve() failed in %s\n", __FUNCTION__);
+	
 	free_page(pg);
 }
 
@@ -144,7 +149,7 @@ int cpt_need_delayfs(struct vfsmount *mnt)
 	return 0;
 }
 
-int cpt_need_vfsmount(struct dentry *dentry, struct vfsmount *vfsmnt)
+static int cpt_need_vfsmount(struct dentry *dentry, struct vfsmount *vfsmnt, cpt_context_t *ctx)
 {
 	if (vfsmnt == get_exec_env()->shmem_mnt)
 		return 0;
@@ -159,9 +164,9 @@ int cpt_need_vfsmount(struct dentry *dentry, struct vfsmount *vfsmnt)
 		case FSMAGIC_ANON:
 			return 0;
 		default:
-			eprintk("no vfsmount: ");
-			cpt_printk_dentry(dentry, vfsmnt);
-			eprintk(" magic:%lx\n", dentry->d_inode->i_sb->s_magic);
+			eprintk_ctx("no vfsmount: ");
+			cpt_printk_dentry(dentry, vfsmnt, ctx);
+			eprintk_ctx(" magic:%lx\n", dentry->d_inode->i_sb->s_magic);
 			return 1;
 	}
 }
@@ -408,7 +413,7 @@ int cpt_dump_inode(struct dentry *d, struct vfsmount *mnt, struct cpt_context *c
 	}
 
 	mntobj = cpt_lookup_vfsmount_obj(mnt, ctx);
-	if (!mntobj && cpt_need_vfsmount(d, mnt)) {
+	if (!mntobj && cpt_need_vfsmount(d, mnt, ctx)) {
 		cpt_release_buf(ctx);
 		return -ENODEV;
 	}
@@ -478,7 +483,7 @@ int cpt_collect_files(cpt_context_t * ctx)
 
 		if (obj->o_count != atomic_long_read(&file->f_count)) {
 			eprintk_ctx("file struct is referenced outside %d %ld\n", obj->o_count, atomic_long_read(&file->f_count));
-			cpt_printk_dentry(file->f_dentry, file->f_vfsmnt);
+			cpt_printk_dentry(file->f_dentry, file->f_vfsmnt, ctx);
 			return -EBUSY;
 		}
 
@@ -717,7 +722,7 @@ static int dump_one_file(cpt_object_t *obj, struct file *file, cpt_context_t *ct
 	cpt_getattr(file->f_vfsmnt, file->f_dentry, &sbuf);
 
 	mntobj = cpt_lookup_vfsmount_obj(file->f_vfsmnt, ctx);
-	if (!mntobj && cpt_need_vfsmount(file->f_dentry, file->f_vfsmnt)) {
+	if (!mntobj && cpt_need_vfsmount(file->f_dentry, file->f_vfsmnt, ctx)) {
 		cpt_release_buf(ctx);
 		return -ENODEV;
 	}
@@ -1037,7 +1042,7 @@ static int dump_content_regular(struct file *file, struct cpt_context *ctx)
 					O_RDONLY | O_LARGEFILE,
 					current_cred());
 		if (IS_ERR(filp)) {
-			cpt_printk_dentry(file->f_dentry, file->f_vfsmnt);
+			cpt_printk_dentry(file->f_dentry, file->f_vfsmnt, ctx);
 			eprintk_ctx("cannot reopen file for read %ld\n", PTR_ERR(filp));
 			return PTR_ERR(filp);
 		}
@@ -1466,7 +1471,7 @@ static int dump_one_inode(struct file *file, struct dentry *d,
 		if (S_ISREG(ino->i_mode)) {
 			if ((err = dump_content_regular(file, ctx)) != 0) {
 				eprintk_ctx("dump_content_regular ");
-				cpt_printk_dentry(d, mnt);
+				cpt_printk_dentry(d, mnt, ctx);
 			}
 		} else if (S_ISDIR(ino->i_mode)) {
 			/* We cannot do anything. The directory should be
