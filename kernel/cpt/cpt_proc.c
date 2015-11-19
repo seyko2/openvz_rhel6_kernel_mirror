@@ -27,6 +27,7 @@
 #include <linux/ve_proto.h>
 #include <linux/kmod.h>
 #include <linux/freezer.h>
+#include <linux/compat.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -591,6 +592,20 @@ out_lock:
 	return err;
 }
 
+#ifdef CONFIG_COMPAT
+static long cpt_compat_ioctl(struct file * file, unsigned int cmd, unsigned long arg)
+{
+	struct inode *inode = file->f_path.dentry->d_inode;
+	int ret;
+
+	lock_kernel();
+	arg = (unsigned long) compat_ptr(arg);
+	ret = cpt_ioctl(inode, file, cmd, arg);
+	unlock_kernel();
+	return ret;
+}
+#endif
+
 static int cpt_open(struct inode *inode, struct file *file)
 {
 	if (!try_module_get(THIS_MODULE))
@@ -621,6 +636,9 @@ static struct file_operations cpt_fops = {
 	.open    = cpt_open,
 	.release = cpt_release,
 	.ioctl	 = cpt_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = cpt_compat_ioctl,
+#endif
 };
 
 static ssize_t melt_write( struct file *file,

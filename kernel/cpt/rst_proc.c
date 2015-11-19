@@ -23,6 +23,7 @@
 #include <asm/uaccess.h>
 #include <linux/cpt_ioctl.h>
 #include <linux/kmod.h>
+#include <linux/compat.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -477,6 +478,20 @@ out_lock:
 	return err;
 }
 
+#ifdef CONFIG_COMPAT
+static long rst_compat_ioctl(struct file * file, unsigned int cmd, unsigned long arg)
+{
+	struct inode *inode = file->f_path.dentry->d_inode;
+	int ret;
+
+	lock_kernel();
+	arg = (unsigned long) compat_ptr(arg);
+	ret = rst_ioctl(inode, file, cmd, arg);
+	unlock_kernel();
+	return ret;
+}
+#endif
+
 static int rst_open(struct inode * inode, struct file * file)
 {
 	if (!try_module_get(THIS_MODULE))
@@ -507,6 +522,9 @@ static struct file_operations rst_fops =
 	.ioctl		= rst_ioctl,
 	.open		= rst_open,
 	.release	= rst_release,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= rst_compat_ioctl,
+#endif
 };
 
 
