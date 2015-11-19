@@ -1100,7 +1100,7 @@ static void __net_exit ip_fib_net_exit(struct net *net)
 		hlist_for_each_entry_safe(tb, node, tmp, head, tb_hlist) {
 			hlist_del(node);
 			tb->tb_flush(tb);
-			kfree(tb);
+			fib_free_table(tb);
 		}
 	}
 	kfree(net->ipv4.fib_table_hash);

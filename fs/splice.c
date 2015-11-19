@@ -982,6 +982,10 @@ generic_file_splice_write(struct pipe_inode_info *pipe, struct file *out,
 
 	splice_from_pipe_begin(&sd);
 	do {
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
 		ret = splice_from_pipe_next(pipe, &sd);
 		if (ret <= 0)
 			break;

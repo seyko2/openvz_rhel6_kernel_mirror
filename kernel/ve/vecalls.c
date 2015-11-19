@@ -720,6 +720,11 @@ static void free_ve_filesystems(struct ve_struct *ve)
 	ve->fuse_ctl_fs_type = NULL;
 #endif
 
+#if defined(CONFIG_DEVTMPFS)
+	kfree(ve->devtmpfs_fstype);
+	ve->devtmpfs_fstype = NULL;
+#endif
+
 #if defined(CONFIG_BINFMT_MISC) || defined(CONFIG_BINFMT_MISC_MODULE)
 	kfree(ve->bm_fs_type);
 	ve->bm_fs_type = NULL;

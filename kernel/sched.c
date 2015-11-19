@@ -412,17 +412,28 @@ static inline struct task_group *task_group(struct task_struct *p)
 }
 
 #ifdef CONFIG_CFS_CPULIMIT
-unsigned int task_nr_cpus(struct task_struct *p)
+unsigned int tg_nr_cpus(struct task_group *tg)
 {
 	unsigned int nr_cpus = 0;
 	unsigned int max_nr_cpus = num_online_cpus();
 
-	rcu_read_lock();
-	nr_cpus = task_group(p)->nr_cpus;
-	rcu_read_unlock();
+	while (tg->parent && tg->parent->parent)
+		tg = tg->parent;
+	nr_cpus = tg->nr_cpus;
 
 	if (!nr_cpus || nr_cpus > max_nr_cpus)
 		nr_cpus = max_nr_cpus;
+
+	return nr_cpus;
+}
+
+unsigned int task_nr_cpus(struct task_struct *p)
+{
+	unsigned int nr_cpus;
+
+	rcu_read_lock();
+	nr_cpus = tg_nr_cpus(task_group(p));
+	rcu_read_unlock();
 
 	return nr_cpus;
 }
@@ -1395,6 +1406,23 @@ static inline void update_sched_lat(struct task_struct *t, u64 now)
 				cpu, now - ve_wstamp);
 	}
 }
+
+u64 task_rq_clock(struct task_struct *p)
+{
+	unsigned long __maybe_unused(flags);
+	struct rq *rq = task_rq(p);
+	u64 clock;
+
+#if BITS_PER_LONG == 32
+	rq = task_rq_lock(p, &flags);
+	clock = rq->clock;
+	task_rq_unlock(rq, &flags);
+#else
+	clock = rq->clock;
+#endif
+	return clock;
+}
+EXPORT_SYMBOL(task_rq_clock);
 #endif
 
 unsigned long nr_zombie = 0;	/* protected by tasklist_lock */
@@ -3852,9 +3880,19 @@ unlock:
 static void pull_task(struct rq *src_rq, struct task_struct *p,
 		      struct rq *this_rq, int this_cpu)
 {
+	struct ve_task_info *ti = VE_TASK_INFO(p);
+	u64 clock, wakeup_lat = 0;
+
+	write_seqcount_begin(&ti->wakeup_lock);
 	deactivate_task(src_rq, p, 0);
 	set_task_cpu(p, this_cpu);
 	activate_task(this_rq, p, 0);
+
+	if ((clock = src_rq->clock) > ti->wakeup_stamp)
+		wakeup_lat = clock - ti->wakeup_stamp;
+	ti->wakeup_stamp = this_rq->clock + wakeup_lat;
+	write_seqcount_end(&ti->wakeup_lock);
+
 	check_preempt_curr(this_rq, p, 0);
 }
 
@@ -6628,7 +6666,7 @@ need_resched_nonpreemptible:
 
 #ifdef CONFIG_VE
 		prev->ve_task_info.sleep_stamp = rq->clock;
-		if (prev->state == TASK_RUNNING && prev != this_rq()->idle)
+		if (prev->se.on_rq && prev != this_rq()->idle)
 			write_wakeup_stamp(prev, rq->clock);
 		update_sched_lat(next, rq->clock);
 
@@ -8504,9 +8542,19 @@ static int __migrate_task(struct task_struct *p, int src_cpu, int dest_cpu)
 	 * placed properly.
 	 */
 	if (p->se.on_rq) {
+		struct ve_task_info *ti = VE_TASK_INFO(p);
+		u64 clock, wakeup_lat = 0;
+
+		write_seqcount_begin(&ti->wakeup_lock);
 		deactivate_task(rq_src, p, 0);
 		set_task_cpu(p, dest_cpu);
 		activate_task(rq_dest, p, 0);
+
+		if ((clock = rq_src->clock) > ti->wakeup_stamp)
+			wakeup_lat = clock - ti->wakeup_stamp;
+		ti->wakeup_stamp = rq_dest->clock + wakeup_lat;
+		write_seqcount_end(&ti->wakeup_lock);
+
 		check_preempt_curr(rq_dest, p, 0);
 	}
 done:
@@ -12647,7 +12695,7 @@ static void update_tg_vcpustat(struct task_group *tg)
 	spin_lock(&tg->vcpustat_lock);
 
 	now = ktime_get();
-	nr_vcpus = tg->nr_cpus ?: num_online_cpus();
+	nr_vcpus = tg_nr_cpus(tg);
 	vcpu_rate = DIV_ROUND_UP(tg->cpu_rate, nr_vcpus);
 	if (!vcpu_rate || vcpu_rate > MAX_CPU_RATE)
 		vcpu_rate = MAX_CPU_RATE;
@@ -12733,7 +12781,7 @@ int cpu_cgroup_proc_stat(struct cgroup *cgrp, struct cftype *cft,
 	struct timespec boottime;
 	struct task_group *tg = cgroup_tg(cgrp);
 	int virt = !ve_is_super(get_exec_env()) && tg != &root_task_group;
-	int nr_vcpus = tg->nr_cpus ?: num_online_cpus();
+	int nr_vcpus = tg_nr_cpus(tg);
 	struct kernel_cpustat *kcpustat;
 	unsigned long tg_nr_running = 0;
 	unsigned long tg_nr_iowait = 0;
@@ -12833,7 +12881,7 @@ int cpu_cgroup_proc_stat(struct cgroup *cgrp, struct cftype *cft,
 void cpu_cgroup_get_stat(struct cgroup *cgrp, struct kernel_cpustat *kstat)
 {
 	struct task_group *tg = cgroup_tg(cgrp);
-	int nr_vcpus = tg->nr_cpus ?: num_online_cpus();
+	int nr_vcpus = tg_nr_cpus(tg);
 	int i;
 
 	for_each_possible_cpu(i)
@@ -13199,14 +13247,33 @@ out:
 static int cpuacct_percpu_seq_read(struct cgroup *cgroup, struct cftype *cft,
 				   struct seq_file *m)
 {
+	struct task_group *tg = cgroup_tg(cgroup);
+	int virt = !ve_is_super(get_exec_env()) && tg != &root_task_group;
+	int nr_vcpus = tg_nr_cpus(tg);
 	struct cpuacct *ca = cgroup_ca(cgroup);
 	u64 percpu;
 	int i;
+
+	if (virt) {
+		for_each_possible_cpu(i)
+			cpu_cgroup_update_stat(tg, i);
+
+		update_tg_vcpustat(tg);
+
+		for(i = 0; i < nr_vcpus; i++) {
+			struct kernel_cpustat *kcpustat;
+			kcpustat = tg->vcpustat + i;
+			percpu = kcpustat->cpustat[USED];
+			seq_printf(m, "%llu ", (unsigned long long) percpu);
+		}
+		goto exit;
+	}
 
 	for_each_present_cpu(i) {
 		percpu = cpuacct_cpuusage_read(ca, i);
 		seq_printf(m, "%llu ", (unsigned long long) percpu);
 	}
+exit:
 	seq_printf(m, "\n");
 	return 0;
 }

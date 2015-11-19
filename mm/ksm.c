@@ -16,7 +16,6 @@
 
 #include <linux/errno.h>
 #include <linux/mm.h>
-#include <linux/mmgang.h>
 #include <linux/fs.h>
 #include <linux/mman.h>
 #include <linux/sched.h>
@@ -1885,12 +1884,6 @@ struct page *ksm_might_need_to_copy(struct page *page,
 		return page;		/* let do_swap_page report the error */
 
 	new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, address);
-
-	if (gang_add_user_page(new_page, get_mm_gang(vma->vm_mm), GFP_KERNEL)) {
-		put_page(new_page);
-		new_page = NULL;
-	}
-
 	if (new_page) {
 		copy_user_highpage(new_page, page, address, vma);
 

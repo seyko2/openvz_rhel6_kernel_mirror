@@ -84,6 +84,8 @@
 static DEFINE_MUTEX(cgroup_mutex);
 static DEFINE_MUTEX(cgroup_root_mutex);
 
+struct percpu_rw_semaphore cgroup_threadgroup_rwsem;
+
 /* Generate an array of cgroup subsystem pointers */
 #define SUBSYS(_x) &_x ## _subsys,
 
@@ -1081,6 +1083,41 @@ static int cgroup_show_options(struct seq_file *seq, struct vfsmount *vfs)
 	return 0;
 }
 
+static int cgroup_show_path(struct seq_file *m, struct vfsmount *mnt)
+{
+	char *buf;
+	size_t size = seq_get_buf(m, &buf);
+	int res = -1, err = 0;
+
+	if (size) {
+		char *p = dentry_path(mnt->mnt_root, buf, size);
+		if (!IS_ERR(p)) {
+			char *end;
+			while (*++p != '/') {
+				/*
+				 * Mangle one level when showing
+				 * cgroup mount source in container
+				 * e.g.: "/111" -> "/",
+				 * "/111/test.slice/test.scope" ->
+				 * "/test.slice/test.scope"
+				 */
+				if (*p == '\0') {
+					*--p = '/';
+					break;
+				}
+			}
+			end = mangle_path(buf, p, " \t\n\\");
+			if (end)
+				res = end - buf;
+		} else {
+			err = PTR_ERR(p);
+		}
+	}
+	seq_commit(m, res);
+
+	return err;
+}
+
 /*
  * Allow certain subsystems inside container for Docker sake.
  */
@@ -1300,6 +1337,7 @@ static const struct super_operations cgroup_ops = {
 	.statfs = simple_statfs,
 	.drop_inode = generic_delete_inode,
 	.show_options = cgroup_show_options,
+	.show_path = cgroup_show_path,
 	.remount_fs = cgroup_remount,
 };
 
@@ -1621,13 +1659,18 @@ static int cgroup_get_sb(struct file_system_type *fs_type,
 		mutex_lock(&top_cgrp->dentry->d_inode->i_mutex);
 		mutex_lock(&cgroup_mutex);
 		mutex_lock(&cgroup_root_mutex);
-		if (top_cgrp->top_cgroup != top_cgrp) {
-			top_cgrp->khelper_wq = get_exec_env()->khelper_wq;
+		if (top_cgrp->khelper_wq != get_exec_env()->khelper_wq) {
 			/*
-			 * Register independent release agent for this fake top cgroup
+			 * The @top_cgroup is initializing here or reused (from
+			 * previous container run) so don't forget to update stale
+			 * kthread helper and if needed release agent.
 			 */
+			top_cgrp->khelper_wq = get_exec_env()->khelper_wq;
+			kfree(top_cgrp->release_agent);
 			top_cgrp->release_agent = opts.release_agent;
 			opts.release_agent = NULL;
+		}
+		if (top_cgrp->top_cgroup != top_cgrp) {
 			top_cgrp->top_cgroup = top_cgrp;
 			cgroup_populate_dir(top_cgrp);
 		}
@@ -4122,6 +4165,8 @@ int __init cgroup_init(void)
 	int i;
 	struct hlist_head *hhead;
 
+	BUG_ON(percpu_init_rwsem(&cgroup_threadgroup_rwsem));
+
 	err = bdi_init(&cgroup_backing_dev_info);
 	if (err)
 		return err;
@@ -5315,8 +5360,6 @@ void cgroup_ve_khelper_cleanup(void *data)
 
 	cgroup_lock();
 	for_each_active_root(root) {
-		if (root->subsys_bits)
-			continue;
 		atomic_inc(&root->sb->s_active);
 		cgroup_unlock();
 		if (prev)

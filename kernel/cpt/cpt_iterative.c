@@ -350,9 +350,8 @@ int cpt_walk_mm(int (*doit)(struct task_struct *tsk, struct mm_struct *mm,
 		if (list_empty(&env->vetask_auxlist))
 			break;
 
-		p = list_entry(env->vetask_auxlist.prev, struct task_struct, ve_task_info.aux_list);
-		list_del(&VE_TASK_INFO(p)->aux_list);
-		list_add(&VE_TASK_INFO(p)->aux_list, &env->vetask_auxlist);
+		p = list_entry(env->vetask_auxlist.next, struct task_struct, ve_task_info.aux_list);
+		list_move_tail(&VE_TASK_INFO(p)->aux_list, &env->vetask_auxlist);
 
 		get_task_struct(p);
 		write_unlock_irq(&tasklist_lock);

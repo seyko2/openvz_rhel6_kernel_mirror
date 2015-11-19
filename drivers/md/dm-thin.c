@@ -3958,7 +3958,7 @@ static void thin_dtr(struct dm_target *ti)
 	spin_lock_irqsave(&tc->pool->lock, flags);
 	list_del_rcu(&tc->list);
 	spin_unlock_irqrestore(&tc->pool->lock, flags);
-	synchronize_rcu();
+	synchronize_rcu_expedited();
 
 	thin_put(tc);
 	wait_for_completion(&tc->can_destroy);
@@ -4114,7 +4114,7 @@ static int thin_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	 * added tc isn't yet visible).  So this reduces latency since we
 	 * aren't then dependent on the periodic commit to wake_worker().
 	 */
-	synchronize_rcu();
+	synchronize_rcu_expedited();
 
 	dm_put(pool_md);
 

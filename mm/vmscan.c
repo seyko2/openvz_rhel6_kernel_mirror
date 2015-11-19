@@ -950,6 +950,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 					 * increment nr_reclaimed here (and
 					 * leave it off the LRU).
 					 */
+					gang_del_user_page(page);
 					nr_reclaimed++;
 					continue;
 				}
@@ -1223,7 +1224,7 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 			 * anon page which don't already have a swap slot is
 			 * pointless.
 			 */
-			if (nr_swap_pages <= 0 && PageAnon(cursor_page) &&
+			if (get_nr_swap_pages() <= 0 && PageAnon(cursor_page) &&
 			    !PageSwapCache(cursor_page))
 				break;
 
@@ -1872,7 +1873,7 @@ static inline int no_swap_space(struct scan_control *sc)
 		return 1;
 	if (sc->use_vswap && SWP_VSWAP_NUM)
 		return 0;
-	if (nr_swap_pages <= 0)
+	if (get_nr_swap_pages() <= 0)
 		return 1;
 	return 0;
 }
@@ -2187,7 +2188,7 @@ static inline bool should_continue_reclaim(struct zone *zone,
 	 */
 	pages_for_compaction = (2UL << sc->order);
 	inactive_lru_pages = zone_page_state(zone, NR_INACTIVE_FILE);
-	if (nr_swap_pages > 0)
+	if (get_nr_swap_pages() > 0)
 		inactive_lru_pages += zone_page_state(zone, NR_INACTIVE_ANON);
 	if (sc->nr_reclaimed < pages_for_compaction &&
 			inactive_lru_pages > pages_for_compaction)
@@ -2213,7 +2214,7 @@ static unsigned long gang_reclaimable_pages(struct gang *gang)
 	nr = gang->lruvec.nr_pages[LRU_ACTIVE_FILE] +
 	     gang->lruvec.nr_pages[LRU_INACTIVE_FILE];
 
-	if (nr_swap_pages > 0)
+	if (get_nr_swap_pages() > 0)
 		nr += gang->lruvec.nr_pages[LRU_ACTIVE_ANON] +
 		      gang->lruvec.nr_pages[LRU_INACTIVE_ANON];
 
@@ -2263,7 +2264,7 @@ void update_vmscan_priority(struct gang *gang)
 
 	age = max(now - gang->timestamp[LRU_INACTIVE_FILE],
 		  now - gang->timestamp[LRU_ACTIVE_FILE]);
-	if (nr_swap_pages > 0)
+	if (get_nr_swap_pages() > 0)
 		age = max(age, max(now - gang->timestamp[LRU_INACTIVE_ANON],
 				   now - gang->timestamp[LRU_ACTIVE_ANON]));
 
@@ -3065,7 +3066,7 @@ loop_again:
 
 			size = max(lruvec->nr_pages[LRU_ACTIVE_FILE],
 				   lruvec->nr_pages[LRU_INACTIVE_FILE]);
-			if (nr_swap_pages > 0)
+			if (get_nr_swap_pages() > 0)
 				size = max3(size,
 					lruvec->nr_pages[LRU_ACTIVE_ANON],
 					lruvec->nr_pages[LRU_INACTIVE_ANON]);
@@ -3463,7 +3464,7 @@ unsigned long global_reclaimable_pages(void)
 	nr = global_page_state(NR_ACTIVE_FILE) +
 	     global_page_state(NR_INACTIVE_FILE);
 
-	if (nr_swap_pages > 0)
+	if (get_nr_swap_pages() > 0)
 		nr += global_page_state(NR_ACTIVE_ANON) +
 		      global_page_state(NR_INACTIVE_ANON);
 
@@ -3477,7 +3478,7 @@ unsigned long zone_reclaimable_pages(struct zone *zone)
 	nr = zone_page_state(zone, NR_ACTIVE_FILE) +
 	     zone_page_state(zone, NR_INACTIVE_FILE);
 
-	if (nr_swap_pages > 0)
+	if (get_nr_swap_pages() > 0)
 		nr += zone_page_state(zone, NR_ACTIVE_ANON) +
 		      zone_page_state(zone, NR_INACTIVE_ANON);
 

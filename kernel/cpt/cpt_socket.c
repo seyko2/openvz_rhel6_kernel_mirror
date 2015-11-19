@@ -543,28 +543,47 @@ static int cpt_dump_unix_socket(struct sock *sk, struct cpt_sock_image *v, cpt_c
 
 	if (unix_sk(sk)->dentry) {
 		struct dentry *d = unix_sk(sk)->dentry;
+		unsigned long pg = __get_free_page(GFP_KERNEL);
+		struct path p;
+		char *path, *cpt_path;
+		int err = 0;
+		__u32 *path_len;
+
+		if (!pg)
+			return -ENOMEM;
+
 		v->cpt_i_uid = d->d_inode->i_uid;
 		v->cpt_i_gid = d->d_inode->i_gid;
 
 		if (IS_ROOT(d) || !d_unhashed(d)) {
-			int err = 0;
-			struct path p = {unix_sk(sk)->mnt, d};
-			char *path;
-			unsigned long pg = __get_free_page(GFP_KERNEL);
+			p.dentry = dget(d);
+			cpt_path = ((char*)v->cpt_laddr) + 2;
+			path_len = &v->cpt_laddrlen;
+		} else {
+			v->cpt_sockflags |= CPT_SOCK_DELETED;
+			v->cpt_d_aliaslen = 0;
+			p.dentry = NULL;
 
-			if (!pg)
-				return -ENOMEM;
+			if (d->d_inode->i_nlink != 0) {
+				p.dentry = get_linked_dentry(d, unix_sk(sk)->mnt, ctx);
+				cpt_path = (char *)v->cpt_d_alias;
+				path_len = &v->cpt_d_aliaslen;
+			}
+		}
+
+		if (!IS_ERR_OR_NULL(p.dentry)) {
+			p.mnt = unix_sk(sk)->mnt;
 
 			path = d_path(&p, (char *)pg, PAGE_SIZE);
 
 			if (!IS_ERR(path)) {
 				int len = strlen(path);
 				if (len < 126) {
-					strcpy(((char*)v->cpt_laddr)+2, path); 
-					v->cpt_laddrlen = len + 2;
-				} else {
-					wprintk_ctx("af_unix path is too long: %s (%s)\n", path, ((char*)v->cpt_laddr)+2);
-				}
+					strcpy(cpt_path, path);
+					*path_len = len + 2;
+				} else
+					wprintk_ctx("af_unix path is too long: %s (%s)\n", path, cpt_path);
+
 				if (cpt_need_delayfs(unix_sk(sk)->mnt))
 					v->cpt_sockflags |= CPT_SOCK_DELAYED;
 
@@ -575,11 +594,12 @@ static int cpt_dump_unix_socket(struct sock *sk, struct cpt_sock_image *v, cpt_c
 				eprintk_ctx("cannot get path of an af_unix socket\n");
 				err = PTR_ERR(path);
 			}
-			free_page(pg);
-			if (err)
-				return err;
-		} else
-			v->cpt_sockflags |= CPT_SOCK_DELETED;
+			dput(p.dentry);
+		}
+
+		free_page(pg);
+		if (err)
+			return err;
 	}
 
 	/* If the socket is connected, find its peer. If peer is not

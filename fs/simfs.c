@@ -203,10 +203,22 @@ static int sim_show_options(struct seq_file *m, struct vfsmount *mnt)
 #endif
 	return 0;
 }
+
+static int sim_show_devname(struct seq_file *m, struct vfsmount *mnt)
+{
+	if (ve_is_super(get_exec_env()) && mnt->mnt_devname)
+		seq_escape(m, mnt->mnt_devname, " \t\n\\");
+	else
+		seq_puts(m, "simfs");
+
+	return 0;
+}
+
 static struct super_operations sim_super_ops = {
 #ifdef CONFIG_QUOTA
 	.show_type	= &sim_show_type,
 	.show_options	= &sim_show_options,
+	.show_devname   = &sim_show_devname,
 	.get_quota_root	= &sim_quota_root,
 #endif
 	.statfs = sim_statfs,
@@ -363,7 +375,7 @@ static struct file_system_type sim_fs_type = {
 	.name		= "simfs",
 	.get_sb		= sim_get_sb,
 	.kill_sb	= sim_kill_sb,
-	.fs_flags	= FS_MANGLE_PROC | FS_HAS_NEW_FREEZE,
+	.fs_flags	= FS_HAS_NEW_FREEZE,
 };
 
 static int __init init_simfs(void)

@@ -310,7 +310,7 @@ repeat:
 		if (dentry->d_flags & DCACHE_BCTOP)
 			ub_dcache_clear_owner(dentry);
 		dentry_lru_add(dentry);
- 	} else if (ub_dcache_lru_popup)
+	} else if (ub_dcache_lru_popup)
 		dentry_lru_popup(dentry);
 
  	spin_unlock(&dentry->d_lock);
@@ -2235,6 +2235,7 @@ char *__d_path(const struct path *path, struct path *root,
 	char *retval;
 	int deleted;
 	struct vfsmount *oldmnt = vfsmnt;
+	struct ve_struct *ve = get_exec_env();
 
 	spin_lock(&vfsmount_lock);
 	if (buffer) {
@@ -2259,6 +2260,9 @@ char *__d_path(const struct path *path, struct path *root,
 			if (vfsmnt->mnt_parent == vfsmnt) {
 				goto global_root;
 			}
+			/* CT root? */
+			if (!ve_is_super(ve) && vfsmnt == ve->root_path.mnt)
+				goto ct_root;
 			dentry = vfsmnt->mnt_mountpoint;
 			vfsmnt = vfsmnt->mnt_parent;
 			continue;
@@ -2300,7 +2304,7 @@ global_root:
 		retval = ERR_PTR(-EINVAL);
 		goto out_err;
 	}
-
+ct_root:
 	retval += 1;	/* hit the slash */
 	if (buffer && prepend_name(&retval, &buflen, &dentry->d_name) != 0)
 		goto Elong;

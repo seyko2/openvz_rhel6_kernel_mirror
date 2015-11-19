@@ -91,6 +91,7 @@ struct sched_param {
 #include <linux/kobject.h>
 #include <linux/latencytop.h>
 #include <linux/cred.h>
+#include <linux/percpu-rwsem.h>
 
 #include <asm/processor.h>
 
@@ -159,6 +160,7 @@ extern unsigned long nr_zombie;
 
 #ifdef CONFIG_VE
 extern unsigned long nr_running_ve(void);
+extern u64 task_rq_clock(struct task_struct *p);
 #else
 #define nr_running_ve()				0
 #endif
@@ -2629,13 +2631,15 @@ static inline void unlock_task_sighand(struct task_struct *tsk,
 }
 
 #ifdef CONFIG_CGROUPS
+extern struct percpu_rw_semaphore cgroup_threadgroup_rwsem;
+
 static inline void threadgroup_change_begin(struct task_struct *tsk)
 {
-	down_read(&tsk->signal->group_rwsem);
+	percpu_down_read(&cgroup_threadgroup_rwsem);
 }
 static inline void threadgroup_change_end(struct task_struct *tsk)
 {
-	up_read(&tsk->signal->group_rwsem);
+	percpu_up_read(&cgroup_threadgroup_rwsem);
 }
 
 /**
@@ -2656,7 +2660,7 @@ static inline void threadgroup_change_end(struct task_struct *tsk)
  */
 static inline void threadgroup_lock(struct task_struct *tsk)
 {
-	down_write(&tsk->signal->group_rwsem);
+	percpu_down_write(&cgroup_threadgroup_rwsem);
 }
 
 /**
@@ -2667,7 +2671,7 @@ static inline void threadgroup_lock(struct task_struct *tsk)
  */
 static inline void threadgroup_unlock(struct task_struct *tsk)
 {
-	up_write(&tsk->signal->group_rwsem);
+	percpu_up_write(&cgroup_threadgroup_rwsem);
 }
 #else
 static inline void threadgroup_change_begin(struct task_struct *tsk) {}

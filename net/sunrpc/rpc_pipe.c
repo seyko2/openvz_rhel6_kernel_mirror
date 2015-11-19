@@ -1086,6 +1086,8 @@ void unregister_rpc_pipefs(void)
 	ve = get_exec_env();
 	if (!ve_is_super(ve)) {
 		unregister_ve_fs_type(rpc_pipefs_fstype, NULL);
+		kfree(rpc_pipefs_fstype);
+		rpc_pipefs_fstype = NULL;
 		return;
 	}
 

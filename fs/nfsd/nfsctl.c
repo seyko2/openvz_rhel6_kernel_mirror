@@ -1575,6 +1575,7 @@ static void ve_exit_nfsctl(void *data)
 	nfsd_stat_shutdown();
 
 	unregister_ve_fs_type(d->nfsd_fs, NULL);
+	kfree(d->nfsd_fs);
 	nfsd_export_shutdown();
 	remove_proc_exports_entry();
 

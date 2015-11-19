@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
-# Linux kernel version: 2.6.32-042stab112.4
-# Wed Sep  9 00:07:51 2015
+# Linux kernel version: 2.6.32-042stab113.5
+# Tue Nov  3 20:15:30 2015
 #
 CONFIG_64BIT=y
 # CONFIG_X86_32 is not set
@@ -399,7 +399,7 @@ CONFIG_MEMORY_GANGS=y
 CONFIG_MEMORY_GANGS_MIGRATION=y
 CONFIG_MEMORY_VSWAP=y
 CONFIG_PRAM=y
-# CONFIG_PSWAP is not set
+CONFIG_PSWAP=y
 CONFIG_KSTALED=y
 # CONFIG_X86_CHECK_BIOS_CORRUPTION is not set
 CONFIG_X86_RESERVE_LOW_64K=y

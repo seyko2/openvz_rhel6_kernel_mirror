@@ -126,3 +126,6 @@ int rst_cgroup_task(struct cpt_context * ctx);
 void rst_cgroup_close(struct cpt_context * ctx);
 
 void uuid_bytes_to_hex(char *buf, const u8 *u);
+
+struct dentry *get_linked_dentry(struct dentry *d, struct vfsmount *mnt,
+					struct cpt_context *ctx);

@@ -1218,9 +1218,10 @@ static int cpt_filldir(void * __buf, const char * name, int namelen,
 	return 0;
 }
 
-static int find_linked_dentry(struct dentry *d, struct vfsmount *mnt,
-		struct inode *ino, struct cpt_context *ctx)
+struct dentry *get_linked_dentry(struct dentry *d, struct vfsmount *mnt,
+					struct cpt_context *ctx)
 {
+	struct inode *ino = d->d_inode;
 	int err = -EBUSY;
 	struct file *f = NULL;
 	struct cpt_dirent entry;
@@ -1238,63 +1239,69 @@ static int find_linked_dentry(struct dentry *d, struct vfsmount *mnt,
 	}
 	spin_unlock(&dcache_lock);
 	if (found) {
-		err = cpt_dump_path(found, mnt, 0, ctx);
-		dput(found);
-		if (!err) {
-			dprintk_ctx("dentry found in aliases\n");
-			return 0;
-		}
+		dprintk_ctx("dentry found in aliases\n");
+		return found;
 	}
 
 	/* 2. Try to find file in current dir */
 	de = dget_parent(d);
-	if (!de)
-		return -EINVAL;
+	if (found)
+		return ERR_PTR(-EINVAL);
 
 	mntget(mnt);
 	f = dentry_open(de, mnt, O_RDONLY | O_LARGEFILE, current_cred());
 	if (IS_ERR(f))
-		return PTR_ERR(f);
+		return (void *)f;
 
 	entry.ino = ino->i_ino;
-	entry.name = cpt_get_buf(ctx);
 	entry.found = 0;
+	entry.name = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!entry.name) {
+		fput(f);
+		return ERR_PTR(-ENOMEM);
+	}
+
 	err = vfs_readdir(f, cpt_filldir, &entry);
+	fput(f);
 	if (err || !entry.found) {
-		err = err ? err : -ENOENT;
+		found = err ? ERR_PTR(err) : ERR_PTR(-ENOENT);
 		goto err_readdir;
 	}
 
 	mutex_lock(&de->d_inode->i_mutex);
 	found = lookup_one_len(entry.name, de, entry.namelen);
 	mutex_unlock(&de->d_inode->i_mutex);
-	if (IS_ERR(found)) {
-		err = PTR_ERR(found);
+	if (IS_ERR(found))
 		goto err_readdir;
-	}
 
-	err = -ENOENT;
-	if (found->d_inode != ino)
-		goto err_lookup;
+	if (found->d_inode != ino) {
+		dput(found);
+		found = ERR_PTR(-ENOENT);
+	} else
+		dprintk_ctx("dentry found in dir\n");
 
-	dprintk_ctx("dentry found in dir\n");
-	__cpt_release_buf(ctx);
-	err = cpt_dump_path(found, mnt, 0, ctx);
-
-err_lookup:
-	dput(found);
 err_readdir:
-	fput(f);
-	__cpt_release_buf(ctx);
-	return err;
+	kfree(entry.name);
+	return found;
 }
 
 static int dump_unlinked_dentry(struct dentry *d, struct vfsmount *mnt,
 				     struct cpt_context *ctx)
 {
+	struct dentry *found;
+	int err;
+
 	if (d->d_flags & DCACHE_NFSFS_RENAMED)
 		return cpt_dump_nfs_path(d, mnt, ctx);
-	return find_linked_dentry(d, mnt, d->d_inode, ctx);
+
+	found = get_linked_dentry(d, mnt, ctx);
+	if (IS_ERR(found))
+		return PTR_ERR(found);
+
+	err = cpt_dump_path(found, mnt, 0, ctx);
+
+	dput(found);
+	return err;
 }
 
 static struct dentry *find_linkdir(struct vfsmount *mnt, struct cpt_context *ctx)

@@ -162,13 +162,13 @@ bool insert_lru_milestone(struct gang *gang, unsigned long now,
 	for_each_evictable_lru(lru) {
 		if (!list_empty(&ms->lru[lru])) {
 			list_del(&ms->lru[lru]);
-			if (is_file_lru(lru) || nr_swap_pages > 0) {
+			if (is_file_lru(lru) || get_nr_swap_pages() > 0) {
 				reused = true;
 				if (time_before(ms->timestamp, *eldest_milestone))
 					*eldest_milestone = ms->timestamp;
 			}
 		} else {
-			if ((is_file_lru(lru) || nr_swap_pages > 0) &&
+			if ((is_file_lru(lru) || get_nr_swap_pages() > 0) &&
 			    time_before(gang->timestamp[lru], *eldest_milestone))
 				*eldest_milestone = gang->timestamp[lru];
 		}

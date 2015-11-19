@@ -896,6 +896,14 @@ struct netdev_phys_port_id {
  *	Called to get ID of physical port of this device. If driver does
  *	not implement this, it is assumed that the hw is not able to have
  *	multiple net devices on single physical port.
+ *
+ *	Slave management functions (for bridge, bonding, etc). User should
+ *	call netdev_set_master() to set dev->master properly.
+ * int (*ndo_add_slave)(struct net_device *dev, struct net_device *slave_dev);
+ *	Called to make another netdev an underling.
+ *
+ * int (*ndo_del_slave)(struct net_device *dev, struct net_device *slave_dev);
+ *	Called to release previously enslaved netdev.
  */
 #define HAVE_NET_DEVICE_OPS
 struct net_device_ops {
@@ -977,6 +985,10 @@ struct net_device_ops {
 	void			(*ndo_cpt)(struct net_device *dev,
 						struct cpt_ops *,
 						struct cpt_context *);
+	int			(*ndo_add_slave)(struct net_device *dev,
+						 struct net_device *slave_dev);
+	int			(*ndo_del_slave)(struct net_device *dev,
+						 struct net_device *slave_dev);
 };
 
 /**

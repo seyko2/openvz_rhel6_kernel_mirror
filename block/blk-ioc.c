@@ -79,6 +79,7 @@ void exit_io_context(struct task_struct *task)
 
 	ioc_task_unlink(ioc);
 }
+EXPORT_SYMBOL(exit_io_context);
 
 void ioc_task_unlink(struct io_context *ioc)
 {

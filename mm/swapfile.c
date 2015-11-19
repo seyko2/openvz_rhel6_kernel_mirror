@@ -6,6 +6,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/mmgang.h>
 #include <linux/hugetlb.h>
 #include <linux/mman.h>
 #include <linux/slab.h>
@@ -46,8 +47,9 @@ static void free_swap_count_continuations(struct swap_info_struct *);
 
 static DEFINE_SPINLOCK(swap_lock);
 static unsigned int nr_swapfiles;
-long nr_swap_pages;
+atomic_long_t nr_swap_pages;
 EXPORT_SYMBOL(nr_swap_pages);
+/* protected with swap_lock. reading in vm_swap_full() doesn't need lock */
 long total_swap_pages;
 EXPORT_SYMBOL(total_swap_pages);
 static int least_priority;
@@ -470,9 +472,9 @@ swp_entry_t get_swap_page(struct user_beancounter *ub)
 	struct swap_info_struct *si, *next;
 	pgoff_t offset;
 
-	if (nr_swap_pages <= 0)
+	if (get_nr_swap_pages() <= 0)
 		goto noswap;
-	nr_swap_pages--;
+	atomic_long_dec(&nr_swap_pages);
 
 	spin_lock(&swap_avail_lock);
 
@@ -529,7 +531,7 @@ nextsi:
 
 	spin_unlock(&swap_avail_lock);
 
-	nr_swap_pages++;
+	atomic_long_inc(&nr_swap_pages);
 noswap:
 	return (swp_entry_t) {0};
 }
@@ -553,14 +555,14 @@ swp_entry_t get_swap_page_of_type(int type)
 	spin_lock(&swap_lock);
 	si = swap_info[type];
 	if (si && (si->flags & SWP_WRITEOK)) {
-		nr_swap_pages--;
+		atomic_long_dec(&nr_swap_pages);
 		/* This is called for allocating swap entry, not cache */
 		offset = scan_swap_map(si, 1);
 		if (offset) {
 			spin_unlock(&swap_lock);
 			return swp_entry(type, offset);
 		}
-		nr_swap_pages++;
+		atomic_long_inc(&nr_swap_pages);
 	}
 	spin_unlock(&swap_lock);
 	return (swp_entry_t) {0};
@@ -666,7 +668,7 @@ static unsigned char swap_entry_free(struct swap_info_struct *p,
 				spin_unlock(&swap_avail_lock);
 			}
 		}
-		nr_swap_pages++;
+		atomic_long_inc(&nr_swap_pages);
 		p->inuse_pages--;
 		if ((p->flags & SWP_BLKDEV) &&
 				disk->fops->swap_slot_free_notify)
@@ -1030,7 +1032,7 @@ static void pswap_load(struct swap_info_struct *si,
 			continue;
 		}
 		map[i] = 1;
-		nr_swap_pages--;
+		atomic_long_dec(&nr_swap_pages);
 		si->inuse_pages++;
 		ub_swapentry_get(si, i, get_ub0());
 		ub_swapentry_charge(si, i);
@@ -1172,16 +1174,14 @@ static void pswap_fini(struct swap_info_struct *si)
 
 static void pswap_prune(void)
 {
-	int type;
 	unsigned int i;
 	struct swap_info_struct *si;
 
 	spin_lock(&swap_lock);
-	for (type = swap_list.head; type >= 0; type = swap_info[type]->next) {
-		si = swap_info[type];
+	plist_for_each_entry(si, &swap_active_head, list) {
 		if ((si->flags & SWP_WRITEOK) && si->pswap_type >= 0) {
 			for_each_bit(i, si->pswap_reserved, si->max)
-				swap_entry_free(si, swp_entry(type, i), 1);
+				swap_entry_free(si, swp_entry(si->type, i), 1);
 			memset(si->pswap_reserved, 0,
 			       BITS_TO_LONGS(si->max) * sizeof(long));
 		}
@@ -1506,7 +1506,15 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	if (unlikely(!page))
 		return -ENOMEM;
 
+	if (page != swapcache &&
+	    gang_add_user_page(page, get_mm_gang(mm), GFP_KERNEL)) {
+		ret = -ENOMEM;
+		goto out_nolock;
+	}
+
 	if (mem_cgroup_try_charge_swapin(vma->vm_mm, page, GFP_KERNEL, &ptr)) {
+		if (page != swapcache)
+			gang_del_user_page(page);
 		ret = -ENOMEM;
 		goto out_nolock;
 	}
@@ -1515,6 +1523,8 @@ static int unuse_pte(struct vm_area_struct *vma, pmd_t *pmd,
 	if (unlikely(!pte_same(*pte, swp_entry_to_pte(entry)))) {
 		if (ret > 0)
 			mem_cgroup_cancel_charge_swapin(ptr);
+		if (page != swapcache)
+			gang_del_user_page(page);
 		ret = 0;
 		goto out;
 	}
@@ -2247,7 +2257,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		}
 		least_priority++;
 	}
-	nr_swap_pages -= p->pages;
+	atomic_long_sub(p->pages, &nr_swap_pages);
 	plist_del(&p->list, &swap_active_head);
 	total_swap_pages -= p->pages;
 	p->flags &= ~SWP_WRITEOK;
@@ -2281,7 +2291,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		plist_add(&p->avail_list, &swap_avail_head);
 		spin_unlock(&swap_avail_lock);
 
-		nr_swap_pages += p->pages;
+		atomic_long_add(p->pages, &nr_swap_pages);
 		total_swap_pages += p->pages;
 		p->flags |= SWP_WRITEOK;
 		spin_unlock(&swap_lock);
@@ -2812,7 +2822,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	p->avail_list.prio = -p->prio;
 	p->swap_map = swap_map;
 	p->flags |= SWP_WRITEOK;
-	nr_swap_pages += nr_good_pages;
+	atomic_long_add(nr_good_pages, &nr_swap_pages);
 	total_swap_pages += nr_good_pages;
 
 	printk(KERN_INFO "Adding %uk swap on %s.  "
@@ -2885,7 +2895,7 @@ void si_swapinfo(struct sysinfo *val)
 		if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK))
 			nr_to_be_unused += si->inuse_pages;
 	}
-	val->freeswap = nr_swap_pages + nr_to_be_unused;
+	val->freeswap = get_nr_swap_pages() + nr_to_be_unused;
 	val->totalswap = total_swap_pages + nr_to_be_unused;
 	spin_unlock(&swap_lock);
 }

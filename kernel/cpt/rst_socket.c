@@ -189,6 +189,85 @@ static int unix_bind_to_path(struct socket *sock, char *name,
 	return err;
 }
 
+static struct dentry *select_link_dentry(char *name, struct dentry *dirde,
+				cpt_context_t *ctx)
+{
+	struct dentry *link;
+	int i;
+
+	for (i=0; i<100; i++) {
+		unsigned int rnd = net_random();
+
+		sprintf(name, "SOCK.%08x", rnd);
+
+		link = lookup_one_len(name, dirde, strlen(name));
+		if (IS_ERR(link)) {
+			eprintk_ctx("Can't lookup %s\n", name);
+			return link;
+		}
+
+		if (!link->d_inode)
+			return link;
+
+		dput(link);
+	}
+
+	eprintk_ctx("failed to allocate deleted socket dentry\n");
+	return ERR_PTR(-ELOOP);
+}
+
+static int rst_create_link(struct dentry *d, char *name,
+				      struct cpt_context *ctx)
+{
+	int err;
+	struct dentry *dirde, *hardde;
+
+	dirde = d->d_parent;
+
+	mutex_lock(&dirde->d_inode->i_mutex);
+
+	hardde = select_link_dentry(name, dirde, ctx);
+	if (IS_ERR(hardde)) {
+		eprintk_ctx("crlnk: can't find hardde: %s\n", name);
+		err = PTR_ERR(hardde);
+		goto out_unlock;
+	}
+
+	err = vfs_link(d, dirde->d_inode, hardde);
+	if (err)
+		eprintk_ctx("crlnk: error hardlink %s, %d\n", name, err);
+
+	dput(hardde);
+out_unlock:
+	mutex_unlock(&dirde->d_inode->i_mutex);
+	return err;
+}
+
+static int create_deleted_socket_link(char *name, char *alias, struct vfsmount *mnt,
+				cpt_context_t *ctx)
+{
+	struct nameidata nd;
+	int err;
+
+	strcpy(name, alias);
+
+	err = rst_path_lookup_at(mnt,  mnt->mnt_root, alias, 0, &nd);
+	if (err) {
+		eprintk_ctx("failed to lookup deleted socket alias\n");
+		return err;
+	}
+
+	err = rst_create_link(nd.path.dentry, strrchr(name, '/') + 1, ctx);
+	path_put(&nd.path);
+	if (err) {
+		eprintk_ctx("%s: failed to link socket alias\n", __func__);
+		return err;
+	}
+
+	wprintk_ctx("link path: %s\n", name);
+	return 0;
+}
+
 static int unix_bind_to_mntref(struct sock *sk, char *name,
 				struct sockaddr* addr, int addrlen,
 				struct cpt_sock_image *si, cpt_context_t *ctx)
@@ -222,6 +301,13 @@ static int unix_bind_to_mntref(struct sock *sk, char *name,
 		return -EINVAL;
 	}
 
+	if (si->cpt_sockflags & CPT_SOCK_DELETED) {
+		err = create_deleted_socket_link(name, (char *)si->cpt_d_alias,
+						 (struct vfsmount *)mntobj->o_obj, ctx);
+		if (err)
+			return err;
+	}
+
 	if (strlen(name) < mntobj->o_lock) {
 		eprintk_ctx("%s: unix socket with too short name (%d %s)\n",
 				__func__, mntobj->o_lock, name);
@@ -242,7 +328,12 @@ static int unix_bind_to_mntref(struct sock *sk, char *name,
 	}
 	bi.next = NULL;
 
-	return rebind_unix_socket(mntobj->o_obj, &bi, LOOKUP_DIVE);
+	err = rebind_unix_socket(mntobj->o_obj, &bi, LOOKUP_DIVE);
+
+	if (si->cpt_sockflags & CPT_SOCK_DELETED)
+		sc_unlink(name);
+
+	return err;
 }
 
 static int can_be_rebound_by_mntref(struct socket *sock,
@@ -252,7 +343,8 @@ static int can_be_rebound_by_mntref(struct socket *sock,
 	if (ctx->image_version < CPT_VERSION_18_4)
 		return 0;
 
-	if (si->cpt_sockflags & CPT_SOCK_DELETED)
+	if ((si->cpt_sockflags & CPT_SOCK_DELETED) &&
+	    (!cpt_object_has(si, cpt_d_alias) || !si->cpt_d_aliaslen))
 		return 0;
 
 	if (si->cpt_vfsmount_ref == CPT_NULL)
@@ -1558,6 +1650,7 @@ int rst_sockets_complete(struct cpt_context *ctx)
 					peer = pobj->o_obj;
 					sock_hold(peer);
 					unix_peer(sk) = peer;
+					add_wait_queue(&unix_sk(peer)->peer_wait, &unix_sk(sk)->wait);
 				}
 			}
 			cpt_release_buf(ctx);

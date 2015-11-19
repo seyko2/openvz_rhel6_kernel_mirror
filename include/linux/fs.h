@@ -210,7 +210,6 @@ struct inodes_stat_t {
 #define FS_BINARY_MOUNTDATA 2
 #define FS_HAS_SUBTYPE 4
 #define FS_VIRTUALIZED 64	/* Can mount this fstype inside ve */
-#define FS_MANGLE_PROC 128	/* hide some /proc/mounts info inside VE */
 #define FS_NFS_EXPORTABLE 256
 #define FS_HAS_NEW_FREEZE 512	/* new freeze mechanism */
 #define FS_REVAL_DOT	16384	/* Check the paths ".", ".." for staleness */
@@ -2026,6 +2025,8 @@ struct super_operations {
 
 	int (*show_options)(struct seq_file *, struct vfsmount *);
 	void (*show_type)(struct seq_file *, struct super_block *sb);
+	int (*show_devname)(struct seq_file *, struct vfsmount *);
+	int (*show_path)(struct seq_file *, struct vfsmount *);
 	int (*show_stats)(struct seq_file *, struct vfsmount *);
 #ifdef CONFIG_QUOTA
 	ssize_t (*quota_read)(struct super_block *, int, char *, size_t, loff_t);

@@ -3045,9 +3045,15 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (page == swapcache)
 		swapcache = NULL;
 
-	if (mem_cgroup_try_charge_swapin(mm, page, GFP_KERNEL, &ptr)) {
+	if (swapcache &&
+	    gang_add_user_page(page, get_mm_gang(mm), GFP_KERNEL)) {
 		ret = VM_FAULT_OOM;
 		goto out_page;
+	}
+
+	if (mem_cgroup_try_charge_swapin(mm, page, GFP_KERNEL, &ptr)) {
+		ret = VM_FAULT_OOM;
+		goto out_gang_del;
 	}
 
 	/*
@@ -3132,6 +3138,9 @@ out:
 out_nomap:
 	mem_cgroup_cancel_charge_swapin(ptr);
 	pte_unmap_unlock(page_table, ptl);
+out_gang_del:
+	if (swapcache)
+		gang_del_user_page(page);
 out_page:
 	unlock_page(page);
 out_release:

@@ -409,6 +409,9 @@ static int unix_release_sock(struct sock *sk, int embrion)
 	skpair = unix_peer(sk);
 
 	if (skpair != NULL) {
+		if (sk->sk_type != SOCK_STREAM)
+			remove_wait_queue(&unix_sk(skpair)->peer_wait,
+					  &u->wait);
 		if (sk->sk_type == SOCK_STREAM || sk->sk_type == SOCK_SEQPACKET) {
 			unix_state_lock(skpair);
 			/* No more writes */
@@ -616,6 +619,16 @@ static struct proto unix_proto = {
  */
 static struct lock_class_key af_unix_sk_receive_queue_lock_key;
 
+static int peer_wake(wait_queue_t *wait, unsigned mode, int sync, void *key)
+{
+	struct unix_sock *u;
+
+	u = container_of(wait, struct unix_sock, wait);
+	wake_up_interruptible_sync_poll(u->sk.sk_sleep, key);
+
+	return 0;
+}
+
 static struct sock *unix_create1(struct net *net, struct socket *sock, int kern)
 {
 	struct sock *sk = NULL;
@@ -646,6 +659,7 @@ static struct sock *unix_create1(struct net *net, struct socket *sock, int kern)
 	INIT_LIST_HEAD(&u->link);
 	mutex_init(&u->readlock); /* single task reading lock */
 	init_waitqueue_head(&u->peer_wait);
+	init_waitqueue_func_entry(&u->wait, peer_wake);
 	unix_insert_socket(unix_sockets_unbound, sk);
 out:
 	if (sk == NULL)
@@ -1078,7 +1092,11 @@ restart:
 	 */
 	if (unix_peer(sk)) {
 		struct sock *old_peer = unix_peer(sk);
+
+		remove_wait_queue(&unix_sk(old_peer)->peer_wait,
+				  &unix_sk(sk)->wait);
 		unix_peer(sk) = other;
+		add_wait_queue(&unix_sk(other)->peer_wait, &unix_sk(sk)->wait);
 		unix_state_double_unlock(sk, other);
 
 		if (other != old_peer)
@@ -1086,8 +1104,12 @@ restart:
 		sock_put(old_peer);
 	} else {
 		unix_peer(sk) = other;
+		add_wait_queue(&unix_sk(other)->peer_wait, &unix_sk(sk)->wait);
 		unix_state_double_unlock(sk, other);
 	}
+	/* New remote may have created write space for us */
+	wake_up_interruptible_sync_poll(sk->sk_sleep,
+					POLLOUT | POLLWRNORM | POLLWRBAND);
 	return 0;
 
 out_unlock:
@@ -1247,6 +1269,8 @@ restart:
 
 	sock_hold(sk);
 	unix_peer(newsk)	= sk;
+	if (sk->sk_type == SOCK_SEQPACKET)
+		add_wait_queue(&unix_sk(sk)->peer_wait, &unix_sk(newsk)->wait);
 	newsk->sk_state		= TCP_ESTABLISHED;
 	newsk->sk_type		= sk->sk_type;
 	init_peercred(newsk);
@@ -1273,6 +1297,8 @@ restart:
 
 	smp_mb__after_atomic_inc();	/* sock_hold() does an atomic_inc() */
 	unix_peer(sk)	= newsk;
+	if (sk->sk_type == SOCK_SEQPACKET)
+		add_wait_queue(&unix_sk(newsk)->peer_wait, &unix_sk(sk)->wait);
 
 	unix_state_unlock(sk);
 
@@ -1307,6 +1333,10 @@ static int unix_socketpair(struct socket *socka, struct socket *sockb)
 	sock_hold(skb);
 	unix_peer(ska) = skb;
 	unix_peer(skb) = ska;
+	if (ska->sk_type != SOCK_STREAM) {
+		add_wait_queue(&unix_sk(ska)->peer_wait, &unix_sk(skb)->wait);
+		add_wait_queue(&unix_sk(skb)->peer_wait, &unix_sk(ska)->wait);
+	}
 	init_peercred(ska);
 	init_peercred(skb);
 
@@ -1607,6 +1637,7 @@ restart:
 		unix_state_lock(sk);
 		if (unix_peer(sk) == other) {
 			unix_peer(sk) = NULL;
+			remove_wait_queue(&unix_sk(other)->peer_wait, &u->wait);
 			unix_state_unlock(sk);
 
 			unix_dgram_disconnected(sk, other);
@@ -2275,8 +2306,6 @@ static unsigned int unix_dgram_poll(struct file *file, struct socket *sock,
 		other = unix_peer_get(sk);
 		if (other) {
 			if (unix_peer(other) != sk) {
-				sock_poll_wait(file, &unix_sk(other)->peer_wait,
-					  wait);
 				if (unix_recvq_full(other))
 					writable = 0;
 			}

@@ -535,7 +535,7 @@ static inline int cfqg_busy_async_queues(struct cfq_data *cfqd,
 
 static void cfq_dispatch_insert(struct request_queue *, struct request *);
 static struct cfq_queue *cfq_get_queue(struct cfq_data *, bool,
-				       struct io_context *, gfp_t);
+				       struct io_context *);
 static struct cfq_io_context *cfq_cic_lookup(struct cfq_data *,
 						struct io_context *);
 
@@ -3079,8 +3079,7 @@ static void changed_ioprio(struct io_context *ioc, struct cfq_io_context *cic)
 	cfqq = cic->cfqq[BLK_RW_ASYNC];
 	if (cfqq) {
 		struct cfq_queue *new_cfqq;
-		new_cfqq = cfq_get_queue(cfqd, BLK_RW_ASYNC, cic->ioc,
-						GFP_ATOMIC);
+		new_cfqq = cfq_get_queue(cfqd, BLK_RW_ASYNC, cic->ioc);
 		if (new_cfqq) {
 			cic->cfqq[BLK_RW_ASYNC] = new_cfqq;
 			cfq_put_queue(cfqq);
@@ -3157,13 +3156,12 @@ static void cfq_ioc_set_cgroup(struct io_context *ioc)
 
 static struct cfq_queue *
 cfq_find_alloc_queue(struct cfq_data *cfqd, bool is_sync,
-		     struct io_context *ioc, gfp_t gfp_mask)
+		     struct io_context *ioc)
 {
-	struct cfq_queue *cfqq, *new_cfqq = NULL;
+	struct cfq_queue *cfqq;
 	struct cfq_io_context *cic;
 	struct cfq_group *cfqg;
 
-retry:
 	cfqg = cfq_get_cfqg(cfqd);
 	cic = cfq_cic_lookup(cfqd, ioc);
 	/* cic always exists here */
@@ -3174,24 +3172,9 @@ retry:
 	 * originally, since it should just be a temporary situation.
 	 */
 	if (!cfqq || cfqq == &cfqd->oom_cfqq) {
-		cfqq = NULL;
-		if (new_cfqq) {
-			cfqq = new_cfqq;
-			new_cfqq = NULL;
-		} else if (gfp_mask & __GFP_WAIT) {
-			spin_unlock_irq(cfqd->queue->queue_lock);
-			new_cfqq = kmem_cache_alloc_node(cfq_pool,
-					gfp_mask | __GFP_ZERO,
-					cfqd->queue->node);
-			spin_lock_irq(cfqd->queue->queue_lock);
-			if (new_cfqq)
-				goto retry;
-		} else {
-			cfqq = kmem_cache_alloc_node(cfq_pool,
-					gfp_mask | __GFP_ZERO,
-					cfqd->queue->node);
-		}
-
+		cfqq = kmem_cache_alloc_node(cfq_pool,
+					     GFP_NOWAIT | __GFP_ZERO,
+					     cfqd->queue->node);
 		if (cfqq) {
 			cfq_init_cfqq(cfqd, cfqq, current->pid, is_sync);
 			cfq_init_prio_data(cfqq, ioc);
@@ -3200,9 +3183,6 @@ retry:
 		} else
 			cfqq = &cfqd->oom_cfqq;
 	}
-
-	if (new_cfqq)
-		kmem_cache_free(cfq_pool, new_cfqq);
 
 	return cfqq;
 }
@@ -3223,8 +3203,7 @@ cfq_async_queue_prio(struct cfq_data *cfqd, int ioprio_class, int ioprio)
 }
 
 static struct cfq_queue *
-cfq_get_queue(struct cfq_data *cfqd, bool is_sync, struct io_context *ioc,
-	      gfp_t gfp_mask)
+cfq_get_queue(struct cfq_data *cfqd, bool is_sync, struct io_context *ioc)
 {
 	int ioprio = task_ioprio(ioc);
 	int ioprio_class = task_ioprio_class(ioc);
@@ -3242,7 +3221,7 @@ cfq_get_queue(struct cfq_data *cfqd, bool is_sync, struct io_context *ioc,
 	}
 
 	if (!cfqq)
-		cfqq = cfq_find_alloc_queue(cfqd, is_sync, ioc, gfp_mask);
+		cfqq = cfq_find_alloc_queue(cfqd, is_sync, ioc);
 
 	/*
 	 * pin the queue now that it's allocated, scheduler exit will prune it
@@ -3974,8 +3953,6 @@ cfq_set_request(struct request_queue *q, struct request *rq, gfp_t gfp_mask)
 	struct cfq_queue *cfqq;
 	unsigned long flags;
 
-	might_sleep_if(gfp_mask & __GFP_WAIT);
-
 	cic = cfq_get_io_context(cfqd, gfp_mask);
 
 	spin_lock_irqsave(q->queue_lock, flags);
@@ -3986,7 +3963,7 @@ cfq_set_request(struct request_queue *q, struct request *rq, gfp_t gfp_mask)
 new_queue:
 	cfqq = cic_to_cfqq(cic, is_sync);
 	if (!cfqq || cfqq == &cfqd->oom_cfqq) {
-		cfqq = cfq_get_queue(cfqd, is_sync, cic->ioc, gfp_mask);
+		cfqq = cfq_get_queue(cfqd, is_sync, cic->ioc);
 		cic_set_cfqq(cic, cfqq, is_sync);
 	} else {
 		/*

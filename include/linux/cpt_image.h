@@ -13,6 +13,7 @@
 #define __CPT_IMAGE_H_ 1
 
 #include <linux/inetdevice.h>
+#include <linux/un.h>
 
 #define CPT_NULL (~0ULL)
 #define CPT_NOINDEX (~0U)
@@ -963,6 +964,11 @@ struct cpt_sock_image
 
 	__u32	cpt_i_uid;
 	__u32	cpt_i_gid;
+
+	__u32	cpt_d_alias[UNIX_PATH_MAX/4];
+
+	__u32	cpt_d_aliaslen;
+	__u32	__cpt_pad15;
 } __attribute__ ((aligned (8)));
 
 struct cpt_sockmc_image {
