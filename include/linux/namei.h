@@ -81,6 +81,9 @@ extern struct file *lookup_instantiate_filp(struct nameidata *nd, struct dentry 
 
 extern int kern_path_mountpoint(int, const char *, struct path *, unsigned int);
 
+extern struct dentry *lookup_hash(struct nameidata *nd);
+extern int __lookup_one_len(const char *name, struct qstr *this,
+			    struct dentry *base, int len);
 extern struct dentry *lookup_one_len(const char *, struct dentry *, int);
 extern struct dentry *lookup_one_noperm(const char *, struct dentry *);
 
