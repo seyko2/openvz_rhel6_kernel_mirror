@@ -89,6 +89,11 @@ static int collect_one_mm(struct mm_struct *mm, cpt_context_t * ctx)
 	struct kioctx *aio_ctx;
 
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		if (vma->vm_prfile) {
+			if (cpt_object_add(CPT_OBJ_FILE, vma->vm_prfile, ctx) == NULL)
+				return -ENOMEM;
+		}
+		else
 		if (vma->vm_file) {
 			if (cpt_object_add(CPT_OBJ_FILE, vma->vm_file, ctx) == NULL)
 				return -ENOMEM;
@@ -736,6 +741,20 @@ static int dump_one_vma(cpt_object_t *mmobj,
 	else
 		v->cpt_anonvmaid = 0;
 
+	if (vma->vm_prfile) {
+		struct file *filp;
+		cpt_object_t *obj = lookup_cpt_object(CPT_OBJ_FILE, vma->vm_prfile, ctx);
+		if (obj == NULL) BUG();
+		filp = obj->o_obj;
+		if (filp->f_op == &shm_file_operations) {
+			struct shm_file_data *sfd = filp->private_data;
+
+			v->cpt_type = CPT_VMA_TYPE_SHM;
+			obj = lookup_cpt_object(CPT_OBJ_FILE, sfd->file, ctx);
+		}
+		v->cpt_file = obj->o_pos;
+	}
+	else
 	if (vma->vm_file) {
 		struct file *filp;
 		cpt_object_t *obj = lookup_cpt_object(CPT_OBJ_FILE, vma->vm_file, ctx);
