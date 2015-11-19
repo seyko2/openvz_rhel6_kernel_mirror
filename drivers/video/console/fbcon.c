@@ -3739,7 +3739,6 @@ static int __init quiet_logo(char *str)
 	return 0;
 }
 
-early_param("quiet", quiet_logo);
 
 module_init(fb_console_init);
 
@@ -3770,6 +3769,8 @@ static void __exit fb_console_exit(void)
 
 module_exit(fb_console_exit);
 
+#else
+early_param("quiet", quiet_logo);
 #endif
 
 MODULE_LICENSE("GPL");
