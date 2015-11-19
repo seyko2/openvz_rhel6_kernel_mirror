@@ -10,6 +10,8 @@ menuconfig USB_SUPPORT
 	  This option adds core support for Universal Serial Bus (USB).
 	  You will also need drivers from the following menu to make use of it.
 
+if USB_SUPPORT
+
 # many non-PCI SOC chips embed OHCI
 config USB_ARCH_HAS_OHCI
 	boolean
@@ -52,8 +54,6 @@ config USB_ARCH_HAS_EHCI
 config USB_ARCH_HAS_XHCI
 	boolean
 	default PCI
-
-if USB_SUPPORT
 
 config USB_COMMON
 	tristate
