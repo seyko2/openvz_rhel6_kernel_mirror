@@ -159,3 +159,13 @@ cpt_object_t *lookup_cpt_obj_byindex(enum _cpt_object_type type, __u32 index, st
 	}
 	return NULL;
 }
+
+void uuid_bytes_to_hex(char *buf, const u8 *u)
+{
+	sprintf(buf, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			(((((u[0] * 0x100) + u[1]) * 0x100) + u[2]) * 0x100 + u[3]),
+			u[4] * 0x100 + u[5],
+			u[6] * 0x100 + u[7],
+			u[8], u[9],
+			u[10], u[11], u[12], u[13], u[14], u[15]);
+}

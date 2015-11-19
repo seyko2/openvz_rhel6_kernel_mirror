@@ -119,7 +119,6 @@ int rst_get_section(int type, struct cpt_context *ctx, loff_t *start, loff_t *en
 	}
 	return 0;
 }
-EXPORT_SYMBOL(rst_get_section);
 
 void rst_context_init(struct cpt_context *ctx)
 {
@@ -325,7 +324,6 @@ int _rst_get_object(int type, loff_t pos, void *tmp, int size, struct cpt_contex
 				 ctx, pos + sizeof(*hdr));
 	return err;
 }
-EXPORT_SYMBOL(_rst_get_object);
 
 void * __rst_get_object(int type, loff_t pos, struct cpt_context *ctx)
 {
@@ -350,7 +348,6 @@ void * __rst_get_object(int type, loff_t pos, struct cpt_context *ctx)
 	kfree(tmp);
 	return NULL;
 }
-EXPORT_SYMBOL(__rst_get_object);
 
 __u8 *__rst_get_name(loff_t *pos_p, struct cpt_context *ctx)
 {

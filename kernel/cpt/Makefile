@@ -29,8 +29,6 @@ vzcpt-objs += cpt_inotify.o
 vzrst-objs += rst_inotify.o
 endif
 
-vzrst-objs += cpt_exports.o
-
 ifeq ($(CONFIG_VZ_CHECKPOINT), m)
 vzrst-objs += cpt_obj.o cpt_kernel.o
 endif

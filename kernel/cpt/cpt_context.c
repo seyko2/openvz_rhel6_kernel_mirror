@@ -28,7 +28,6 @@
 
 #ifdef CONFIG_PRAM
 struct cpt_pram_ops *cpt_pram_ops;
-EXPORT_SYMBOL(cpt_pram_ops);
 
 int cpt_open_pram(cpt_context_t *ctx)
 {
@@ -234,7 +233,6 @@ int cpt_close_section(struct cpt_context *ctx)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(cpt_close_section);
 
 int cpt_open_section(struct cpt_context *ctx, __u32 type)
 {
@@ -256,7 +254,6 @@ int cpt_open_section(struct cpt_context *ctx, __u32 type)
 
 	return 0;
 }
-EXPORT_SYMBOL(cpt_open_section);
 
 
 int cpt_close_object(struct cpt_context *ctx)
@@ -268,7 +265,6 @@ int cpt_close_object(struct cpt_context *ctx)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(cpt_close_object);
 
 int cpt_open_object(cpt_object_t *obj, struct cpt_context *ctx)
 {
@@ -283,7 +279,6 @@ int cpt_open_object(cpt_object_t *obj, struct cpt_context *ctx)
 
 	return 0;
 }
-EXPORT_SYMBOL(cpt_open_object);
 
 int cpt_push_object(loff_t *saved, struct cpt_context *ctx)
 {
@@ -293,14 +288,12 @@ int cpt_push_object(loff_t *saved, struct cpt_context *ctx)
 	}
 	return 0;
 }
-EXPORT_SYMBOL(cpt_push_object);
 
 int cpt_pop_object(loff_t *saved, struct cpt_context *ctx)
 {
 	ctx->current_object = *saved;
 	return 0;
 }
-EXPORT_SYMBOL(cpt_pop_object);
 
 int cpt_dump_tail(struct cpt_context *ctx)
 {

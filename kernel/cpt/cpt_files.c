@@ -2304,18 +2304,6 @@ static cpt_object_t *cpt_lookup_bind_source(struct vfsmount *mnt,
 	return NULL;
 }
 
-void uuid_bytes_to_hex(char *buf, const u8 *u)
-{
-	sprintf(buf, "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-			(((((u[0] * 0x100) + u[1]) * 0x100) + u[2]) * 0x100 + u[3]),
-			u[4] * 0x100 + u[5],
-			u[6] * 0x100 + u[7],
-			u[8], u[9],
-			u[10], u[11], u[12], u[13], u[14], u[15]);
-}
-
-EXPORT_SYMBOL(uuid_bytes_to_hex);
-
 static void cpt_dump_uuid(struct vfsmount *mnt, cpt_context_t *ctx)
 {
 	const u8 *uuid = mnt->mnt_sb->s_uuid;
