@@ -523,6 +523,14 @@ static int do_rst_vma(struct cpt_vma_image *vmai, loff_t vmapos, loff_t mmpos,
 	unsigned long prot;
 	int checked = 0;
 
+	if (vmai->cpt_type == CPT_VMA_VDSO && (void *)vmai->cpt_start == (void *)VDSO_HIGH_BASE) {
+		err = cpt_setup_vdso(vmai->cpt_start, 0);
+		if (err)
+			eprintk_ctx("%s: failed to setup fix_vdso: %Ld\n", __func__,
+				(unsigned long long)vmai->cpt_start);
+		goto out;
+	}
+
 	if (vmai->cpt_type == CPT_VMA_VDSO || vmai->cpt_type == CPT_VMA_VDSO_OLD) {
 		if (ctx->vdso == NULL || !test_thread_flag(TIF_IA32)) {
 			int is_rhel5;

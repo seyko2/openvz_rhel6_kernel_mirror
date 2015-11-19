@@ -705,8 +705,8 @@ static int dump_one_vma(cpt_object_t *mmobj,
 	v->cpt_pgoff = vma->vm_pgoff;
 	v->cpt_file = CPT_NULL;
 #ifndef CONFIG_IA64
-	if ((void *)vma->vm_start == vma->vm_mm->context.vdso &&
-			vma->vm_ops == &special_mapping_vmops) {
+	if (((void *)vma->vm_start == vma->vm_mm->context.vdso && vma->vm_ops == &special_mapping_vmops)
+		|| (void *)vma->vm_start == (void *)VDSO_HIGH_BASE) {
 		int old = vdso_is_old(vma);
 
 		if (old < 0) {
