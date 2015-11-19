@@ -77,6 +77,7 @@ struct nf_conn;
 /* structure for original <-> reply keymap */
 struct nf_ct_gre_keymap {
 	struct list_head list;
+ 	struct nf_ct_gre_keymap **kmp;
 	struct nf_conntrack_tuple tuple;
 };
 

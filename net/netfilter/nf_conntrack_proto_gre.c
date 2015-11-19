@@ -57,6 +57,7 @@ void nf_ct_gre_keymap_flush(struct net *net)
 	write_lock_bh(&net_gre->keymap_lock);
 	list_for_each_entry_safe(km, tmp, &net_gre->keymap_list, list) {
 		list_del(&km->list);
+ 		*km->kmp = NULL;
 		kfree(km);
 	}
 	write_unlock_bh(&net_gre->keymap_lock);
@@ -125,6 +126,7 @@ int nf_ct_gre_keymap_add(struct nf_conn *ct, enum ip_conntrack_dir dir,
 		return -ENOMEM;
 	memcpy(&km->tuple, t, sizeof(*t));
 	*kmp = km;
+ 	km->kmp = kmp;
 
 	pr_debug("adding new entry %p: ", km);
 	nf_ct_dump_tuple(&km->tuple);
