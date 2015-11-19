@@ -142,7 +142,7 @@ autogroup_move_group(struct task_struct *p, struct autogroup *ag)
 	t = p;
 	do {
 		sched_move_task(t);
-	} while_each_thread(p, t);
+	} while_each_thread_ve(p, t);
 
 	unlock_task_sighand(p, &flags);
 	autogroup_kref_put(prev);
