@@ -102,10 +102,10 @@ int cpt_dump_tty(cpt_object_t *obj, struct cpt_context *ctx)
 		if (test_bit(TTY_EXTRA_REFERENCE, &tty->flags))
 			obj->o_count++;
 	}
-	if (obj->o_count != tty->count) {
-		eprintk_ctx("tty %s is referenced outside %d %d\n", tty->name, obj->o_count, tty->count);
-		return -EBUSY;
-	}
+//	if (obj->o_count != tty->count) {
+//		eprintk_ctx("tty %s is referenced outside %d %d\n", tty->name, obj->o_count, tty->count);
+//		return -EBUSY;
+//	}
 
 	cpt_open_object(obj, ctx);
 
