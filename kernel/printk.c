@@ -34,6 +34,7 @@
 #include <linux/syscalls.h>
 #include <linux/kexec.h>
 #include <linux/kmsg_dump.h>
+#include <linux/syslog.h>
 #include <linux/veprintk.h>
 
 #include <asm/uaccess.h>
@@ -324,7 +325,7 @@ int dmesg_restrict;
  *	9 -- Return number of unread characters in the log buffer
  *     10 -- Return size of the log buffer
  */
-int do_syslog(int type, char __user *buf, int len)
+int do_syslog(int type, char __user *buf, int len, bool from_file)
 {
 	unsigned i, j, limit, count;
 	int do_clear = 0;
@@ -334,7 +335,7 @@ int do_syslog(int type, char __user *buf, int len)
 	if (!ve_is_super(get_exec_env()) && (type == 6 || type == 7))
 		goto out;
 
-	error = security_syslog(type);
+	error = security_syslog(type, from_file);
 	if (error)
 		return error;
 
@@ -476,7 +477,7 @@ out:
 
 SYSCALL_DEFINE3(syslog, int, type, char __user *, buf, int, len)
 {
-	return do_syslog(type, buf, len);
+	return do_syslog(type, buf, len, SYSLOG_FROM_CALL);
 }
 
 /*

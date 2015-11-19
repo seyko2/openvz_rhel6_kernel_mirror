@@ -1877,6 +1877,7 @@ err_linkops:
 
 static void tun_cleanup(void)
 {
+	unregister_netdev_rst(&tun_netdev_rst);
 	misc_deregister(&tun_miscdev);
 	rtnl_link_unregister(&tun_link_ops);
 }

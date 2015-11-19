@@ -2507,7 +2507,7 @@ static int ve_parse_mount_options(char *ptr, char *endp,
 static int ve_configure_mount_options(struct ve_struct *ve, unsigned int val,
 				      unsigned int size, char *data)
 {
-	struct ve_devmnt *devmnt;
+	struct ve_devmnt *devmnt, *old;
 	int err;
 
 	if (size <= 1)
@@ -2528,6 +2528,14 @@ static int ve_configure_mount_options(struct ve_struct *ve, unsigned int val,
 	}
 
 	mutex_lock(&ve->devmnt_mutex);
+	list_for_each_entry(old, &ve->devmnt_list, link) {
+		/* Delete old devmnt */
+		if (old->dev == devmnt->dev) {
+			list_del(&old->link);
+			ve_devmnt_free(old);
+			break;
+		}
+	}
 	list_add(&devmnt->link, &ve->devmnt_list);
 	mutex_unlock(&ve->devmnt_mutex);
 

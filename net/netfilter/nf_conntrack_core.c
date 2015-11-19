@@ -632,9 +632,9 @@ struct nf_conn *nf_conntrack_alloc(struct net *net,
 		if (!early_drop(net, hash)) {
 			atomic_dec(&net->ct.count);
 			if (net_ratelimit())
-				printk(KERN_WARNING
+				ve_printk(VE_LOG_BOTH, KERN_WARNING "VE%u: "
 				       "nf_conntrack: table full, dropping"
-				       " packet.\n");
+				       " packet.\n", net->owner_ve->veid);
 			return ERR_PTR(-ENOMEM);
 		}
 	}

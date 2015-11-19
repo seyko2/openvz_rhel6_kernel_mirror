@@ -263,6 +263,13 @@ struct file * rst_open_tty(cpt_object_t *mntobj, char *name,
 					PTR_ERR(master));
 			cpt_release_buf(ctx);
 			return master;
+		} else if (master->f_dentry->d_inode->i_rdev != ii->cpt_rdev) {
+			eprintk_ctx("rst_open_tty: wrong rdev %llx(saved %llx)",
+				    (u64)master->f_dentry->d_inode->i_rdev,
+				    ii->cpt_rdev);
+			fput(master);
+			cpt_release_buf(ctx);
+			return ERR_PTR(-ENODEV);
 		}
 
 		stty = file_tty(master);
@@ -299,6 +306,13 @@ struct file * rst_open_tty(cpt_object_t *mntobj, char *name,
 		cpt_release_buf(ctx);
 		return master;
 	}
+	if (!chrdev_is_tty(master->f_dentry->d_inode->i_rdev)) {
+		eprintk_ctx("rst_open_tty: rdev is not tty\n");
+		fput(master);
+		cpt_release_buf(ctx);
+		return ERR_PTR(-ENODEV);
+	}
+
 	stty = file_tty(master);
 	clear_bit(TTY_PTY_LOCK, &stty->flags);
 	if (pi->cpt_drv_flags&TTY_DRIVER_DEVPTS_MEM)

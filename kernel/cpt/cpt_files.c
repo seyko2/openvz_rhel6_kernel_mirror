@@ -102,7 +102,7 @@ static inline int is_fake_file(struct file *file)
 	return file->f_dentry->d_inode == anon_inode_inode;
 }
 
-static int chrdev_is_tty(dev_t dev)
+int chrdev_is_tty(dev_t dev)
 {
 	int major = MAJOR(dev);
 
@@ -113,6 +113,7 @@ static int chrdev_is_tty(dev_t dev)
 	    major == UNIX98_PTY_SLAVE_MAJOR ||
 	    major == TTYAUX_MAJOR || major == TTY_MAJOR);
 }
+EXPORT_SYMBOL(chrdev_is_tty);
 
 void cpt_printk_dentry(struct dentry *d, struct vfsmount *mnt)
 {

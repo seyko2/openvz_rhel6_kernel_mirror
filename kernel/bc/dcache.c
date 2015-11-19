@@ -362,7 +362,6 @@ void ub_dcache_unuse(struct user_beancounter *cub)
 	long size;
 
 	spin_lock(&dcache_lock);
-	ub_dcache_remove(cub);
 	list_for_each_entry_safe(dentry, tmp, &cub->ub_dentry_top, d_bclru) {
 		/* umount in progress */
 		if (!atomic_read(&dentry->d_sb->s_active))
@@ -389,6 +388,10 @@ void ub_dcache_unuse(struct user_beancounter *cub)
 		schedule_timeout_uninterruptible(1);
 
 	BUG_ON(!list_empty(&cub->ub_dentry_lru));
+
+	spin_lock(&dcache_lock);
+	ub_dcache_remove(cub);
+	spin_unlock(&dcache_lock);
 }
 
 static void __ub_update_threshold(struct user_beancounter *ub,

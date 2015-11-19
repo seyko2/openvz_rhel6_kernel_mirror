@@ -41,6 +41,7 @@ int rst_root_namespace(struct cpt_context *ctx);
 
 int rst_stray_files(struct cpt_context *ctx);
 int rst_tty_jobcontrol(struct cpt_context *ctx);
+int chrdev_is_tty(dev_t dev);
 
 void rst_flush_filejobs(struct cpt_context *);
 int rst_do_filejobs(struct cpt_context *);

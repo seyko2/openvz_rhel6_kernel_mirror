@@ -3331,7 +3331,7 @@ load_balance_fair(struct rq *this_rq, int this_cpu, struct rq *busiest,
 			busiest_h_load = busiest_cfs_rq->h_load;
 
 		rem_load = (u64)rem_load_move * busiest_weight;
-		rem_load = div_u64(rem_load, busiest_h_load + 1);
+		rem_load = div64_ul(rem_load, busiest_h_load + 1);
 
 		if (check_cpulimit_spread(busiest_cfs_rq, this_cpu) < 0) {
 			if (!is_top_cfs_rq(busiest_cfs_rq) ||
@@ -3351,7 +3351,7 @@ load_balance_fair(struct rq *this_rq, int this_cpu, struct rq *busiest,
 			continue;
 
 		moved_load *= busiest_h_load;
-		moved_load = div_u64(moved_load, busiest_weight + 1);
+		moved_load = div64_ul(moved_load, busiest_weight + 1);
 
 		rem_load_move -= moved_load;
 		if (rem_load_move < 0)

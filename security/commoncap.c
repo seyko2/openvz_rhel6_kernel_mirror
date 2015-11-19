@@ -27,6 +27,7 @@
 #include <linux/sched.h>
 #include <linux/prctl.h>
 #include <linux/securebits.h>
+#include <linux/syslog.h>
 #include <linux/personality.h>
 
 /*
@@ -1049,16 +1050,20 @@ error:
 /**
  * cap_syslog - Determine whether syslog function is permitted
  * @type: Function requested
+ * @from_file: Whether this request came from an open file (i.e. /proc)
  *
  * Determine whether the current process is permitted to use a particular
  * syslog function, returning 0 if permission is granted, -ve if not.
  */
-int cap_syslog(int type)
+int cap_syslog(int type, bool from_file)
 {
 	if (dmesg_restrict && !capable(CAP_SYS_ADMIN) &&
 		 ve_is_super(get_exec_env()))
 			return -EPERM;
 
+	/* /proc/kmsg can open be opened by CAP_SYS_ADMIN */
+	if (type != 1 && from_file)
+		return 0;
 	if ((type != 3 && type != 10) &&
 		!capable(CAP_VE_SYS_ADMIN) && !capable(CAP_SYS_ADMIN))
 			return -EPERM;
