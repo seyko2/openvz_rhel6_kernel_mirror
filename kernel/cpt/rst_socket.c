@@ -1098,6 +1098,58 @@ static void rst_unix_skb_cb(struct cpt_skb_image *v, struct sk_buff *skb,
 	}
 }
 
+/* In 2.6.32-504.16.2.el6 tcp_skb_cb was modified,
+ * old [36] .flags was splitted to 2 separate fields:
+ * [36] .tcp_flags and [38] .ip_dsfield
+ * new fields should be properly initialized if data was dumped in old format
+ *
+ *  old kernels  vs  2.6.32-504.16.2.el6 aka 042stab108.1
+ *	   struct tcp_skb_cb {
+ *		    ...
+ *		[32] __u32 when;
+ *  [36] __u8 flags;		[36] __u8 tcp_flags;
+ *		[37] __u8 sacked;
+ *  ---				[38] __u8 ip_dsfield;
+ *		[40] __u32 ack_seq;
+ *	   }
+ *	   SIZE: 44
+ */
+static void fix_tcp_skb_cb_flags(struct sk_buff *skb, int tcp,
+				 __u32 queue, struct cpt_context *ctx)
+{
+	__u8 ip_dsfield, tcp_flags;
+	__u8 cb36, cb38;
+
+	switch (tcp) {
+	case 4:
+		ip_dsfield = ipv4_get_dsfield(ip_hdr(skb));
+		break;
+	case 6:
+		ip_dsfield = ipv6_get_dsfield(ipv6_hdr(skb));
+		break;
+	default:
+		return;
+	}
+	tcp_flags = tcp_flag_byte(tcp_hdr(skb));
+
+	cb36 = TCP_SKB_CB(skb)->tcp_flags;
+	cb38 = TCP_SKB_CB(skb)->ip_dsfield;
+
+	if (((queue == CPT_SKB_RQ) || (queue == CPT_SKB_OFOQ)) &&
+	    (cb36 != tcp_flags)) {
+		if (cb36 != ip_dsfield)
+			wprintk_ctx("tcp_skb_cb: tcp_flags %x ip_dsfield %x "
+				    "cb36 %x\n", tcp_flags, ip_dsfield, cb36);
+		TCP_SKB_CB(skb)->tcp_flags = tcp_flags;
+	}
+	if (cb38 != ip_dsfield) {
+		if (cb38 != 0)
+			wprintk_ctx("tcp_skb_cb: ip_dsfield %x cb38 %x\n",
+			ip_dsfield, cb38);
+		TCP_SKB_CB(skb)->ip_dsfield = ip_dsfield;
+	}
+}
+
 struct sk_buff * rst_skb(struct sock *sk, loff_t *pos_p, __u32 *owner,
 			 __u32 *queue, struct cpt_context *ctx)
 {
@@ -1107,6 +1159,7 @@ struct sk_buff * rst_skb(struct sock *sk, loff_t *pos_p, __u32 *owner,
 	loff_t pos = *pos_p;
 	struct scm_fp_list *fpl = NULL;
 	struct timeval tmptv;
+	int tcp = 0;
 
 	err = rst_get_object(CPT_OBJ_SKB, pos, &v, ctx);
 	if (err)
@@ -1137,10 +1190,15 @@ struct sk_buff * rst_skb(struct sock *sk, loff_t *pos_p, __u32 *owner,
 	switch (sk->sk_family) {
 	case AF_INET:
 		rst_inet_skb_cb(&v, skb, sk, ctx);
+		if (sk->sk_protocol == IPPROTO_TCP)
+			tcp = 4;
 		break;
 	case AF_UNIX:
 		rst_unix_skb_cb(&v, skb, sk, ctx);
 		break;
+	case AF_INET6:
+		if (sk->sk_protocol == IPPROTO_TCP)
+			tcp = 6;
 	default:
 		generic_rst_skb_cb(&v, skb);
 		break;
@@ -1208,6 +1266,8 @@ struct sk_buff * rst_skb(struct sock *sk, loff_t *pos_p, __u32 *owner,
 			pos += u.b.cpt_next;
 		}
 	}
+	if (queue && tcp)
+		fix_tcp_skb_cb_flags(skb, tcp, *queue, ctx);
 
 	return skb;
 }

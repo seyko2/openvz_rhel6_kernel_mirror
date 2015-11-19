@@ -240,6 +240,7 @@ int cpt_dump_skb(int type, int owner, struct sk_buff *skb,
 	struct cpt_skb_image *v = cpt_get_buf(ctx);
 	loff_t saved_obj;
 	struct timeval tmptv;
+	int tcp = 0;
 	int ret = 0;
 
 	cpt_push_object(&saved_obj, ctx);
@@ -263,25 +264,44 @@ int cpt_dump_skb(int type, int owner, struct sk_buff *skb,
 
 	switch (sk->sk_family) {
 	case AF_INET:
+		if (sk->sk_protocol == IPPROTO_TCP)
+			tcp = 1;
 		dump_inet_skb_cb(v, skb, sk, ctx);
 		break;
 	case AF_UNIX:
 		dump_unix_skb_cb(v, skb, sk, ctx);
 		break;
+	case AF_INET6:
+		if (sk->sk_protocol == IPPROTO_TCP)
+			tcp = 1;
 	default:
 		generic_dump_skb_cb(v, skb);
 		break;
 	}
 
-	if (sizeof(skb->cb) > sizeof(v->cpt_cb)) {
-		int i;
-		for (i=sizeof(v->cpt_cb); i<sizeof(skb->cb); i++) {
-			if (skb->cb[i]) {
-				wprintk_ctx("dirty skb cb");
-				break;
-			}
-		}
+	if ((tcp) && (type == CPT_SKB_RQ || type == CPT_SKB_OFOQ)) {
+		/* In 2.6.32-504.16.2.el6 tcp_skb_cb was modified,
+		 * old [36] .flags was splitted to 2 separate fields:
+		 * [36] .tcp_flags and [38] .ip_dsfield
+		 * For compatibility data should be dumped to in old format:
+		 * for RQ and OFOQ .ip_dsfield should be saved to cb36
+		 *
+		 *  old kernels  vs  2.6.32-504.16.2.el6 aka 042stab108.1
+		 *	   struct tcp_skb_cb {
+		 *		    ...
+		 *		[32] __u32 when;
+		 *  [36] __u8 flags;		[36] __u8 tcp_flags;
+		 *		[37] __u8 sacked;
+		 *  ---				[38] __u8 ip_dsfield;
+		 *		[40] __u32 ack_seq;
+		 *	   }
+		 *	   SIZE: 44
+		 */
+		struct tcp_skb_cb *pcb = (struct tcp_skb_cb *)&v->cpt_cb;
+
+		pcb->tcp_flags = pcb->ip_dsfield;
 	}
+
 	v->cpt_len = skb->len;
 	v->cpt_mac_len = skb->mac_len;
 	v->cpt_csum = skb->csum;

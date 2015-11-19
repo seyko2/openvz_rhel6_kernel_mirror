@@ -148,8 +148,6 @@ static void __exit_signal(struct task_struct *tsk)
 	 * doing sigqueue_free() if we have SIGQUEUE_PREALLOC signals.
 	 */
 	flush_sigqueue(&tsk->pending);
-
-	tsk->signal = NULL;
 	tsk->sighand = NULL;
 	spin_unlock(&sighand->siglock);
 
@@ -163,7 +161,7 @@ static void __exit_signal(struct task_struct *tsk)
 		 * see account_group_exec_runtime().
 		 */
 		task_rq_unlock_wait(tsk);
-		__cleanup_signal(sig);
+		tty_kref_put(sig->tty);
 	}
 }
 
@@ -1133,6 +1131,12 @@ NORET_TYPE void do_exit(long code)
 	wait_for_rqlock();
 	/* causes final put_task_struct in finish_task_switch(). */
 	tsk->state = TASK_DEAD;
+	if (tsk->flags & PF_EXIT_RESTART) {
+		struct restart_block *rb = &task_thread_info(tsk)->restart_block;
+		struct completion *z = (struct completion *)&rb->arg0;
+
+		complete(z);
+	}
 	schedule();
 	BUG();
 	/* Avoid "noreturn function does return".  */

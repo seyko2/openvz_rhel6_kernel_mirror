@@ -115,9 +115,9 @@ void nfs_clear_inode(struct inode *inode)
 	 */
 #ifdef CONFIG_NFS_QUOTA
 	BUG_ON(!list_empty(&NFS_I(inode)->prealloc));
-	WARN(NFS_I(inode)->i_reserved_quota,
-	     "%s: inode (ino: %ld) reserved bytes: %Ld\n", __func__,
-	     inode->i_ino, NFS_I(inode)->i_reserved_quota);
+	if (NFS_I(inode)->i_reserved_quota)
+		pr_err("%s: inode (ino: %ld) reserved bytes: %Ld\n", __func__,
+			inode->i_ino, NFS_I(inode)->i_reserved_quota);
 #endif
 	BUG_ON(nfs_have_writebacks(inode));
 	BUG_ON(!list_empty(&NFS_I(inode)->open_files));

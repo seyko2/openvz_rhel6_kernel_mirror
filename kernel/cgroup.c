@@ -4251,6 +4251,8 @@ const struct file_operations proc_cgroup_operations = {
 	.release	= single_release,
 };
 
+#define _cg_virtualized(x) ((ve_is_super(get_exec_env())) ? (x) : 1)
+
 /* Display information about each subsystem and each hierarchy */
 static int proc_cgroupstats_show(struct seq_file *m, void *v)
 {
@@ -4260,9 +4262,11 @@ static int proc_cgroupstats_show(struct seq_file *m, void *v)
 	mutex_lock(&cgroup_mutex);
 	for (i = 0; i < CGROUP_SUBSYS_COUNT; i++) {
 		struct cgroup_subsys *ss = subsys[i];
+		int num = _cg_virtualized(ss->root->number_of_cgroups);
+
 		seq_printf(m, "%s\t%d\t%d\t%d\n",
 			   ss->name, ss->root->hierarchy_id,
-			   ss->root->number_of_cgroups, !ss->disabled);
+			   num, !ss->disabled);
 	}
 	mutex_unlock(&cgroup_mutex);
 	return 0;

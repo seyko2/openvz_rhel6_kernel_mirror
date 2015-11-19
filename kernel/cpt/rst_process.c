@@ -1397,7 +1397,13 @@ int rst_restore_process(struct cpt_context *ctx)
 				(ctx->image_version < CPT_VERSION_20)) {
 			ti->cpt_state = TASK_STOPPED;
 		}
+		/* waiting for restored zombie will be dead finally */
+		if (ti->cpt_state & (EXIT_ZOMBIE|EXIT_DEAD)) {
+			struct restart_block *rb = &task_thread_info(tsk)->restart_block;
+			struct completion *z = (struct completion *)&rb->arg0;
 
+			wait_for_completion(z);
+		}
 		wait_task_inactive(tsk, 0);
 #ifdef CONFIG_BEANCOUNTERS
 		tbc = &tsk->task_bc;

@@ -667,6 +667,25 @@ page_check_references(struct page *page, struct scan_control *sc)
 	return PAGEREF_RECLAIM;
 }
 
+/* Check if a page is dirty or under writeback */
+static void page_check_dirty_writeback(struct page *page,
+				       bool *dirty, bool *writeback)
+{
+	/*
+	 * Anonymous pages are not handled by flushers and must be written
+	 * from reclaim context. Do not stall reclaim based on them
+	 */
+	if (!page_is_file_cache(page)) {
+		*dirty = false;
+		*writeback = false;
+		return;
+	}
+
+	/* By default assume that the page flags are accurate */
+	*dirty = PageDirty(page);
+	*writeback = PageWriteback(page);
+}
+
 /*
  * shrink_page_list() returns the number of reclaimed pages
  */
@@ -692,6 +711,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		struct address_space *mapping;
 		struct page *page;
 		int may_enter_fs;
+		bool dirty, writeback;
 		bool may_shade;
 
 		cond_resched();
@@ -719,6 +739,26 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 		may_enter_fs = (sc->gfp_mask & __GFP_FS) ||
 			(PageSwapCache(page) && (sc->gfp_mask & __GFP_IO));
+
+		/*
+		 * The number of dirty pages determines if a zone is marked
+		 * reclaim_congested which affects wait_iff_congested.
+		 */
+		page_check_dirty_writeback(page, &dirty, &writeback);
+		if (dirty || writeback)
+			nr_dirty++;
+
+		/*
+		 * Treat this page as congested if the underlying BDI is or if
+		 * pages are cycling through the LRU so quickly that the
+		 * pages marked for immediate reclaim are making it to the
+		 * end of the LRU a second time.
+		 */
+		mapping = page_mapping(page);
+		if (((dirty || writeback) && mapping &&
+		     bdi_write_congested(mapping->backing_dev_info)) ||
+		    (writeback && PageReclaim(page)))
+			nr_congested++;
 
 		may_shade = PageSwapBacked(page) ? sc->may_shade_anon
 						 : sc->may_shade_file;
@@ -792,10 +832,11 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 				if (!add_to_swap(page, get_gang_ub(page_gang(page))))
 					goto activate_locked;
 				may_enter_fs = 1;
+
+				/* Adding to swap updated mapping */
+				mapping = page_mapping(page);
 			}
 		}
-
-		mapping = page_mapping(page);
 
 		/*
 		 * The page is mapped into the page tables of one or more
@@ -828,8 +869,6 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		}
 
 		if (PageDirty(page)) {
-			nr_dirty++;
-
 			/*
 			 * Only kswapd can writeback filesystem pages to
 			 * avoid risk of stack overflow but do not writeback
@@ -859,7 +898,6 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			/* Page is dirty, try to write it out here */
 			switch (pageout(page, mapping, sync_writeback)) {
 			case PAGE_KEEP:
-				nr_congested++;
 				goto keep_locked;
 			case PAGE_ACTIVATE:
 				goto activate_locked;
@@ -3054,7 +3092,7 @@ loop_again:
 	}
 #endif /* CONFIG_MEMORY_GANGS */
 
-	for (sc.priority = sc.max_priority; sc.priority >= 0; sc.priority--) {
+	for (sc.priority = sc.max_priority; sc.priority >= 1; sc.priority--) {
 		int end_zone = 0;	/* Inclusive.  0 = ZONE_DMA */
 		unsigned long lru_pages = 0;
 		int has_under_min_watermark_zone = 0;
