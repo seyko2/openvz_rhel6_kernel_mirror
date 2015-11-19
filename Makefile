@@ -29,7 +29,7 @@ SUBLEVEL_VDSO = 1
 MAKEFLAGS += -rR --no-print-directory
 
 # Avoid funny character set dependencies
-unexport LC_ALL
+#!! unexport LC_ALL
 LC_COLLATE=C
 LC_NUMERIC=C
 export LC_COLLATE LC_NUMERIC
