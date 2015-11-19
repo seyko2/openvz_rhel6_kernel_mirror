@@ -2170,8 +2170,9 @@ int d_root_check(struct path *path)
  * If path is not reachable from the supplied root, then the value of
  * root is changed (without modifying refcounts).
  */
-char *__d_path(const struct path *path, struct path *root,
-	       char *buffer, int buflen)
+
+char *__d_path_ve(const struct path *path, struct path *root,
+	       char *buffer, int buflen, int check_ve_access)
 {
 	struct dentry *dentry = path->dentry;
 	struct vfsmount *vfsmnt = path->mnt;
@@ -2239,7 +2240,7 @@ global_root:
 	 * explicitly and hide the path information for other cases.
 	 * This approach is more safe, let's take it.  2001/04/22  SAW
 	 */
-	if (!(oldmnt->mnt_sb->s_flags & MS_NOUSER) &&
+	if (check_ve_access && !(oldmnt->mnt_sb->s_flags & MS_NOUSER) &&
 	    !ve_accessible_veid(vfsmnt->owner, get_exec_env()->veid)) {
 		retval = ERR_PTR(-EINVAL);
 		goto out_err;
@@ -2259,7 +2260,7 @@ out_err:
 	return retval;
 
 }
-EXPORT_SYMBOL(__d_path);
+EXPORT_SYMBOL(__d_path_ve);
 
 /**
  * d_path - return the path of a dentry
@@ -2277,7 +2278,7 @@ EXPORT_SYMBOL(__d_path);
  *
  * "buflen" should be positive.
  */
-char *d_path(const struct path *path, char *buf, int buflen)
+char *d_path_ve(const struct path *path, char *buf, int buflen, int check_ve_access)
 {
 	char *res;
 	struct path root;
@@ -2299,7 +2300,7 @@ char *d_path(const struct path *path, char *buf, int buflen)
 	get_fs_root(current->fs, &root);
 	spin_lock(&dcache_lock);
 	tmp = root;
-	res = __d_path(path, &tmp, buf, buflen);
+	res = __d_path_ve(path, &tmp, buf, buflen, check_ve_access);
 	spin_unlock(&dcache_lock);
 	path_put(&root);
 	return res;
@@ -2649,7 +2650,7 @@ EXPORT_SYMBOL(d_invalidate);
 EXPORT_SYMBOL(d_lookup);
 EXPORT_SYMBOL(d_move);
 EXPORT_SYMBOL_GPL(d_materialise_unique);
-EXPORT_SYMBOL(d_path);
+EXPORT_SYMBOL(d_path_ve);
 EXPORT_SYMBOL(d_prune_aliases);
 EXPORT_SYMBOL(d_rehash);
 EXPORT_SYMBOL(d_splice_alias);

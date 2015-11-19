@@ -336,8 +336,19 @@ extern int d_validate(struct dentry *, struct dentry *);
  */
 extern char *dynamic_dname(struct dentry *, char *, int, const char *, ...);
 
-extern char *__d_path(const struct path *path, struct path *root, char *, int);
-extern char *d_path(const struct path *, char *, int);
+extern char *__d_path_ve(const struct path *path, struct path *root, char *buffer, int buflen, int check_ve_access);
+extern char *d_path_ve(const struct path *path, char *buf, int buflen, int check_ve_access);
+
+static inline char *__d_path(const struct path *path, struct path *root, char *buffer, int buflen)
+{
+	return __d_path_ve(path, root, buffer, buflen, 1);
+}
+
+static inline char *d_path(const struct path *path, char *buf, int buflen)
+{
+    return d_path_ve(path, buf, buflen, 1);
+}
+
 extern char *dentry_path(struct dentry *, char *, int);
 extern int d_root_check(struct path *path);
 
