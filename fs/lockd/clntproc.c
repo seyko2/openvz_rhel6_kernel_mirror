@@ -121,7 +121,7 @@ static struct nlm_lockowner *nlm_find_lockowner(struct nlm_host *host, fl_owner_
 	return res;
 }
 
-int nlmclnt_set_lockowner(struct inode *inode, struct file_lock *fl, int svid)
+int nlmclnt_set_lockowner(struct inode *inode, struct file_lock *fl, u32 svid)
 {
 	struct nlm_host *host;
 	struct nfs_server *server = NFS_SERVER(inode);
@@ -497,7 +497,7 @@ static void nlmclnt_locks_release_private(struct file_lock *fl)
 	nlm_put_lockowner(fl->fl_u.nfs_fl.owner);
 }
 
-static int nlm_get_lockid(struct file_lock *fl)
+static u32 nlm_get_lockid(struct file_lock *fl, u64 *unused)
 {
 	return fl->fl_u.nfs_fl.owner->pid;
 }

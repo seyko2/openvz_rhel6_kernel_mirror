@@ -111,6 +111,7 @@ static inline void real_put_ve(struct ve_struct *ve)
 		real_do_env_free(ve);
 	}
 }
+
 static s64 ve_get_uptime(struct ve_struct *ve)
 {
 	struct timespec uptime;
@@ -990,7 +991,7 @@ static int ve_list_add(struct ve_struct *ve)
 	if (__find_ve_by_id(ve->veid) != NULL)
 		goto err_exists;
 
-	list_add(&ve->ve_list, &ve_list_head);
+	list_add_rcu(&ve->ve_list, &ve_list_head);
 	nr_ve++;
 	mutex_unlock(&ve_list_lock);
 	return 0;
@@ -1003,7 +1004,7 @@ err_exists:
 static void ve_list_del(struct ve_struct *ve)
 {
 	mutex_lock(&ve_list_lock);
-	list_del_init(&ve->ve_list);
+	list_del_rcu(&ve->ve_list);
 	nr_ve--;
 	mutex_unlock(&ve_list_lock);
 	wake_up_all(&ve->ve_list_wait);
@@ -1715,7 +1716,7 @@ static void real_do_env_free(struct ve_struct *ve)
 	free_ve_cpustats(ve);
 	free_ve_devmnts(ve);
 	printk(KERN_INFO "CT: %d: stopped\n", VEID(ve));
-	kfree(ve);
+	kfree_rcu(ve, rcu);
 
 	module_put(THIS_MODULE);
 }

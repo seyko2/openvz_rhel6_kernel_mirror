@@ -326,7 +326,8 @@ out:
 
 static void nfs_alloc_unique_id_locked(struct rb_root *root,
 				       struct nfs_unique_id *new,
-				       __u64 minval, int maxbits)
+				       __u64 minval, int maxbits,
+				       u64 ls_id)
 {
 	struct rb_node **p, *parent;
 	struct nfs_unique_id *pos;
@@ -340,6 +341,9 @@ static void nfs_alloc_unique_id_locked(struct rb_root *root,
 	new->id &= mask;
 	if (new->id < minval)
 		new->id += minval;
+
+	if (ls_id)
+		new->id = ls_id;
 retry:
 	p = &root->rb_node;
 	parent = NULL;
@@ -359,6 +363,7 @@ retry:
 	rb_insert_color(&new->rb_node, root);
 	return;
 id_exists:
+	BUG_ON(ls_id);
 	for (;;) {
 		new->id++;
 		if (new->id < minval || (new->id & mask) != new->id) {
@@ -438,7 +443,7 @@ nfs4_insert_state_owner_locked(struct nfs4_state_owner *new)
 		}
 	}
 	nfs_alloc_unique_id_locked(&server->openowner_id,
-					&new->so_owner_id, 1, 64);
+					&new->so_owner_id, 1, 64, 0);
 	rb_link_node(&new->so_server_node, parent, p);
 	rb_insert_color(&new->so_server_node, &server->state_owners);
 	return new;
@@ -810,7 +815,7 @@ __nfs4_find_lock_state(struct nfs4_state *state, fl_owner_t fl_owner, pid_t fl_p
  * exists, return an uninitialized one.
  *
  */
-static struct nfs4_lock_state *nfs4_alloc_lock_state(struct nfs4_state *state, fl_owner_t fl_owner, pid_t fl_pid, unsigned int type)
+static struct nfs4_lock_state *nfs4_alloc_lock_state(struct nfs4_state *state, fl_owner_t fl_owner, pid_t fl_pid, unsigned int type, u64 ls_id)
 {
 	struct nfs4_lock_state *lsp;
 	struct nfs_server *server = state->owner->so_server;
@@ -838,7 +843,7 @@ static struct nfs4_lock_state *nfs4_alloc_lock_state(struct nfs4_state *state, f
 		return NULL;
 	}
 	spin_lock(&clp->cl_lock);
-	nfs_alloc_unique_id_locked(&server->lockowner_id, &lsp->ls_id, 1, 64);
+	nfs_alloc_unique_id_locked(&server->lockowner_id, &lsp->ls_id, 1, 64, ls_id);
 	spin_unlock(&clp->cl_lock);
 	INIT_LIST_HEAD(&lsp->ls_locks);
 	return lsp;
@@ -860,7 +865,9 @@ void nfs4_free_lock_state(struct nfs_server *server, struct nfs4_lock_state *lsp
  * exists, return an uninitialized one.
  *
  */
-static struct nfs4_lock_state *nfs4_get_lock_state(struct nfs4_state *state, fl_owner_t owner, pid_t pid, unsigned int type)
+static struct nfs4_lock_state *nfs4_get_lock_state(struct nfs4_state *state, fl_owner_t owner,
+						   pid_t pid, unsigned int type, u32 counter,
+						   u64 ls_id)
 {
 	struct nfs4_lock_state *lsp, *new = NULL;
 	
@@ -870,6 +877,8 @@ static struct nfs4_lock_state *nfs4_get_lock_state(struct nfs4_state *state, fl_
 		if (lsp != NULL)
 			break;
 		if (new != NULL) {
+			if (counter)
+				new->ls_seqid.counter = counter;
 			list_add(&new->ls_locks, &state->lock_states);
 			set_bit(LK_STATE_IN_USE, &state->flags);
 			lsp = new;
@@ -877,7 +886,7 @@ static struct nfs4_lock_state *nfs4_get_lock_state(struct nfs4_state *state, fl_
 			break;
 		}
 		spin_unlock(&state->state_lock);
-		new = nfs4_alloc_lock_state(state, owner, pid, type);
+		new = nfs4_alloc_lock_state(state, owner, pid, type, ls_id);
 		if (new == NULL)
 			return NULL;
 	}
@@ -927,9 +936,17 @@ static void nfs4_fl_release_lock(struct file_lock *fl)
 	nfs4_put_lock_state(fl->fl_u.nfs4_fl.owner);
 }
 
+static u32 nfs4_fl_owner_id(struct file_lock *fl, u64 *ls_id)
+{
+	*ls_id = fl->fl_u.nfs4_fl.owner->ls_id.id;
+
+	return fl->fl_u.nfs4_fl.owner->ls_seqid.counter;
+}
+
 static const struct file_lock_operations nfs4_fl_lock_ops = {
 	.fl_copy_lock = nfs4_fl_copy_lock,
 	.fl_release_private = nfs4_fl_release_lock,
+	.fl_owner_id = nfs4_fl_owner_id,
 };
 
 int nfs4_set_lock_state(struct nfs4_state *state, struct file_lock *fl)
@@ -939,9 +956,9 @@ int nfs4_set_lock_state(struct nfs4_state *state, struct file_lock *fl)
 	if (fl->fl_ops != NULL)
 		return 0;
 	if (fl->fl_flags & FL_POSIX)
-		lsp = nfs4_get_lock_state(state, fl->fl_owner, 0, NFS4_POSIX_LOCK_TYPE);
+		lsp = nfs4_get_lock_state(state, fl->fl_owner, 0, NFS4_POSIX_LOCK_TYPE, 0, 0);
 	else if (fl->fl_flags & FL_FLOCK)
-		lsp = nfs4_get_lock_state(state, 0, fl->fl_pid, NFS4_FLOCK_LOCK_TYPE);
+		lsp = nfs4_get_lock_state(state, 0, fl->fl_pid, NFS4_FLOCK_LOCK_TYPE, 0, 0);
 	else
 		return -EINVAL;
 	if (lsp == NULL)
@@ -950,6 +967,32 @@ int nfs4_set_lock_state(struct nfs4_state *state, struct file_lock *fl)
 	fl->fl_ops = &nfs4_fl_lock_ops;
 	return 0;
 }
+
+int nfs4_set_lockowner(struct file *filp, struct file_lock *fl, u32 counter, u64 ls_id)
+{
+	struct nfs_server *server = NFS_SERVER(filp->f_dentry->d_inode);
+	struct nfs_client *clp = server->nfs_client;
+	u32 nfs_version = clp->rpc_ops->version;
+	struct nfs4_state *state = nfs_file_open_context(filp)->state;
+	unsigned int type = fl->fl_flags & FL_FLOCK? NFS4_FLOCK_LOCK_TYPE:
+						     NFS4_POSIX_LOCK_TYPE;
+	struct nfs4_lock_state *lsp;
+
+	if (nfs_version != 4)
+		return 0;
+
+	if (!ls_id)
+		return -ENOLCK;
+
+	lsp = nfs4_get_lock_state(state, fl->fl_owner, fl->fl_pid,
+				  type, counter, ls_id);
+	if (lsp) {
+		fl->fl_u.nfs4_fl.owner = lsp;
+		fl->fl_ops = &nfs4_fl_lock_ops;
+	}
+	return lsp ? 0 : -ENOLCK;
+}
+EXPORT_SYMBOL(nfs4_set_lockowner);
 
 static int nfs4_copy_lock_stateid(nfs4_stateid *dst,
 		struct nfs4_state *state,

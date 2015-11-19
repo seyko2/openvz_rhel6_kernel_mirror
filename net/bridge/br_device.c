@@ -68,36 +68,6 @@ out:
 	return NETDEV_TX_OK;
 }
 
-int br_xmit(struct sk_buff *skb, struct net_bridge_port *port)
-{
-	struct net_bridge *br = port->br;
-	const unsigned char *dest = skb->data;
-	struct net_bridge_fdb_entry *dst;
-	int ret = 0;
-
-	if (!br->via_phys_dev)
-		return 0;
-
-	br->dev->stats.tx_packets++;
-	br->dev->stats.tx_bytes += skb->len;
-
-	skb_reset_mac_header(skb);
-	skb_pull(skb, ETH_HLEN);
-
-	skb->brmark = BR_ALREADY_SEEN;
-
-	if (dest[0] & 1)
-		br_xmit_deliver(br, port, skb);
-	else if ((dst = __br_fdb_get(br, dest)) != NULL)
-		ret = br_deliver(dst->dst, skb, 0);
-	else
-		br_xmit_deliver(br, port, skb);
-
-	skb_push(skb, ETH_HLEN);
-
-	return ret;
-}
-
 static int br_dev_open(struct net_device *dev)
 {
 	struct net_bridge *br = netdev_priv(dev);

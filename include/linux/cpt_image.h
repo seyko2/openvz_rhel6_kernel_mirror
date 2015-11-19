@@ -636,6 +636,7 @@ struct cpt_flock_image
 #define CPT_FLOCK_DELAYED	0x00010000
 	__u32	cpt_type;
 	__u32	cpt_svid;
+	__u64	cpt_lsid;
 } __attribute__ ((aligned (8)));
 
 struct cpt_tty_image

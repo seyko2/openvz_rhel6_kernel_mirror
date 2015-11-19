@@ -581,7 +581,8 @@ int cpt_kill(struct cpt_context *ctx)
 	cpt_finish_vfsmount_ref(ctx);
 	cpt_object_destroy(ctx);
 
-	wait_event_interruptible(env->ve_list_wait, list_empty(&env->ve_list));
+	/* Wait for ve_list_del() */
+	wait_event_interruptible(env->ve_list_wait, env->ve_list.prev == LIST_POISON2);
 
 out:
 	put_ve(env);
@@ -849,7 +850,7 @@ static int cpt_dump_veinfo(cpt_context_t *ctx)
 	i->rnd_va_space	= ve->_randomize_va_space + 1;
 	i->vpid_max = ve->ve_ns->pid_ns->pid_max;
 	i->aio_max_nr = ve->aio_max_nr;
-	memcpy(&i->cpt_ve_bcap, &get_exec_env()->ve_cap_bset, 8);
+	memcpy(&i->cpt_ve_bcap, &ve->ve_cap_bset, sizeof(i->cpt_ve_bcap));
 
 	ctx->write(i, sizeof(*i), ctx);
 	cpt_release_buf(ctx);

@@ -534,9 +534,6 @@ static int dump_one_flock(struct file_lock *fl, int owner,
 
 	if (delay && !fl->fl_ops)
 		delay = 0; /* no remote locks */
-	/* NFS4 is not supported yet, so we don't dump such locks */
-	if (delay && !fl->fl_ops->fl_owner_id)
-		return 0;
 
 	v = cpt_get_buf(ctx);
 
@@ -568,7 +565,8 @@ static int dump_one_flock(struct file_lock *fl, int owner,
 	if (delay)
 		v->cpt_flags |= CPT_FLOCK_DELAYED;
 	v->cpt_type = fl->fl_type;
-	v->cpt_svid = delay ? (__u32)fl->fl_ops->fl_owner_id(fl) : CPT_NOINDEX;
+	v->cpt_svid = delay ? fl->fl_ops->fl_owner_id(fl, &v->cpt_lsid) :
+			      CPT_NOINDEX;
 
 	ctx->write(v, sizeof(*v), ctx);
 	cpt_release_buf(ctx);

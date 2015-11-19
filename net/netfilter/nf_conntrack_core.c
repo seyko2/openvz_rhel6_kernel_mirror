@@ -276,7 +276,7 @@ void nf_ct_insert_dying_list(struct nf_conn *ct)
 }
 EXPORT_SYMBOL_GPL(nf_ct_insert_dying_list);
 
-static void death_by_timeout(unsigned long ul_conntrack)
+void death_by_timeout(unsigned long ul_conntrack)
 {
 	struct nf_conn *ct = (void *)ul_conntrack;
 
@@ -291,6 +291,7 @@ static void death_by_timeout(unsigned long ul_conntrack)
 	nf_ct_delete_from_lists(ct);
 	nf_ct_put(ct);
 }
+EXPORT_SYMBOL(death_by_timeout);
 
 static inline bool
 nf_ct_key_equal(struct nf_conntrack_tuple_hash *h,
@@ -386,7 +387,7 @@ static void __nf_conntrack_hash_insert(struct nf_conn *ct,
 }
 
 int
-nf_conntrack_hash_check_insert(struct nf_conn *ct)
+__nf_conntrack_hash_check_insert(struct nf_conn *ct, struct nf_conn **cd)
 {
 	struct net *net = nf_ct_net(ct);
 	unsigned int hash, repl_hash;
@@ -420,9 +421,20 @@ nf_conntrack_hash_check_insert(struct nf_conn *ct)
 	return 0;
 
 out:
+	if (cd) {
+		*cd = nf_ct_tuplehash_to_ctrack(h);
+		atomic_inc(&(*cd)->ct_general.use);
+	}
 	NF_CT_STAT_INC(net, insert_failed);
 	spin_unlock_bh(&nf_conntrack_lock);
 	return -EEXIST;
+}
+EXPORT_SYMBOL(__nf_conntrack_hash_check_insert);
+
+int
+nf_conntrack_hash_check_insert(struct nf_conn *ct)
+{
+	return __nf_conntrack_hash_check_insert(ct, NULL);
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_hash_check_insert);
 

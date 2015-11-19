@@ -224,14 +224,34 @@ static int undump_expect_list(struct nf_conn *ct,
 	return 0;
 }
 
+extern unsigned long get_tcp_timeout(u8 state);
+
+static unsigned long get_ct_timestamp(struct nf_conn *ct)
+{
+	unsigned long expires;
+	struct nf_conntrack_tuple *t;
+
+	spin_lock_bh(&ct->lock);
+	expires = ct->timeout.expires;
+
+	t = &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
+	if ((t->src.l3num == AF_INET || t->src.l3num == AF_INET6) &&
+	     t->dst.protonum == IPPROTO_TCP)
+		expires -= get_tcp_timeout(ct->proto.tcp.state);
+	spin_unlock_bh(&ct->lock);
+
+	return expires;
+}
+
 static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 			 struct ct_holder **ct_list, cpt_context_t *ctx)
 {
 	int err = 0;
-	struct nf_conn *ct;
+	struct nf_conn *ct, *cd;
 	struct ct_holder *c;
 	struct nf_conntrack_tuple orig, repl;
 	struct nf_conn_nat *nat;
+	struct net *net;
 
 	/*
 	 * We do not support ipv6 conntracks (we don't save dst.u3.all[1-3],
@@ -251,7 +271,8 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 		return -EINVAL;
 	}
 
-	ct = nf_conntrack_alloc(get_exec_env()->ve_netns, &orig, &repl,
+	net = get_exec_env()->ve_netns;
+	ct = nf_conntrack_alloc(net, &orig, &repl,
 				get_exec_ub_top(), GFP_KERNEL);
 	if (!ct || IS_ERR(ct)) {
 		kfree(c);
@@ -301,16 +322,37 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 		nat->seq[1].offset_before = ci->cpt_nat_seq[1].cpt_offset_before;
 		nat->seq[1].offset_after = ci->cpt_nat_seq[1].cpt_offset_after;
 
-		nf_nat_hash_conntrack(get_exec_env()->ve_netns, ct);
+		nf_nat_hash_conntrack(net, ct);
 #endif
 	}
 
 	ct->timeout.expires = jiffies + ci->cpt_timeout;
-	err = nf_conntrack_hash_check_insert(ct);
+insert:
+	cd = NULL;
+	err = __nf_conntrack_hash_check_insert(ct, &cd);
 
-	if (err < 0)
+	if (err < 0) {
+		if (cd) {
+			unsigned long t_ct, t_cd;
+
+			eprintk_ctx("duplicated conntrack detected, "
+				    "dropping old one\n");
+			err = 0;
+			t_ct = get_ct_timestamp(ct);
+			t_cd = get_ct_timestamp(cd);
+			if (time_before(t_cd, t_ct)) {
+				rcu_read_unlock();
+				if (del_timer(&cd->timeout)) {
+					death_by_timeout((unsigned long)cd);
+					NF_CT_STAT_INC_ATOMIC(net, early_drop);
+				}
+				nf_ct_put(cd);
+				rcu_read_lock();
+				goto insert;
+			}
+		}
 		goto err2;
-
+	}
 	if (ci->cpt_next > ci->cpt_hdrlen)
 		err = undump_expect_list(ct, ci, pos, *ct_list, ctx);
         rcu_read_unlock();
@@ -323,9 +365,11 @@ static int undump_one_ct(struct cpt_ip_conntrack_image *ci, loff_t pos,
 
 	return err;
 err2:
-        rcu_read_unlock();
-        nf_conntrack_free(ct);
-        return err;
+	rcu_read_unlock();
+	nf_conntrack_free(ct);
+	if (cd)
+		nf_ct_put(cd);
+	return err;
 }
 
 struct ip_ct_tcp_state_compat /*2.6.18*/

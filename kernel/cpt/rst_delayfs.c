@@ -27,6 +27,7 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/seq_file.h>
 #include <net/af_unix.h>
+#include <linux/nfs4.h>
 
 #include <linux/cpt_obj.h>
 #include <linux/cpt_context.h>
@@ -225,7 +226,8 @@ static void delay_switch_mm(struct mm_struct *mm, struct super_block *sb)
 
 struct delayed_flock_info {
 	struct file_lock *fl;
-	int svid;
+	u32 svid;
+	u64 lsid;
 	struct delayed_flock_info *next;
 };
 
@@ -236,6 +238,10 @@ static void delayed_flock(struct delayed_flock_info *dfi, struct file *file)
 	u32 cpt_pid = fl->fl_pid;
 
 	err = nlmclnt_set_lockowner(file->f_dentry->d_inode, fl, dfi->svid);
+	if (err)
+		goto out;
+
+	err = nfs4_set_lockowner(file, fl, dfi->svid, dfi->lsid);
 	if (err)
 		goto out;
 
@@ -1746,6 +1752,9 @@ int rst_delay_flock(struct file *f, struct cpt_flock_image *fli,
 		goto out;
 	}
 
+	if (!cpt_object_has(fli, cpt_lsid))
+		fli->cpt_lsid = 0;
+
 	err = -ENOMEM;
 	dfi = kmalloc(sizeof(*dfi), GFP_KERNEL);
 	if (dfi == NULL)
@@ -1789,6 +1798,7 @@ int rst_delay_flock(struct file *f, struct cpt_flock_image *fli,
 
 	dfi->fl = fl;
 	dfi->svid = fli->cpt_svid;
+	dfi->lsid = fli->cpt_lsid;
 	dfi->next = priv->dfi;
 
 	priv->dfi = dfi;

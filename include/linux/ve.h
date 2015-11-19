@@ -225,6 +225,7 @@ struct ve_struct {
 	spinlock_t		aio_nr_lock;
 	unsigned long		aio_nr;
 	unsigned long		aio_max_nr;
+	struct rcu_head		rcu;
 };
 
 #define VE_MEMINFO_NR_SPECIAL	3	/* if above or equal treat at nr_pages */

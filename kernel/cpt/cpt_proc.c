@@ -188,6 +188,27 @@ int cpt_context_lookup_veid(unsigned int veid)
 	return 0;
 }
 
+#define test_cpu_caps(func, src_flags, dst_flags, err)	\
+	func(src_flags, dst_flags, CPT_CPU_X86_CMOV, "cmov", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_FXSR, "fxsr", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SSE, "sse", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SSE2, "sse2", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_1", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SSE4_2, "sse4_2", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_MMX, "mmx", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_3DNOW, "3dnow", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_3DNOW2, "3dnowext", err);	\
+	func(src_flags, dst_flags, CPT_CPU_X86_SSE4A, "sse4a", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SEP, "sysenter", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_EMT64, "emt64", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_IA64, "ia64", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_SYSCALL, "syscall", err);	\
+	func(src_flags, dst_flags, CPT_CPU_X86_SYSCALL32, "syscall32", err);	\
+	func(src_flags, dst_flags, CPT_CPU_X86_XSAVE, "xsave", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_AVX, "avx", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_AESNI, "aesni", err);		\
+	func(src_flags, dst_flags, CPT_CPU_X86_RDRAND, "rdrand", err);
+
 /*
  * Check capabilities on destination node
  *
@@ -206,25 +227,7 @@ static int cpt_test_vecaps_features(cpt_context_t *ctx, __u32 dst_flags,
 	if (err)
 		return err;
 
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_CMOV, "cmov", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_FXSR, "fxsr", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE, "sse", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE2, "sse2", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4_1, "sse4_1", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4_2, "sse4_2", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_MMX, "mmx", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_3DNOW, "3dnow", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_3DNOW2, "3dnowext", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SSE4A, "sse4a", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SEP, "sysenter", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_EMT64, "emt64", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_IA64, "ia64", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SYSCALL, "syscall", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_SYSCALL32, "syscall32", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_XSAVE, "xsave", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_AVX, "avx", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_AESNI, "aesni", err);
-	test_one_flag(src_flags, dst_flags, CPT_CPU_X86_RDRAND, "rdrand", err);
+	test_cpu_caps(test_one_flag, src_flags, dst_flags, err);
 
 	if (dst_flags & (1 << CPT_SLM_DMPRST)) {
 		eprintk_ctx("SLM is enabled on destination node, but slm_dmprst module is not loaded\n");
@@ -287,8 +290,11 @@ static int cpt_ioctl(struct inode * inode, struct file * file, unsigned int cmd,
 	request_module("vzcptpram");
 
 	if (cmd == CPT_TEST_CAPS) {
-		/* Obsoleted by CPT_TEST_VECAPS */
-		err = -ENOSYS;
+		unsigned int src_flags, dst_flags = arg;
+
+		err = 0;
+		src_flags = test_cpu_caps_and_features();
+		test_cpu_caps(test_one_flag_old, src_flags, dst_flags, err);
 		goto out_lock;
 	}
 

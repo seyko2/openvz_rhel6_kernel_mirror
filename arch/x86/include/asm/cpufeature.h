@@ -105,6 +105,7 @@
 #define X86_FEATURE_APERFMPERF	(3*32+28) /* APERFMPERF */
 #define X86_FEATURE_UNFAIR_SPINLOCK (3*32+29) /* use unfair spinlocks */
 #define X86_FEATURE_CPUID_FAULTING (3*32+30) /* cpuid faulting */
+#define X86_FEATURE_ZERO_FREE_PAGES (3*32+31) /* zero pages on free */
 
 /* Intel-defined CPU features, CPUID level 0x00000001 (ecx), word 4 */
 #define X86_FEATURE_XMM3	(4*32+ 0) /* "pni" SSE-3 */

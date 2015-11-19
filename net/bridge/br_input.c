@@ -78,10 +78,8 @@ static int br_pass_frame_up(struct sk_buff *skb)
 
 	if (!master_dev)
 		skb->dev = brdev;
-	else {
-		skb->brmark = BR_ALREADY_SEEN;
+	else
 		skb->dev = master_dev;
-	}
 
 	skb = br_vlan_workaround(skb);
 	if (!skb)
@@ -117,6 +115,9 @@ int br_handle_frame_finish(struct sk_buff *skb)
 		goto drop;
 
 	BR_INPUT_SKB_CB(skb)->brdev = br->dev;
+
+	if (br->via_phys_dev)
+		skb->brmark = BR_ALREADY_SEEN;
 
 	/* The packet skb2 goes to the local host (NULL to skip). */
 	skb2 = NULL;

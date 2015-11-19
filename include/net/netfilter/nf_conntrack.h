@@ -209,9 +209,12 @@ extern void *nf_ct_alloc_hashtable(unsigned int *sizep, int *vmalloced, int null
 
 extern void nf_ct_free_hashtable(void *hash, int vmalloced, unsigned int size);
 
+extern void death_by_timeout(unsigned long ul_conntrack);
 extern struct nf_conntrack_tuple_hash *
 __nf_conntrack_find(struct net *net, const struct nf_conntrack_tuple *tuple);
 
+extern int
+__nf_conntrack_hash_check_insert(struct nf_conn *ct, struct nf_conn **cd);
 extern int nf_conntrack_hash_check_insert(struct nf_conn *ct);
 extern void nf_ct_delete_from_lists(struct nf_conn *ct);
 extern void nf_ct_insert_dying_list(struct nf_conn *ct);

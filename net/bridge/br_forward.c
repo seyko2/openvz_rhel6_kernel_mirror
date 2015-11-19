@@ -229,7 +229,6 @@ void br_xmit_deliver(struct net_bridge *br, struct net_bridge_port *port,
 void br_flood_forward(struct net_bridge *br, struct sk_buff *skb,
 		      struct sk_buff *skb2)
 {
-	skb->brmark = BR_ALREADY_SEEN;
 	br_flood(br, skb, skb2, __br_forward);
 }
 
@@ -296,7 +295,6 @@ void br_multicast_deliver(struct net_bridge_mdb_entry *mdst,
 void br_multicast_forward(struct net_bridge_mdb_entry *mdst,
 			  struct sk_buff *skb, struct sk_buff *skb2)
 {
-	skb->brmark = BR_ALREADY_SEEN;
 	br_multicast_flood(mdst, skb, skb2, __br_forward);
 }
 #endif

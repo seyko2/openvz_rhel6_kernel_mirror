@@ -2261,36 +2261,6 @@ int netif_skb_features(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(netif_skb_features);
 
-#if defined(CONFIG_BRIDGE) || defined (CONFIG_BRIDGE_MODULE)
-int (*br_hard_xmit_hook)(struct sk_buff *skb, struct net_bridge_port *port);
-EXPORT_SYMBOL(br_hard_xmit_hook);
-static __inline__ int bridge_hard_start_xmit(struct sk_buff *skb,
-						struct net_device *dev)
-{
-	struct net_bridge_port *port;
-
-	if (!br_hard_xmit_hook)
-		return 0;
-
-	if (skb->brmark == BR_ALREADY_SEEN)
-		return 0;
-	if (!(skb->dev->priv_flags & IFF_BRIDGE_PORT))
-		return 0;
-
-	smp_rmb(); /* Pairs with smp_wmb in del_nbp() and in br_add_if() */
-
-	port = rcu_dereference(dev->br_port);
-	if (!port) {
-		WARN_ON(1);
-		return 0;
-	}
-
-	return br_hard_xmit_hook(skb, port);
-}
-#else
-#define bridge_hard_start_xmit(skb, dev)	(0)
-#endif
-
 /*
  * Returns true if either:
  *	1. skb has frag_list and the device doesn't support FRAGLIST, or
@@ -2320,12 +2290,6 @@ static inline int dev_hard_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 #endif
-	/*
-	 * Bridge must handle packet with dst information set.
-	 * If there is no dst set in skb - it can cause oops in NAT.
-	 */
-	rc = bridge_hard_start_xmit(skb, dev);
-
 	/*
 	 * If device doesnt need skb->dst, release it right now while
 	 * its hot in this cpu cache
@@ -2639,6 +2603,32 @@ static void skb_update_prio(struct sk_buff *skb)
 #define skb_update_prio(skb)
 #endif
 
+#if defined(CONFIG_BRIDGE) || defined (CONFIG_BRIDGE_MODULE)
+#include "../bridge/br_private.h"
+
+static __inline__ struct net_device *
+bridge_check(struct sk_buff *skb, struct net_device *dev)
+{
+	struct net_bridge_port *port;
+
+	port = rcu_dereference(dev->br_port);
+	if (port == NULL)
+		return dev;
+
+	if (skb->brmark == BR_ALREADY_SEEN ||
+	   !(port->br->via_phys_dev && dev == port->br->master_dev))
+		return dev;
+
+	dev = port->br->dev;
+	do {
+		skb->dev = dev;
+	} while ((skb = skb->next) != NULL);
+	return dev;
+}
+#else
+#define bridge_check(skb, dev) (dev)
+#endif
+
 /**
  *	dev_queue_xmit - transmit a buffer
  *	@skb: buffer to transmit
@@ -2675,6 +2665,8 @@ int dev_queue_xmit(struct sk_buff *skb)
 	 * stops preemption for RCU.
 	 */
 	rcu_read_lock_bh();
+
+	dev = bridge_check(skb, dev);
 
 	skb_update_prio(skb);
 
@@ -6710,6 +6702,8 @@ static int netdev_wait_allrefs(struct net_device *dev)
 	unsigned long rebroadcast_time, warning_time;
 	int i = 0;
 
+	linkwatch_forget_dev(dev);
+
 	rebroadcast_time = warning_time = jiffies;
 	while (atomic_read(&dev->refcnt) != 0) {
 		if (time_after(jiffies, rebroadcast_time + 1 * HZ)) {
@@ -7233,6 +7227,7 @@ struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
 	netdev_init_queues(dev);
 
 	INIT_LIST_HEAD(&dev->napi_list);
+	INIT_LIST_HEAD(&dev->link_watch_list);
 	INIT_LIST_HEAD(&netdev_extended(dev)->unreg_list);
 	dev->priv_flags = IFF_XMIT_DST_RELEASE;
 	setup(dev);

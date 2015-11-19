@@ -930,6 +930,11 @@ static void vtty_close(struct tty_struct *tty, struct file *filp)
 	o_tty->packet = 0;
 	wake_up_interruptible(&o_tty->read_wait);
 	wake_up_interruptible(&o_tty->write_wait);
+
+	if (tty->count == 1) {
+		tty_vhangup(o_tty);
+		tty_vhangup(tty);
+	}
 }
 
 static void vtty_remove(struct tty_driver *driver, struct tty_struct *tty)

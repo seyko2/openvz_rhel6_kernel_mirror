@@ -1278,7 +1278,7 @@ typedef struct files_struct *fl_owner_t;
 struct file_lock_operations {
 	void (*fl_copy_lock)(struct file_lock *, struct file_lock *);
 	void (*fl_release_private)(struct file_lock *);
-	int (*fl_owner_id)(struct file_lock *);
+	u32 (*fl_owner_id)(struct file_lock *, u64 *);
 };
 
 struct lock_manager_operations {

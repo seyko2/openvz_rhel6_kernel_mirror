@@ -39,6 +39,13 @@ unsigned int test_cpu_caps_and_features(void);
 int rst_image_acceptable(unsigned long version);
 unsigned int test_kernel_config(void);
 
+#define test_one_flag_old(src, dst, flag, message, ret) \
+	if (src & (1 << flag)) \
+		if (!(dst & (1 << flag))) { \
+			wprintk("Destination cpu does not have " message "\n"); \
+			ret = 1; \
+	}
+
 #define test_one_flag(src, dst, flag, message, ret) \
 if (src & (1 << flag)) \
 	if (!(dst & (1 << flag))) { \

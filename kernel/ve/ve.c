@@ -121,19 +121,12 @@ EXPORT_SYMBOL(__find_ve_by_id);
 struct ve_struct *get_ve_by_id(envid_t veid)
 {
 	struct ve_struct *ve;
-	/*
-	 * This is temporary hack to switch lockdep off:
-	 * https://jira.sw.ru/browse/PSBM-32194
-	 *
-	 * We will make this lockless using RCU in the
-	 * future.
-	 */
-	lockdep_off();
-	mutex_lock(&ve_list_lock);
+
+	rcu_read_lock();
 	ve = __find_ve_by_id(veid);
-	get_ve(ve);
-	mutex_unlock(&ve_list_lock);
-	lockdep_on();
+	if (!ve || !atomic_inc_not_zero(&ve->counter))
+		ve = NULL;
+	rcu_read_unlock();
 	return ve;
 }
 EXPORT_SYMBOL(get_ve_by_id);
@@ -156,7 +149,7 @@ void init_ve0(void)
 
 	ve = get_ve0();
 	ve->sched_lat_ve.cur = &per_cpu_var(ve0_lat_stats);
-	list_add(&ve->ve_list, &ve_list_head);
+	list_add_rcu(&ve->ve_list, &ve_list_head);
 	INIT_LIST_HEAD(&ve->_kthread_create_list);
 	spin_lock_init(&ve->aio_nr_lock);
 }

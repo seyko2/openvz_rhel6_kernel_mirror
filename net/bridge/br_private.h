@@ -255,7 +255,6 @@ static inline int br_is_root_bridge(const struct net_bridge *br)
 extern void br_dev_setup(struct net_device *dev);
 extern netdev_tx_t br_dev_xmit(struct sk_buff *skb,
 			       struct net_device *dev);
-extern netdev_tx_t br_xmit(struct sk_buff *skb, struct net_bridge_port *port);
 struct cpt_context;
 struct rst_ops;
 struct cpt_netdev_image;

@@ -131,10 +131,10 @@ static int vps_rst_veinfo(struct cpt_task_image *init_ti, struct cpt_context *ct
 		ve->aio_max_nr = i->aio_max_nr;
 
 	if (cpt_object_has(i, cpt_ve_bcap))
-		memcpy(&get_exec_env()->ve_cap_bset, &i->cpt_ve_bcap,
+		memcpy(&ve->ve_cap_bset, &i->cpt_ve_bcap,
 		       sizeof(kernel_cap_t));
 	else
-		memcpy(&get_exec_env()->ve_cap_bset, &init_ti->cpt_ecap,
+		memcpy(&ve->ve_cap_bset, &init_ti->cpt_ecap,
 		       sizeof(kernel_cap_t));
 	err = 0;
 out_rel:
@@ -1105,7 +1105,8 @@ int rst_kill(struct cpt_context *ctx)
 			eprintk_ctx("wait init (%d) failed: %d\n", init_pid, ret);
 	}
 
-	wait_event_interruptible(env->ve_list_wait, list_empty(&env->ve_list));
+	/* Wait for ve_list_del() */
+	wait_event_interruptible(env->ve_list_wait, env->ve_list.prev == LIST_POISON2);
 
 out:
 	put_ve(env);

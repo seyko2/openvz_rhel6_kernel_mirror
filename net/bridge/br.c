@@ -78,7 +78,6 @@ static int __init br_init(void)
 	brioctl_set(br_ioctl_deviceless_stub);
 	br_handle_frame_hook = br_handle_frame;
 	br_get_br_dev_for_port_hook = __br_get_br_dev_for_port_rcu;
-	br_hard_xmit_hook = br_xmit;
 
 #if defined(CONFIG_ATM_LANE) || defined(CONFIG_ATM_LANE_MODULE)
 	br_fdb_test_addr_hook = br_fdb_test_addr;
@@ -119,7 +118,6 @@ static void __exit br_deinit(void)
 
 	br_handle_frame_hook = NULL;
 	br_get_br_dev_for_port_hook = NULL;
-	br_hard_xmit_hook = NULL;
 	br_fdb_fini();
 }
 
