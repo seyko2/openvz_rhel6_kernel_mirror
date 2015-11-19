@@ -717,6 +717,7 @@ int vc_cons_allocated(unsigned int i)
 {
 	return (i < MAX_NR_CONSOLES && vc_cons[i].d);
 }
+EXPORT_SYMBOL(vc_cons_allocated);
 
 static void visual_init(struct vc_data *vc, int num, int init)
 {

@@ -240,14 +240,9 @@ int fb_set_cmap(struct fb_cmap *cmap, struct fb_info *info)
 				break;
 		}
 	}
-	if (rc == 0) {
+	if (rc == 0)
 		fb_copy_cmap(cmap, &info->cmap);
-#ifdef CONFIG_FB_CON_DECOR
-		if (fbcon_decor_active(info, vc_cons[fg_console].d) &&
-		    info->fix.visual == FB_VISUAL_DIRECTCOLOR)
-			fbcon_decor_fix_pseudo_pal(info, vc_cons[fg_console].d);
-#endif
-	}
+
 	return rc;
 }
 

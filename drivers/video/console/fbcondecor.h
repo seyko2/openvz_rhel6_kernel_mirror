@@ -19,7 +19,7 @@ struct fb_cursor;
 struct fb_info;
 struct vc_data;
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 /* fbcondecor.c */
 int fbcon_decor_init(void);
 int fbcon_decor_exit(void);

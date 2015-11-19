@@ -557,13 +557,12 @@ static int fbcon_takeover(int show_logo)
 	} else {
 		fbcon_has_console_bind = 1;
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 		unlock_fb_info(info);
 		fbcon_decor_init();
 		lock_fb_info(info);
 #endif
 	}
-
 	return err;
 }
 
@@ -1019,7 +1018,7 @@ static const char *fbcon_startup(void)
 	cols /= vc->vc_font.width;
 	rows /= vc->vc_font.height;
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	if (fbcon_decor_active(info, vc)) {
 		cols = vc->vc_decor.twidth / vc->vc_font.width;
 		rows = vc->vc_decor.theight / vc->vc_font.height;
@@ -1055,7 +1054,7 @@ static void fbcon_init(struct vc_data *vc, int init)
 	cap = info->flags;
 
 	if (vc != svc || logo_shown == FBCON_LOGO_DONTSHOW ||
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	    (info->fix.type == FB_TYPE_TEXT) || fbcon_decor_active(info, vc))
 #else
 	    (info->fix.type == FB_TYPE_TEXT))
@@ -1269,7 +1268,7 @@ static void fbcon_clear(struct vc_data *vc, int sy, int sx, int height,
 	if (sy < vc->vc_top && vc->vc_top == logo_lines)
 		vc->vc_top = 0;
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
  	if (fbcon_decor_active(info, vc)) {
  		fbcon_decor_clear(vc, info, sy, sx, height, width);
  		return;
@@ -1296,7 +1295,7 @@ static void fbcon_putcs(struct vc_data *vc, const unsigned short *s,
 	struct fbcon_ops *ops = info->fbcon_par;
 
 	if (!fbcon_is_inactive(vc, info)) {
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 		if (fbcon_decor_active(info, vc))
 			fbcon_decor_putcs(vc, info, s, count, ypos, xpos);
 		else
@@ -1321,7 +1320,7 @@ static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
 	struct fbcon_ops *ops = info->fbcon_par;
 
 	if (!fbcon_is_inactive(vc, info)) {
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	 	if (fbcon_decor_active(info, vc)) {
 	 		fbcon_decor_clear_margins(vc, info, bottom_only);
  		} else
@@ -1850,7 +1849,7 @@ static int fbcon_scroll(struct vc_data *vc, int t, int b, int dir,
 		if (softback_top)
 			fbcon_softback_note(vc, t, count);
 		if (logo_shown >= 0
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 		 || fbcon_decor_active(info, vc)
 #endif
 		 )
@@ -1946,7 +1945,7 @@ static int fbcon_scroll(struct vc_data *vc, int t, int b, int dir,
 			count = vc->vc_rows;
 		if (logo_shown >= 0)
 			goto redraw_down;
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 		if (fbcon_decor_active(info, vc))
 			goto redraw_down;
 #endif
@@ -2099,7 +2098,7 @@ static void fbcon_bmove_rec(struct vc_data *vc, struct display *p, int sy, int s
 		return;
 	}
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	if (fbcon_decor_active(info, vc) && sy == dy && height == 1) {
  		/* must use slower redraw bmove to keep background pic intact */
  		fbcon_decor_bmove_redraw(vc, info, sy, sx, dx, width);
@@ -2179,7 +2178,7 @@ static int fbcon_resize(struct vc_data *vc, unsigned int width,
 	y_diff = info->var.yres - var.yres;
   	if ((x_diff < 0 || x_diff > virt_fw ||
   		y_diff < 0 || y_diff > virt_fh)
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
  		 && !vc->vc_decor.state
 #endif
 	    )
@@ -2223,7 +2222,7 @@ static int fbcon_switch(struct vc_data *vc)
 	if (prev_console != -1)
 		old_info = registered_fb[con2fb_map[prev_console]];
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	if (!fbcon_decor_active_vc(vc) && info->fix.visual == FB_VISUAL_DIRECTCOLOR) {
 		struct vc_data *vc_curr = vc_cons[prev_console].d;
 		if (vc_curr && fbcon_decor_active_vc(vc_curr)) {
@@ -2296,7 +2295,7 @@ static int fbcon_switch(struct vc_data *vc)
 			fbcon_del_cursor_timer(old_info);
 	}
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
  	if (fbcon_decor_active_vc(vc)) {
  		struct vc_data *vc_curr = vc_cons[prev_console].d;
  
@@ -2427,7 +2426,7 @@ static int fbcon_blank(struct vc_data *vc, int blank, int mode_switch)
 
 			if (!(info->flags & FBINFO_MISC_USEREVENT)) {
 				if (fb_blank(info, blank)) {
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 				    if (fbcon_decor_active(info, vc))
 					    fbcon_decor_blank(vc, info, blank);
 				    else
@@ -2591,7 +2590,7 @@ static int fbcon_do_set_font(struct vc_data *vc, int w, int h,
 		cols = FBCON_SWAP(ops->rotate, info->var.xres, info->var.yres);
 		rows = FBCON_SWAP(ops->rotate, info->var.yres, info->var.xres);
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
  		info->var.xoffset = info->var.yoffset = p->yscroll = 0;
 		if (fbcon_decor_active(info, vc)) {
 			cols = vc->vc_decor.twidth;
@@ -2732,7 +2731,7 @@ static int fbcon_set_palette(struct vc_data *vc, unsigned char *table)
 	u8 val;
 
 	if (fbcon_is_inactive(vc, info)
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	    || vc->vc_num != fg_console
 #endif
 	    )
@@ -2761,7 +2760,7 @@ static int fbcon_set_palette(struct vc_data *vc, unsigned char *table)
 	} else
 		fb_copy_cmap(fb_default_cmap(1 << depth), &palette_cmap);
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	if (fbcon_decor_active(info, vc_cons[fg_console].d) &&
 	    info->fix.visual == FB_VISUAL_DIRECTCOLOR) {
 
@@ -3033,7 +3032,7 @@ static void fbcon_modechanged(struct fb_info *info)
 		cols /= vc->vc_font.width;
 		rows /= vc->vc_font.height;
 				
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 		if (!fbcon_decor_active_nores(info, vc)) {
 			vc_resize(vc, cols, rows);
 		} else {
@@ -3703,7 +3702,7 @@ static void fbcon_exit(void)
 		}
 	}
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	fbcon_decor_exit();
 #endif
 	fbcon_has_exited = 1;

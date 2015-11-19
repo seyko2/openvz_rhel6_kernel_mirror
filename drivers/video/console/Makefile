@@ -21,22 +21,39 @@ font-objs += $(font-objs-y)
 # Each configuration option enables a list of files.
 
 obj-$(CONFIG_DUMMY_CONSOLE)       += dummycon.o
-obj-$(CONFIG_SGI_NEWPORT_CONSOLE) += newport_con.o font.o
-obj-$(CONFIG_STI_CONSOLE)         += sticon.o sticore.o font.o
+obj-$(CONFIG_SGI_NEWPORT_CONSOLE) += newport_con.o
+obj-$(CONFIG_STI_CONSOLE)         += sticon.o sticore.o
 obj-$(CONFIG_VGA_CONSOLE)         += vgacon.o
 obj-$(CONFIG_MDA_CONSOLE)         += mdacon.o
-obj-$(CONFIG_FRAMEBUFFER_CONSOLE) += fbcon.o bitblit.o font.o softcursor.o
-ifeq ($(CONFIG_FB_TILEBLITTING),y)
-obj-$(CONFIG_FRAMEBUFFER_CONSOLE)     += tileblit.o
-endif
-ifeq ($(CONFIG_FRAMEBUFFER_CONSOLE_ROTATION),y)
-obj-$(CONFIG_FRAMEBUFFER_CONSOLE)     += fbcon_rotate.o fbcon_cw.o fbcon_ud.o \
-                                         fbcon_ccw.o
-endif
 
-obj-$(CONFIG_FB_CON_DECOR)     	  += fbcondecor.o cfbcondecor.o
-obj-$(CONFIG_FB_STI)              += sticore.o font.o
+obj-$(CONFIG_FRAMEBUFFER_CONSOLE) += fbconsole.o
+fbconsole-objs-$(CONFIG_FRAMEBUFFER_CONSOLE) += fbcon.o bitblit.o softcursor.o
+fbconsole-objs-$(CONFIG_FB_TILEBLITTING) += tileblit.o
+fbconsole-objs-$(CONFIG_FB_CON_DECOR)	 += fbcondecor.o cfbcondecor.o
+fbconsole-objs-$(CONFIG_FRAMEBUFFER_CONSOLE_ROTATION) += \
+					    fbcon_rotate.o fbcon_cw.o fbcon_ud.o fbcon_ccw.o
+fbconsole-objs += $(fbconsole-objs-m) $(fbconsole-objs-y) 
 
-ifeq ($(CONFIG_USB_SISUSBVGA_CON),y)
-obj-$(CONFIG_USB_SISUSBVGA)           += font.o
+obj-$(CONFIG_FB_STI)              += sticore.o
+
+some_fb_console_in_kernel=$(shell echo \
+ $(CONFIG_USB_SISUSBVGA) \
+ $(CONFIG_FRAMEBUFFER_CONSOLE) \
+ $(CONFIG_STI_CONSOLE) \
+ $(CONFIG_SGI_NEWPORT_CONSOLE) \
+ $(CONFIG_FB_STI) | tr -d "nm " | tr -s y )
+
+some_fb_console_as_module=$(shell echo \
+ $(CONFIG_USB_SISUSBVGA) \
+ $(CONFIG_FRAMEBUFFER_CONSOLE) \
+ $(CONFIG_STI_CONSOLE) \
+ $(CONFIG_SGI_NEWPORT_CONSOLE) \
+ $(CONFIG_FB_STI) | tr -d "ny " | tr -s m )
+
+ifeq ($(some_fb_console_in_kernel),y)
+  obj-y += font.o
+else
+  ifeq ($(some_fb_console_as_module),m)
+    obj-m += font.o
+  endif
 endif

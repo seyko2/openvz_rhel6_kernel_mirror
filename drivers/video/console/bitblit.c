@@ -55,7 +55,7 @@ static void bit_bmove(struct vc_data *vc, struct fb_info *info, int sy,
 	area.height = height * vc->vc_font.height;
 	area.width = width * vc->vc_font.width;
 
-#ifdef CONFIG_FB_CON_DECOR
+#if defined CONFIG_FB_CON_DECOR || defined CONFIG_FB_CON_DECOR_MODULE
 	if (fbcon_decor_active(info, vc)) {
  		area.sx += vc->vc_decor.tx;
  		area.sy += vc->vc_decor.ty;

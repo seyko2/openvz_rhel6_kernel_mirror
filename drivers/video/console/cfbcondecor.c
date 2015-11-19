@@ -53,7 +53,8 @@ void fbcon_decor_fix_pseudo_pal(struct fb_info *info, struct vc_data *vc)
 			<< info->var.green.offset);
 		col |= ((vc->vc_palette[j++] >> (8-minlen)) 
 			<< info->var.blue.offset);
-			((u32 *)info->pseudo_palette)[k] = col;
+
+		((u32 *)info->pseudo_palette)[k] = col;
 	}
 }
 				
