@@ -2031,6 +2031,10 @@ struct super_operations {
 	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
 	int (*start_write)(struct super_block *sb, int level, bool wait);
 	void (*end_write)(struct super_block *sb, int level);
+#if defined(CONFIG_BLK_DEV_LOOP) ||  defined(CONFIG_BLK_DEV_LOOP_MODULE)
+	/* and aufs */
+	struct file *(*real_loop)(struct file *);
+#endif
 };
 
 /*
