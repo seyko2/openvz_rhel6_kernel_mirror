@@ -1238,6 +1238,7 @@ int ipmi_si_get_smi_info(void *send_info, struct ipmi_smi_info *data)
 
 	return 0;
 }
+EXPORT_SYMBOL(ipmi_si_get_smi_info);
 
 static void set_maintenance_mode(void *send_info, int enable)
 {
