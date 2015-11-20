@@ -275,7 +275,7 @@ static void dy_adx(struct au_dyaop *dyaop, int do_dx)
 		dyaop->da_op.get_xip_mem = NULL;
 	} else {
 		dyaop->da_op.direct_IO = aufs_aop.direct_IO;
-		dyaop->da_op.direct_IO = aufs_aop.direct_IO_bvec;
+		dyaop->da_op.direct_IO_bvec = aufs_aop.direct_IO_bvec;
 		dyaop->da_op.direct_IO_page = aufs_aop.direct_IO_page;
 		dyaop->da_op.get_xip_mem = aufs_aop.get_xip_mem;
 		if (!dyaop->da_get_xip_mem)

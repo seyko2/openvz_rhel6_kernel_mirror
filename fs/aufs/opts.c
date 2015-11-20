@@ -261,7 +261,7 @@ out:
 /* Caller should free the return value */
 char *au_optstr_br_perm(int brperm)
 {
-	char *p, a[sizeof(AuBrStr_LONGEST)];
+	char *p = 0, a[sizeof(AuBrStr_LONGEST)];
 	int sz;
 
 #define SetPerm(str) do {			\

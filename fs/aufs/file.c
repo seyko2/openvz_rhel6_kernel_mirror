@@ -603,7 +603,7 @@ static int aufs_readpage(struct file *file __maybe_unused, struct page *page)
 }
 
 /* it will never be called, but necessary to support O_DIRECT */
-static ssize_t aufs_direct_IO(int rw, struct kiocb *iocb,
+static ssize_t aufs_direct_IO(int rw, struct kiocb *kiocb,
 			      const struct iovec *iov, loff_t offset,
 			      unsigned long nr_segs)
 { BUG(); return 0; }
