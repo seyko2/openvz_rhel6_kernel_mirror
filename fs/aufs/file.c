@@ -613,6 +613,10 @@ static ssize_t aufs_direct_IO_bvec(int rw, struct kiocb *iocb,
 			      unsigned long bvec_len)
 { BUG(); return 0; }
 
+static ssize_t aufs_direct_IO_page(int rw, struct kiocb *iocb,
+			      struct page *page, loff_t offset)
+{ BUG(); return 0; }
+
 /*
  * it will never be called, but madvise and fadvise behaves differently
  * when get_xip_mem is defined
@@ -660,6 +664,7 @@ const struct address_space_operations aufs_aop = {
 	.readpage		= aufs_readpage,
 	.direct_IO		= aufs_direct_IO,
 	.direct_IO_bvec		= aufs_direct_IO_bvec,
+	.direct_IO_page		= aufs_direct_IO_page,
 	.get_xip_mem		= aufs_get_xip_mem,
 #ifdef CONFIG_AUFS_DEBUG
 	.writepage		= aufs_writepage,
