@@ -17,6 +17,8 @@
 
 #ifdef CONFIG_4KSTACKS
 #define THREAD_ORDER	0
+#elif defined CONFIG_16KSTACKS
+#define THREAD_ORDER	2
 #else
 #define THREAD_ORDER	1
 #endif

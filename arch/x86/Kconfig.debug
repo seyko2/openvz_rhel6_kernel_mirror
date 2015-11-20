@@ -143,10 +143,6 @@ config 4KSTACKS
 	  on the VM subsystem for higher order allocations. This option
 	  will also use IRQ stacks to compensate for the reduced stackspace.
 
-config 16KSTACKS
-	bool "Use 16Kb for kernel stacks instead of 8Kb"
-	depends on X86_64
-
 config IRQSTACKS
 	bool "Use IRQ stacks"
 	depends on X86_32 && !4KSTACKS
@@ -159,6 +155,12 @@ config IRQSTACKS
 	  to increase the size of every per thread stack.
 	  IRQ stack size and handling is done like for 4KSTACKS.
 	  IRQ stacks are always on in case of x86_64.
+
+config 16KSTACKS
+	bool "Use 16Kb for kernel stacks instead of 8Kb"
+	help
+	  If you say Y here the kernel will use a 16Kb stacksize for the
+	  kernel stack attached to each process/thread.
 
 config DOUBLEFAULT
 	default y
