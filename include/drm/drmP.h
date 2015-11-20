@@ -434,7 +434,6 @@ struct drm_prime_file_private {
 
 /** File private data */
 struct drm_file {
-	unsigned always_authenticated :1;
 	unsigned authenticated :1;
 	unsigned is_master :1; /* this file private is a master for a minor */
 	/* true when the client has asked us to expose stereo 3D mode flags */
