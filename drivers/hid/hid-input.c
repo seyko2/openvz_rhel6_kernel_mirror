@@ -260,11 +260,11 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	if (field->flags & HID_MAIN_ITEM_CONSTANT)
 		goto ignore;
 
-	/* only LED usages are supported in output fields */
-	if (field->report_type == HID_OUTPUT_REPORT &&
-			(usage->hid & HID_USAGE_PAGE) != HID_UP_LED) {
-		goto ignore;
-	}
+//	/* only LED usages are supported in output fields */
+//	if (field->report_type == HID_OUTPUT_REPORT &&
+//			(usage->hid & HID_USAGE_PAGE) != HID_UP_LED) {
+//		goto ignore;
+//	}
 
 	if (device->driver->input_mapping) {
 		int ret = device->driver->input_mapping(device, hidinput, field,
@@ -434,6 +434,10 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			map_key_clear(BTN_STYLUS);
 			break;
 
+ 		case 0x51: /* ContactID */
+ 			device->quirks |= HID_QUIRK_MULTITOUCH;
+ 			goto unknown;
+ 
 		default:  goto unknown;
 		}
 		break;
@@ -988,6 +992,16 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 		goto out_unwind;
 	}
 
+	if (hid->quirks & HID_QUIRK_MULTITOUCH) {
+		if (!strncmp(hid->driver->name, "generic-", 8)) {
+			/* generic hid does not know how to handle multitouch devices */
+			if (hidinput)
+				goto out_cleanup;
+			goto out_unwind;
+		}
+		hid->quirks &= ~HID_QUIRK_MULTITOUCH;
+	}
+
 	if (hidinput) {
 		if (drv->input_configured)
 			drv->input_configured(hid, hidinput);
@@ -998,6 +1012,7 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 	return 0;
 
 out_cleanup:
+ 	list_del(&hidinput->list);
 	input_free_device(hidinput->input);
 	kfree(hidinput);
 out_unwind:

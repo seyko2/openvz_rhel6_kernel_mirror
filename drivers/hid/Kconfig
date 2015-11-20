@@ -239,6 +239,31 @@ config HID_MULTITOUCH
 	  To compile this driver as a module, choose M here: the
 	  module will be called hid-multitouch.
 
+config HID_MULTITOUCH
+	tristate "HID Multitouch panels"
+	depends on USB_HID
+	---help---
+	  Generic support for HID multitouch panels.
+
+	  Say Y here if you have one of the following devices:
+	  - 3M PCT touch screens
+	  - Cando dual touch panel
+	  - Cypress TrueTouch panels
+	  - Hanvon dual touch panels
+	  - IrTouch Infrared USB panels
+	  - MosArt dual-touch panels
+	  - PenMount dual touch panels
+	  - Pixcir dual touch panels
+	  - 'Sensing Win7-TwoFinger' panel by GeneralTouch
+          - eGalax dual-touch panels, including the
+	    Joojoo and Wetab tablets
+	  - Stantum multitouch panels
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-multitouch.
+
 config HID_NTRIG
 	tristate "NTrig" if EMBEDDED
 	depends on USB_HID
