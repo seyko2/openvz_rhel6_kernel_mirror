@@ -1,5 +1,5 @@
 /*
- * include/linux/ashmem.h
+ * drivers/staging/android/uapi/ashmem.h
  *
  * Copyright 2008 Google Inc.
  * Author: Robert Love
@@ -9,10 +9,9 @@
  * General Public License.
  */
 
-#ifndef _LINUX_ASHMEM_H
-#define _LINUX_ASHMEM_H
+#ifndef _UAPI_LINUX_ASHMEM_H
+#define _UAPI_LINUX_ASHMEM_H
 
-#include <linux/limits.h>
 #include <linux/ioctl.h>
 
 #define ASHMEM_NAME_LEN		256
@@ -36,13 +35,13 @@ struct ashmem_pin {
 
 #define ASHMEM_SET_NAME		_IOW(__ASHMEMIOC, 1, char[ASHMEM_NAME_LEN])
 #define ASHMEM_GET_NAME		_IOR(__ASHMEMIOC, 2, char[ASHMEM_NAME_LEN])
-#define ASHMEM_SET_SIZE		_IOW(__ASHMEMIOC, 3, size_t)
+#define ASHMEM_SET_SIZE		_IOW(__ASHMEMIOC, 3, __u32)
 #define ASHMEM_GET_SIZE		_IO(__ASHMEMIOC, 4)
-#define ASHMEM_SET_PROT_MASK	_IOW(__ASHMEMIOC, 5, unsigned long)
+#define ASHMEM_SET_PROT_MASK	_IOW(__ASHMEMIOC, 5, __u32)
 #define ASHMEM_GET_PROT_MASK	_IO(__ASHMEMIOC, 6)
 #define ASHMEM_PIN		_IOW(__ASHMEMIOC, 7, struct ashmem_pin)
 #define ASHMEM_UNPIN		_IOW(__ASHMEMIOC, 8, struct ashmem_pin)
 #define ASHMEM_GET_PIN_STATUS	_IO(__ASHMEMIOC, 9)
 #define ASHMEM_PURGE_ALL_CACHES	_IO(__ASHMEMIOC, 10)
 
-#endif	/* _LINUX_ASHMEM_H */
+#endif	/* _UAPI_LINUX_ASHMEM_H */
