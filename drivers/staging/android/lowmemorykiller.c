@@ -132,7 +132,7 @@ static int lowmem_shrink(struct shrinker *s, int nr_to_scan, gfp_t gfp_mask)
 	selected_oom_adj = min_adj;
 
 	read_lock(&tasklist_lock);
-	for_each_process(p) {
+	for_each_process_ve(p) {
 		struct mm_struct *mm;
 		struct signal_struct *sig;
 		int oom_adj;
