@@ -248,7 +248,7 @@ long has_wake_lock(int type)
 	unsigned long irqflags;
 	spin_lock_irqsave(&list_lock, irqflags);
 	ret = has_wake_lock_locked(type);
-	if (ret && (debug_mask & DEBUG_SUSPEND) && type == WAKE_LOCK_SUSPEND)
+	if (ret && (debug_mask & DEBUG_WAKEUP) && type == WAKE_LOCK_SUSPEND)
 		print_active_locks(type);
 	spin_unlock_irqrestore(&list_lock, irqflags);
 	return ret;
@@ -310,7 +310,7 @@ static int power_suspend_late(struct device *dev)
 {
 	int ret = has_wake_lock(WAKE_LOCK_SUSPEND) ? -EAGAIN : 0;
 #ifdef CONFIG_WAKELOCK_STAT
-	wait_for_wakeup = 1;
+	wait_for_wakeup = !ret;
 #endif
 	if (debug_mask & DEBUG_SUSPEND)
 		pr_info("power_suspend_late return %d\n", ret);
@@ -518,6 +518,7 @@ int wake_lock_active(struct wake_lock *lock)
 }
 EXPORT_SYMBOL(wake_lock_active);
 
+#ifdef CONFIG_WAKELOCK_STAT
 static int wakelock_stats_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, wakelock_stats_show, NULL);
@@ -530,6 +531,7 @@ static const struct file_operations wakelock_stats_fops = {
 	.llseek = seq_lseek,
 	.release = single_release,
 };
+#endif
 
 static int __init wakelocks_init(void)
 {
