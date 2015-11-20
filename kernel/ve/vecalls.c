@@ -326,6 +326,8 @@ static void fini_ve_proc(struct ve_struct *ve)
 	fini_ve_proc_entries(ve);
 	unregister_ve_fs_type(ve->proc_fstype, ve->proc_mnt);
 	ve->proc_mnt = NULL;
+	if (ve->proc_cmdline)
+		kfree(ve->proc_cmdline);
 }
 
 static void free_ve_proc(struct ve_struct *ve)
@@ -2303,6 +2305,31 @@ static int init_ve_osrelease(struct ve_struct *ve, char *release)
 	return 0;
 }
 
+static int init_ve_proc_cmdline(struct ve_struct *ve, char *data, unsigned int size)
+{
+	char *cmdline;
+
+	if (!data)
+		return -ENODATA;
+
+	if (data[size-1] != '\0')
+		return -EINVAL;
+
+	if (ve->proc_cmdline) {
+		char *old_cmdline = ve->proc_cmdline;
+		ve->proc_cmdline = 0;
+		kfree(old_cmdline);
+	}
+
+	cmdline = kmalloc(size, GFP_KERNEL);
+	if (!cmdline)
+		return ERR_PTR(-ENOMEM);
+
+	strcpy(cmdline, data);
+	ve->proc_cmdline = cmdline;
+	return 0;
+}
+
 static struct proc_dir_entry *ve_proc_mkdir(struct ve_struct *ve, char *name,
 						struct proc_dir_entry *parent,
 						struct list_head *list)
@@ -2561,11 +2588,17 @@ static int ve_configure(envid_t veid, unsigned int key,
 	case VE_CONFIGURE_OS_RELEASE:
 		err = init_ve_osrelease(ve, data); 
 		break;
+	case VE_CONFIGURE_PROC_CMDLINE:
+		err = init_ve_proc_cmdline(ve, data, size); 
+		break;
 	case VE_CONFIGURE_CREATE_PROC_LINK:
 		err = ve_configure_make_proc_link(ve, val, size, data);
 		break;
 	case VE_CONFIGURE_MOUNT_OPTIONS:
 		err = ve_configure_mount_options(ve, val, size, data);
+		break;
+	default:
+		err = -EINVAL;
 		break;
  	}
 
@@ -2583,7 +2616,7 @@ static int ve_configure_ioctl(struct vzctl_ve_configure *arg)
 	if (copy_from_user(&s, (void __user *)arg, sizeof(s)))
 		goto out;
 	if (s.size) {
-		if (s.size > PAGE_SIZE)
+		if (s.size > PAGE_SIZE - 1)
 			return -EMSGSIZE;
 
 		data = kzalloc(s.size + 1, GFP_KERNEL);

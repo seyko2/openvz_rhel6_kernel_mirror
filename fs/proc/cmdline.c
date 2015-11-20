@@ -6,8 +6,16 @@
 
 static int cmdline_proc_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "%s\n",
-		ve_is_super(get_exec_env()) ? saved_command_line : "quiet");
+	struct ve_struct *ve = get_exec_env();
+	char *cmdline = ve->proc_cmdline;
+
+	if (!cmdline)
+		cmdline = "quiet";
+
+	if (ve_is_super(ve))
+		cmdline = saved_command_line;
+
+	seq_printf(m, "%s\n", cmdline);
 	return 0;
 }
 

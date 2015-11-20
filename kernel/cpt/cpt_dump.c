@@ -907,6 +907,25 @@ static int cpt_dump_utsname(cpt_context_t *ctx)
 	ctx->align(ctx);
  	cpt_close_object(ctx);
 
+ 	cpt_open_object(NULL, ctx);
+ 	o.cpt_next = CPT_NULL;
+	o.cpt_object = CPT_OBJ_NAME;
+	o.cpt_hdrlen = sizeof(o);
+	o.cpt_content = CPT_CONTENT_NAME;
+	ctx->write(&o, sizeof(o), ctx);
+
+ 	if (ve->proc_cmdline) {
+		len = strlen(ve->proc_cmdline);
+		ctx->write(ve->proc_cmdline, len+1, ctx);
+	}
+	else {
+		char *cmdline = "";
+		len = strlen(cmdline);
+		ctx->write(cmdline, len+1, ctx);
+	}
+	ctx->align(ctx);
+	cpt_close_object(ctx);
+
 	cpt_close_section(ctx);
 	return 0;
 }

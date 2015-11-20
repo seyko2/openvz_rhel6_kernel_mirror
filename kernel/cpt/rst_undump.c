@@ -1151,8 +1151,11 @@ static int rst_utsname(cpt_context_t *ctx)
 		if (err)
 			return err;
 		len = o.cpt_next - o.cpt_hdrlen;
-		if (len > __NEW_UTS_LEN + 1)
+		if ((i  < 3) && (len > __NEW_UTS_LEN + 1))
 			return -ENAMETOOLONG;
+		if ((i == 3) && (len > PAGE_SIZE))
+			return -ENAMETOOLONG;
+
 		switch (i) {
 		case 0:
 			ptr = ns->name.nodename; break;
@@ -1160,12 +1163,28 @@ static int rst_utsname(cpt_context_t *ctx)
 			ptr = ns->name.domainname; break;
 		case 2:
 			ptr = ns->name.release; break;
+		case 3:
+			if (unlikely(ve->proc_cmdline))
+				kfree(ve->proc_cmdline);
+			ve->proc_cmdline = kzalloc(len, GFP_KERNEL);
+			ptr = ve->proc_cmdline;
+			if (unlikely(!ptr))
+				return -ENOMEM;
+			break;
 		default:
 			return -EINVAL;
 		}
 		err = ctx->pread(ptr, len, ctx, sec+o.cpt_hdrlen);
 		if (err)
 			return err;
+
+		if (i == 3) {
+			len = strlen(ptr);
+			if (!len) {
+				kfree(ve->proc_cmdline);
+				ve->proc_cmdline = NULL;
+			}
+		}
 		i++;
 		sec += o.cpt_next;
 	}

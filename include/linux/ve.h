@@ -158,6 +158,8 @@ struct ve_struct {
 	char			*log_buf;
 #define VE_DEFAULT_LOG_BUF_LEN	4096
 
+	char			*proc_cmdline;
+
 	unsigned long		down_at;
 	struct list_head	cleanup_list;
 #if defined(CONFIG_FUSE_FS) || defined(CONFIG_FUSE_FS_MODULE)
