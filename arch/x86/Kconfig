@@ -3,7 +3,7 @@ mainmenu "Linux Kernel Configuration for x86"
 
 # Select 32 or 64 bit
 config 64BIT
-	bool "64-bit kernel" if ARCH = "x86"
+	bool "64-bit kernel"
 	default ARCH = "x86_64"
 	---help---
 	  Say yes to build a 64-bit kernel - formerly known as x86_64
