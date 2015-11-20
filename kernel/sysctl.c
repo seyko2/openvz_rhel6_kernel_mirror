@@ -89,6 +89,7 @@ extern int core_uses_pid;
 extern int suid_dumpable;
 extern char core_pattern[];
 extern unsigned int core_pipe_limit;
+extern int min_free_order_shift;
 extern int pid_max_min, pid_max_max;
 extern int sysctl_drop_caches;
 extern int percpu_pagelist_fraction;
@@ -1671,6 +1672,13 @@ static struct ctl_table vm_table[] = {
 		.proc_handler   = meminfo_legacy_layout_sysctl_handler,
 		.strategy       = &sysctl_intvec,
 	},
+  	{
+ 		.procname	= "min_free_order_shift",
+ 		.data		= &min_free_order_shift,
+ 		.maxlen		= sizeof(min_free_order_shift),
+ 		.mode		= 0644,
+ 		.proc_handler	= &proc_dointvec
+ 	},
 	{
 		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,
 		.procname	= "percpu_pagelist_fraction",
