@@ -161,7 +161,7 @@ radeon_get_encoder_enum(struct drm_device *dev, uint32_t supported_device, uint8
 void
 radeon_link_encoder_connector(struct drm_device *dev)
 {
-	struct radeon_device *rdev = dev->dev_private;
+//	struct radeon_device *rdev = dev->dev_private;
 	struct drm_connector *connector;
 	struct radeon_connector *radeon_connector;
 	struct drm_encoder *encoder;
@@ -174,6 +174,7 @@ radeon_link_encoder_connector(struct drm_device *dev)
 			radeon_encoder = to_radeon_encoder(encoder);
 			if (radeon_encoder->devices & radeon_connector->devices) {
 				drm_mode_connector_attach_encoder(connector, encoder);
+#if 0
 				if (radeon_encoder->devices & (ATOM_DEVICE_LCD_SUPPORT)) {
 					if (rdev->is_atom_bios)
 						radeon_atom_backlight_init(radeon_encoder, connector);
@@ -181,6 +182,7 @@ radeon_link_encoder_connector(struct drm_device *dev)
 						radeon_legacy_backlight_init(radeon_encoder, connector);
 					rdev->mode_info.bl_encoder = radeon_encoder;
 				}
+#endif
 			}
 		}
 	}
