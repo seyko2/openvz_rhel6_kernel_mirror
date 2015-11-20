@@ -1500,6 +1500,7 @@ Enomem:
 	}
 	return NULL;
 }
+EXPORT_SYMBOL(iterate_mounts);
 
 struct vfsmount *collect_mounts(struct path *path)
 {

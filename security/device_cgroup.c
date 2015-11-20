@@ -640,6 +640,7 @@ static int devcgroup_populate(struct cgroup_subsys *ss,
 	return cgroup_add_files(cgroup, ss, dev_cgroup_files,
 					ARRAY_SIZE(dev_cgroup_files));
 }
+EXPORT_SYMBOL(devcgroup_inode_permission);
 
 struct cgroup_subsys devices_subsys = {
 	.name = "devices",

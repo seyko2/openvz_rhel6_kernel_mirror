@@ -198,6 +198,7 @@ SYSCALL_DEFINE2(ftruncate, unsigned int, fd, unsigned long, length)
 	asmlinkage_protect(2, ret, fd, length);
 	return ret;
 }
+EXPORT_SYMBOL(do_truncate);
 
 /* LFS versions of truncate are only needed on 32 bit machines */
 #if BITS_PER_LONG == 32

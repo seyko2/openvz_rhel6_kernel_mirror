@@ -22,6 +22,7 @@
 #include <linux/srcu.h>
 #include <linux/rculist.h>
 #include <linux/wait.h>
+#include <linux/module.h>
 
 #include <linux/fsnotify_backend.h>
 #include "fsnotify.h"
@@ -76,6 +77,7 @@ void fsnotify_recalc_group_mask(struct fsnotify_group *group)
 	if (old_mask != mask)
 		fsnotify_recalc_global_mask();
 }
+EXPORT_SYMBOL(fsnotify_put_group);
 
 /*
  * Take a reference to a group so things found under the fsnotify_grp_mutex
@@ -252,3 +254,4 @@ struct fsnotify_group *fsnotify_obtain_group(unsigned int group_num, __u32 mask,
 
 	return group;
 }
+EXPORT_SYMBOL(fsnotify_alloc_group);
