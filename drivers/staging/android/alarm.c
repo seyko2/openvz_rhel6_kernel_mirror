@@ -533,6 +533,7 @@ static struct platform_driver alarm_driver = {
 	}
 };
 
+#ifndef CONFIG_RTC_INTF_ALARM_MODULE
 static int __init alarm_late_init(void)
 {
 	unsigned long   flags;
@@ -553,6 +554,7 @@ static int __init alarm_late_init(void)
 	spin_unlock_irqrestore(&alarm_slock, flags);
 	return 0;
 }
+#endif
 
 static int __init alarm_driver_init(void)
 {
