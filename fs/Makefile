@@ -129,3 +129,4 @@ obj-$(CONFIG_GFS2_FS)           += gfs2/
 obj-$(CONFIG_EXOFS_FS)          += exofs/
 obj-$(CONFIG_PSTORE)		+= pstore/
 obj-$(CONFIG_PRAMCACHE)		+= pramcache.o
+obj-$(CONFIG_YAFFS_FS)		+= yaffs2/
