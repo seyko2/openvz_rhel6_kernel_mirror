@@ -187,11 +187,12 @@ config AUFS_BDEV_LOOP
 	Automatic configuration for internal use.
 	Convert =[ym] into =y.
 
-config AUFS_DEBUG
-	bool "Debug aufs"
-	help
-	Enable this to compile aufs internal debug code.
-	It will have a negative impact to the performance.
+#!! DEBUG is mot working well and cause a kernel panic sometimes
+#config AUFS_DEBUG
+#	bool "Debug aufs"
+#	help
+#	Enable this to compile aufs internal debug code.
+#	It will have a negative impact to the performance.
 
 config AUFS_MAGIC_SYSRQ
 	bool
