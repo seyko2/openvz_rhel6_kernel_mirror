@@ -15,7 +15,7 @@ static inline int irq_canonicalize(int irq)
 	return ((irq == 2) ? 9 : irq);
 }
 
-#ifdef CONFIG_4KSTACKS
+#if defined(CONFIG_4KSTACKS) || defined(CONFIG_IRQSTACKS)
   extern void irq_ctx_init(int cpu);
   extern void irq_ctx_exit(int cpu);
 # define __ARCH_HAS_DO_SOFTIRQ

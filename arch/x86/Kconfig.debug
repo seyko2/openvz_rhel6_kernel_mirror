@@ -135,6 +135,7 @@ config DEBUG_NX_TEST
 config 4KSTACKS
 	bool "Use 4Kb for kernel stacks instead of 8Kb"
 	depends on X86_32
+	select IRQSTACKS
 	---help---
 	  If you say Y here the kernel will use a 4Kb stacksize for the
 	  kernel stack attached to each process/thread. This facilitates
@@ -145,6 +146,19 @@ config 4KSTACKS
 config 16KSTACKS
 	bool "Use 16Kb for kernel stacks instead of 8Kb"
 	depends on X86_64
+
+config IRQSTACKS
+	bool "Use IRQ stacks"
+	depends on X86_32 && !4KSTACKS
+	help
+	  This option will enable IRQ stacks. Used for external hardware
+	  interrupts. If this is the first external hardware interrupt
+	  (i.e. not a nested hardware interrupt) then the
+          kernel switches from the current task to the interrupt stack.
+	  This gives more room for kernel interrupt processing without having
+	  to increase the size of every per thread stack.
+	  IRQ stack size and handling is done like for 4KSTACKS.
+	  IRQ stacks are always on in case of x86_64.
 
 config DOUBLEFAULT
 	default y

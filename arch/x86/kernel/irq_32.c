@@ -49,7 +49,7 @@ static inline int check_stack_overflow(void) { return 0; }
 static inline void print_stack_overflow(void) { }
 #endif
 
-#ifdef CONFIG_4KSTACKS
+#if defined(CONFIG_4KSTACKS) || defined(CONFIG_IRQSTACKS)
 /*
  * per-CPU IRQ handling contexts (thread information and stack)
  */
