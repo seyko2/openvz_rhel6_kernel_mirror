@@ -59,8 +59,10 @@ static int supported_squashfs_filesystem(short major, short minor, short comp)
 		return -EINVAL;
 	}
 
-	if (comp != ZLIB_COMPRESSION)
-		return -EINVAL;
+	if (comp != ZLIB_COMPRESSION) {
+		ERROR("comp != ZLIB_COMPRESSION (%x != %x)\n", comp, ZLIB_COMPRESSION);
+ 		return -EINVAL;
+	}
 
 	return 0;
 }
