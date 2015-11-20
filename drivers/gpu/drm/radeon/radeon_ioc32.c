@@ -368,6 +368,14 @@ static int compat_radeon_cp_setparam(struct file *file, unsigned int cmd,
 #define compat_radeon_cp_setparam NULL
 #endif /* X86_64 || IA64 */
 
+static int compat_radeon_info(struct file *file, unsigned int cmd,
+				     unsigned long arg)
+{
+	struct drm_radeon_info __user *info = (void __user *)arg;
+	info->value &= 0xFFFFFFFF;
+	return drm_ioctl(file, DRM_IOCTL_RADEON_INFO, arg);
+}
+
 static drm_ioctl_compat_t *radeon_compat_ioctls[] = {
 	[DRM_RADEON_CP_INIT] = compat_radeon_cp_init,
 	[DRM_RADEON_CLEAR] = compat_radeon_cp_clear,
@@ -379,6 +387,7 @@ static drm_ioctl_compat_t *radeon_compat_ioctls[] = {
 	[DRM_RADEON_SETPARAM] = compat_radeon_cp_setparam,
 	[DRM_RADEON_ALLOC] = compat_radeon_mem_alloc,
 	[DRM_RADEON_IRQ_EMIT] = compat_radeon_irq_emit,
+	[DRM_RADEON_INFO] = compat_radeon_info,
 };
 
 /**
@@ -390,6 +399,7 @@ static drm_ioctl_compat_t *radeon_compat_ioctls[] = {
  * \param arg user argument.
  * \return zero on success or negative number on failure.
  */
+
 long radeon_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	unsigned int nr = DRM_IOCTL_NR(cmd);
@@ -406,19 +416,6 @@ long radeon_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret = (*fn) (filp, cmd, arg);
 	else
 		ret = drm_ioctl(filp, cmd, arg);
-
-	return ret;
-}
-
-long radeon_kms_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
-{
-	unsigned int nr = DRM_IOCTL_NR(cmd);
-	int ret;
-
-	if (nr < DRM_COMMAND_BASE)
-		return drm_compat_ioctl(filp, cmd, arg);
-
-	ret = drm_ioctl(filp, cmd, arg);
 
 	return ret;
 }

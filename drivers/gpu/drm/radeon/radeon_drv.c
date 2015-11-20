@@ -129,7 +129,7 @@ int radeon_gem_prime_pin(struct drm_gem_object *obj);
 void radeon_gem_prime_unpin(struct drm_gem_object *obj);
 void *radeon_gem_prime_vmap(struct drm_gem_object *obj);
 void radeon_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr);
-extern long radeon_kms_compat_ioctl(struct file *filp, unsigned int cmd,
+extern long radeon_compat_ioctl(struct file *filp, unsigned int cmd,
 				    unsigned long arg);
 
 #if defined(CONFIG_DEBUG_FS)
@@ -384,7 +384,7 @@ static const struct file_operations radeon_driver_kms_fops = {
 	.poll = drm_poll,
 	.read = drm_read,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl = radeon_kms_compat_ioctl,
+	.compat_ioctl = radeon_compat_ioctl,
 #endif
 };
 
