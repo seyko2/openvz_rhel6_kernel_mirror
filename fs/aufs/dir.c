@@ -320,13 +320,11 @@ out:
 /*
  * @file may be NULL
  */
-static int aufs_fsync_dir(struct file *file, int datasync)
+static int aufs_fsync_dir(struct file *file, struct dentry *dentry, int datasync)
 {
 	int err;
-	struct dentry *dentry;
 	struct super_block *sb;
 
-	dentry = file->f_dentry;
 	IMustLock(dentry->d_inode);
 
 	err = 0;

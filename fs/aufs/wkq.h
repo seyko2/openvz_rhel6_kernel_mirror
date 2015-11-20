@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2012 Junjiro R. Okajima
+ * Copyright (C) 2005-2011 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +26,10 @@
 
 #ifdef __KERNEL__
 
+#include <linux/sched.h>
+#include <linux/wait.h>
+#include <linux/aufs_type.h>
+
 struct super_block;
 
 /* ---------------------------------------------------------------------- */
@@ -44,17 +48,17 @@ typedef void (*au_wkq_func_t)(void *args);
 
 /* wkq flags */
 #define AuWkq_WAIT	1
-#define AuWkq_NEST	(1 << 1)
+#define AuWkq_PRE	(1 << 1)
+#ifdef CONFIG_AUFS_HNOTIFY
+#define AuWkq_NEST	(1 << 2)
+#else
+#define AuWkq_NEST	0
+#endif
 #define au_ftest_wkq(flags, name)	((flags) & AuWkq_##name)
 #define au_fset_wkq(flags, name) \
 	do { (flags) |= AuWkq_##name; } while (0)
 #define au_fclr_wkq(flags, name) \
 	do { (flags) &= ~AuWkq_##name; } while (0)
-
-#ifndef CONFIG_AUFS_HNOTIFY
-#undef AuWkq_NEST
-#define AuWkq_NEST	0
-#endif
 
 /* wkq.c */
 int au_wkq_do_wait(unsigned int flags, au_wkq_func_t func, void *args);
@@ -68,7 +72,16 @@ void au_wkq_fin(void);
 
 static inline int au_wkq_test(void)
 {
-	return current->flags & PF_WQ_WORKER;
+	struct task_struct *tsk = current;
+
+	return (tsk->flags & PF_KTHREAD)
+		&& !strncmp(tsk->comm, AUFS_WKQ_NAME "/",
+			    sizeof(AUFS_WKQ_NAME));
+}
+
+static inline int au_wkq_wait_pre(au_wkq_func_t func, void *args)
+{
+	return au_wkq_do_wait(AuWkq_WAIT | AuWkq_PRE, func, args);
 }
 
 static inline int au_wkq_wait(au_wkq_func_t func, void *args)

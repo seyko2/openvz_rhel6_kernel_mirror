@@ -77,7 +77,6 @@ void fsnotify_recalc_group_mask(struct fsnotify_group *group)
 	if (old_mask != mask)
 		fsnotify_recalc_global_mask();
 }
-EXPORT_SYMBOL(fsnotify_put_group);
 
 /*
  * Take a reference to a group so things found under the fsnotify_grp_mutex
@@ -171,6 +170,7 @@ void fsnotify_put_group(struct fsnotify_group *group)
 	fsnotify_recalc_global_mask();
 	fsnotify_destroy_group(group);
 }
+EXPORT_SYMBOL(fsnotify_put_group);
 
 /*
  * Simply run the fsnotify_groups list and find a group which matches
@@ -254,4 +254,4 @@ struct fsnotify_group *fsnotify_obtain_group(unsigned int group_num, __u32 mask,
 
 	return group;
 }
-EXPORT_SYMBOL(fsnotify_alloc_group);
+EXPORT_SYMBOL(fsnotify_obtain_group);

@@ -130,6 +130,7 @@ void au_dbg_verify_dir_parent(struct dentry *dentry, unsigned int sigen);
 void au_dbg_verify_nondir_parent(struct dentry *dentry, unsigned int sigen);
 void au_dbg_verify_gen(struct dentry *parent, unsigned int sigen);
 void au_dbg_verify_kthread(void);
+void au_dbg_verify_wkq(void);
 
 int __init au_debug_init(void);
 void au_debug_sbinfo_init(struct au_sbinfo *sbinfo);
@@ -228,7 +229,7 @@ void au_sysrq_fin(void);
 #ifdef CONFIG_HW_CONSOLE
 #define au_dbg_blocked() do { \
 	WARN_ON(1); \
-	handle_sysrq('w'); \
+	handle_sysrq('w', vc_cons[fg_console].d->vc_tty); \
 } while (0)
 #else
 AuStubVoid(au_dbg_blocked, void)

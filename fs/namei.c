@@ -1453,6 +1453,7 @@ int path_lookup(const char *name, unsigned int flags,
 {
 	return do_path_lookup(AT_FDCWD, name, flags, nd);
 }
+EXPORT_SYMBOL(lookup_hash);
 
 int kern_path(const char *name, unsigned int flags, struct path *path)
 {
@@ -1568,7 +1569,6 @@ struct dentry *lookup_hash(struct nameidata *nd)
 		return ERR_PTR(err);
 	return __lookup_hash(&nd->last, nd->path.dentry, nd);
 }
-EXPORT_SYMBOL(lookup_hash);
 
 int __lookup_one_len(const char *name, struct qstr *this,
 		struct dentry *base, int len)

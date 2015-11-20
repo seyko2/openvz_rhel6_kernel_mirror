@@ -557,7 +557,7 @@ int vfsub_fsync(struct file *file, struct path *path, int datasync)
 
 	/* file can be NULL */
 	lockdep_off();
-	err = vfs_fsync(file, datasync);
+	err = vfs_fsync(file, file->f_path.dentry, datasync);
 	lockdep_on();
 	if (!err) {
 		if (!path) {
@@ -594,9 +594,10 @@ int vfsub_trunc(struct path *h_path, loff_t length, unsigned int attr,
 
 	err = locks_verify_truncate(h_inode, h_file, length);
 	if (!err)
-		err = security_path_truncate(h_path);
+		err = security_path_truncate(h_path, length, attr);
 	if (!err)
 		err = do_truncate(h_path->dentry, length, attr, h_file);
+
 
 out_inode:
 	if (!h_file)

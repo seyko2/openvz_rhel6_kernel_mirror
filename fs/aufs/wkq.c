@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2012 Junjiro R. Okajima
+ * Copyright (C) 2005-2011 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,9 +24,23 @@
 #include <linux/module.h>
 #include "aufs.h"
 
-/* internal workqueue named AUFS_WKQ_NAME */
+/* internal workqueue named AUFS_WKQ_NAME and AUFS_WKQ_PRE_NAME */
+enum {
+	AuWkq_INORMAL,
+	AuWkq_IPRE
+};
 
-static struct workqueue_struct *au_wkq;
+static struct {
+	char *name;
+	struct workqueue_struct *wkq;
+} au_wkq[] = {
+	[AuWkq_INORMAL] = {
+		.name = AUFS_WKQ_NAME
+	},
+	[AuWkq_IPRE] = {
+		.name = AUFS_WKQ_PRE_NAME
+	}
+};
 
 struct au_wkinfo {
 	struct work_struct wk;
@@ -46,15 +60,12 @@ static void wkq_func(struct work_struct *wk)
 {
 	struct au_wkinfo *wkinfo = container_of(wk, struct au_wkinfo, wk);
 
-	AuDebugOn(current_fsuid());
-	AuDebugOn(rlimit(RLIMIT_FSIZE) != RLIM_INFINITY);
-
 	wkinfo->func(wkinfo->args);
 	if (au_ftest_wkq(wkinfo->flags, WAIT))
 		complete(wkinfo->comp);
 	else {
 		kobject_put(wkinfo->kobj);
-		module_put(THIS_MODULE); /* todo: ?? */
+		module_put(THIS_MODULE);
 		kfree(wkinfo);
 	}
 }
@@ -102,6 +113,8 @@ static void au_wkq_comp_free(struct completion *comp __maybe_unused)
 
 static void au_wkq_run(struct au_wkinfo *wkinfo)
 {
+	struct workqueue_struct *wkq;
+
 	if (au_ftest_wkq(wkinfo->flags, NEST)) {
 		if (au_wkq_test()) {
 			AuWarn1("wkq from wkq, due to a dead dir by UDBA?\n");
@@ -109,14 +122,14 @@ static void au_wkq_run(struct au_wkinfo *wkinfo)
 		}
 	} else
 		au_dbg_verify_kthread();
-
+	INIT_WORK(&wkinfo->wk, wkq_func);
 	if (au_ftest_wkq(wkinfo->flags, WAIT)) {
-		INIT_WORK_ON_STACK(&wkinfo->wk, wkq_func);
-		queue_work(au_wkq, &wkinfo->wk);
-	} else {
-		INIT_WORK(&wkinfo->wk, wkq_func);
+		wkq = au_wkq[AuWkq_INORMAL].wkq;
+		if (au_ftest_wkq(wkinfo->flags, PRE))
+			wkq = au_wkq[AuWkq_IPRE].wkq;
+		queue_work(wkq, &wkinfo->wk);
+	} else
 		schedule_work(&wkinfo->wk);
-	}
 }
 
 /*
@@ -141,7 +154,6 @@ int au_wkq_do_wait(unsigned int flags, au_wkq_func_t func, void *args)
 		/* no timeout, no interrupt */
 		wait_for_completion(wkinfo.comp);
 		au_wkq_comp_free(comp);
-		destroy_work_on_stack(&wkinfo.wk);
 	}
 
 	return err;
@@ -173,7 +185,7 @@ int au_wkq_nowait(au_wkq_func_t func, void *args, struct super_block *sb,
 		wkinfo->args = args;
 		wkinfo->comp = NULL;
 		kobject_get(wkinfo->kobj);
-		__module_get(THIS_MODULE); /* todo: ?? */
+		__module_get(THIS_MODULE);
 
 		au_wkq_run(wkinfo);
 	} else {
@@ -195,20 +207,31 @@ void au_nwt_init(struct au_nowait_tasks *nwt)
 
 void au_wkq_fin(void)
 {
-	destroy_workqueue(au_wkq);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(au_wkq); i++)
+		if (au_wkq[i].wkq)
+			destroy_workqueue(au_wkq[i].wkq);
 }
 
 int __init au_wkq_init(void)
 {
-	int err;
+	int err, i;
 
 	err = 0;
-	BUILD_BUG_ON(!WQ_RESCUER);
-	au_wkq = alloc_workqueue(AUFS_WKQ_NAME, !WQ_RESCUER, WQ_DFL_ACTIVE);
-	if (IS_ERR(au_wkq))
-		err = PTR_ERR(au_wkq);
-	else if (!au_wkq)
-		err = -ENOMEM;
+	for (i = 0; !err && i < ARRAY_SIZE(au_wkq); i++) {
+		au_wkq[i].wkq = create_workqueue(au_wkq[i].name);
+		if (IS_ERR(au_wkq[i].wkq))
+			err = PTR_ERR(au_wkq[i].wkq);
+		else if (!au_wkq[i].wkq)
+			err = -ENOMEM;
+		if (unlikely(err))
+			au_wkq[i].wkq = NULL;
+	}
+	if (!err)
+		au_dbg_verify_wkq();
+	else
+		au_wkq_fin();
 
 	return err;
 }

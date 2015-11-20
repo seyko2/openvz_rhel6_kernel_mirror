@@ -21,6 +21,7 @@
  */
 
 #include <linux/pagemap.h>
+#include <linux/fsnotify.h>
 #include "aufs.h"
 
 /* drop flags for writing */
@@ -94,7 +95,7 @@ struct file *au_h_open(struct dentry *dentry, aufs_bindex_t bindex, int flags,
 			goto out_br;
 		}
 	}
-	fsnotify_open(h_file);
+	fsnotify_open(h_dentry);
 	goto out; /* success */
 
 out_br:

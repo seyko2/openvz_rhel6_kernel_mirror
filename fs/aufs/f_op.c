@@ -550,16 +550,14 @@ out:
 
 /* ---------------------------------------------------------------------- */
 
-static int aufs_fsync_nondir(struct file *file, int datasync)
+static int aufs_fsync_nondir(struct file *file, struct dentry *dentry, int datasync)
 {
 	int err;
 	struct au_pin pin;
-	struct dentry *dentry;
 	struct inode *inode;
 	struct file *h_file;
 	struct super_block *sb;
 
-	dentry = file->f_dentry;
 	inode = dentry->d_inode;
 	IMustLock(file->f_mapping->host);
 	if (inode != file->f_mapping->host) {
