@@ -703,6 +703,9 @@ int __devcgroup_inode_permission(struct inode *inode, int mask)
 	return __devcgroup_check_permission(type, imajor(inode), iminor(inode),
 			access);
 }
+//!! aufs
+EXPORT_SYMBOL(__devcgroup_inode_permission);
+
 
 /* Returns 1 if exists, 0 otherwise */
 int devcgroup_device_exist(struct cgroup *cgrp, unsigned type, dev_t device)
