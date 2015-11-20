@@ -5,6 +5,7 @@
 menuconfig X86_PLATFORM_DEVICES
 	bool "X86 Platform Specific Device Drivers"
 	default y
+	depends on X86
 	---help---
 	  Say Y here to get to see options for device drivers for various
 	  x86 platforms, including vendor-specific laptop extension drivers.
@@ -17,12 +18,14 @@ if X86_PLATFORM_DEVICES
 config ACER_WMI
 	tristate "Acer WMI Laptop Extras"
 	depends on ACPI
-	depends on LEDS_CLASS
-	depends on NEW_LEDS
+	select LEDS_CLASS
+	select NEW_LEDS
 	depends on BACKLIGHT_CLASS_DEVICE
 	depends on SERIO_I8042
+	depends on INPUT
 	depends on RFKILL || RFKILL = n
-	select ACPI_WMI
+	depends on ACPI_WMI
+	select INPUT_SPARSEKMAP
 	---help---
 	  This is a driver for newer Acer (and Wistron) laptops. It adds
 	  wireless radio and bluetooth control, and on some laptops,
@@ -59,6 +62,8 @@ config ASUS_LAPTOP
 	select NEW_LEDS
 	select BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
+	depends on RFKILL || RFKILL = n
+	select INPUT_SPARSEKMAP
 	---help---
 	  This is the new Linux driver for Asus laptops. It may also support some
 	  MEDION, JVC or VICTOR laptops. It makes all the extra buttons generate
@@ -89,6 +94,7 @@ config DELL_WMI
 	tristate "Dell WMI extras"
 	depends on ACPI_WMI
 	depends on INPUT
+	select INPUT_SPARSEKMAP
 	---help---
 	  Say Y here if you want to support WMI-based hotkeys on Dell laptops.
 
@@ -127,7 +133,7 @@ config TC1100_WMI
 	depends on !X86_64
 	depends on EXPERIMENTAL
 	depends on ACPI
-	select ACPI_WMI
+	depends on ACPI_WMI
 	---help---
 	  This is a driver for the WMI extensions (wireless and bluetooth power
 	  control) of the HP Compaq TC1100 tablet.
@@ -137,6 +143,7 @@ config HP_WMI
 	depends on ACPI_WMI
 	depends on INPUT
 	depends on RFKILL || RFKILL = n
+	select INPUT_SPARSEKMAP
 	help
 	 Say Y here if you want to support WMI-based hotkeys on HP laptops and
 	 to read data from WMI such as docking or ambient light sensor state.
@@ -148,6 +155,8 @@ config MSI_LAPTOP
 	tristate "MSI Laptop Extras"
 	depends on ACPI
 	depends on BACKLIGHT_CLASS_DEVICE
+	depends on RFKILL
+	depends on SERIO_I8042
 	---help---
 	  This is a driver for laptops built by MSI (MICRO-STAR
 	  INTERNATIONAL):
@@ -166,6 +175,7 @@ config PANASONIC_LAPTOP
 	tristate "Panasonic Laptop Extras"
 	depends on INPUT && ACPI
 	depends on BACKLIGHT_CLASS_DEVICE
+	select INPUT_SPARSEKMAP
 	---help---
 	  This driver adds support for access to backlight control and hotkeys
 	  on Panasonic Let's Note laptops.
@@ -177,6 +187,9 @@ config COMPAL_LAPTOP
 	tristate "Compal Laptop Extras"
 	depends on ACPI
 	depends on BACKLIGHT_CLASS_DEVICE
+	depends on RFKILL
+	depends on HWMON
+	depends on POWER_SUPPLY
 	---help---
 	  This is a driver for laptops built by Compal:
 
@@ -341,6 +354,9 @@ config EEEPC_LAPTOP
 	depends on HOTPLUG_PCI
 	select BACKLIGHT_CLASS_DEVICE
 	select HWMON
+	select LEDS_CLASS
+	select NEW_LEDS
+	select INPUT_SPARSEKMAP
 	---help---
 	  This driver supports the Fn-Fx keys on Eee PC laptops.
 
@@ -350,6 +366,21 @@ config EEEPC_LAPTOP
 
 	  If you have an Eee PC laptop, say Y or M here.
 
+config EEEPC_WMI
+	tristate "Eee PC WMI Hotkey Driver (EXPERIMENTAL)"
+	depends on ACPI_WMI
+	depends on INPUT
+	depends on EXPERIMENTAL
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on RFKILL || RFKILL = n
+	select INPUT_SPARSEKMAP
+	select LEDS_CLASS
+	select NEW_LEDS
+	---help---
+	  Say Y here if you want to support WMI-based hotkeys on Eee PC laptops.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called eeepc-wmi.
 
 config ACPI_WMI
 	tristate "WMI"
@@ -371,6 +402,16 @@ config ACPI_WMI
 
 	  It is safe to enable this driver even if your DSDT doesn't define
 	  any ACPI-WMI devices.
+
+config S103T_WMI
+	tristate "Lenovo S10-3T Rotate Button Support"
+	depends on ACPI_WMI
+	depends on INPUT
+	---help---
+	  This is a driver for the Lenovo ideapad S10-3T rotate button.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called lsrot.
 
 config ACPI_ASUS
 	tristate "ASUS/Medion Laptop Extras (DEPRECATED)"
@@ -408,6 +449,7 @@ config TOPSTAR_LAPTOP
 	tristate "Topstar Laptop Extras"
 	depends on ACPI
 	depends on INPUT
+	select INPUT_SPARSEKMAP
 	---help---
 	  This driver adds support for hotkeys found on Topstar laptops.
 
@@ -416,10 +458,13 @@ config TOPSTAR_LAPTOP
 config ACPI_TOSHIBA
 	tristate "Toshiba Laptop Extras"
 	depends on ACPI
+	select LEDS_CLASS
+	select NEW_LEDS
+	depends on BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
 	depends on RFKILL || RFKILL = n
 	select INPUT_POLLDEV
-	select BACKLIGHT_CLASS_DEVICE
+	select INPUT_SPARSEKMAP
 	---help---
 	  This driver adds support for access to certain system settings
 	  on "legacy free" Toshiba laptops.  These laptops can be recognized by
