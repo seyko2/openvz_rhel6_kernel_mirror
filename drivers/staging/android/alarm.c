@@ -13,9 +13,9 @@
  *
  */
 
-#ifndef __i386__
-#include <asm/mach/time.h>
-#endif
+//#ifndef __i386__
+//#include <asm/mach/time.h>
+//#endif
 #include <linux/android_alarm.h>
 #include <linux/device.h>
 #include <linux/miscdevice.h>
@@ -338,7 +338,7 @@ static enum hrtimer_restart alarm_timer_triggered(struct hrtimer *timer)
 	now = base->stopped ? base->stopped_time : hrtimer_cb_get_time(timer);
 	now = ktime_sub(now, base->delta);
 
-	pr_alarm(INT, "alarm_timer_triggered type %d at %lld\n",
+	pr_alarm(INT, "alarm_timer_triggered type %ld at %lld\n",
 		base - alarms, ktime_to_ns(now));
 
 	while (base->first) {
@@ -361,7 +361,7 @@ static enum hrtimer_restart alarm_timer_triggered(struct hrtimer *timer)
 		spin_lock_irqsave(&alarm_slock, flags);
 	}
 	if (!base->first)
-		pr_alarm(FLOW, "no more alarms of type %d\n", base - alarms);
+		pr_alarm(FLOW, "no more alarms of type %ld\n", base - alarms);
 	update_timer_locked(base, true);
 	spin_unlock_irqrestore(&alarm_slock, flags);
 	return HRTIMER_NORESTART;
