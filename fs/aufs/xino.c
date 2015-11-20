@@ -1253,12 +1253,6 @@ int au_xino_path(struct seq_file *seq, struct file *file)
 		goto out;
 
 	err = 0;
-#define Deleted "\\040(deleted)"
-	seq->count -= sizeof(Deleted) - 1;
-	AuDebugOn(memcmp(seq->buf + seq->count, Deleted,
-			 sizeof(Deleted) - 1));
-#undef Deleted
-
 out:
 	return err;
 }
