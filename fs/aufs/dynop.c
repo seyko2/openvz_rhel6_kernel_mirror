@@ -189,6 +189,7 @@ static void dy_aop(struct au_dykey *key, const void *h_op,
 	DySetAop(releasepage);
 	/* these two will be changed according to an aufs mount option */
 	DySetAop(direct_IO);
+	DySetAop(direct_IO_bvec);
 	DySetAop(get_xip_mem);
 	DySetAop(migratepage);
 	DySetAop(launder_page);
@@ -268,9 +269,11 @@ static void dy_adx(struct au_dyaop *dyaop, int do_dx)
 {
 	if (!do_dx) {
 		dyaop->da_op.direct_IO = NULL;
+		dyaop->da_op.direct_IO_bvec = NULL;
 		dyaop->da_op.get_xip_mem = NULL;
 	} else {
 		dyaop->da_op.direct_IO = aufs_aop.direct_IO;
+		dyaop->da_op.direct_IO = aufs_aop.direct_IO_bvec;
 		dyaop->da_op.get_xip_mem = aufs_aop.get_xip_mem;
 		if (!dyaop->da_get_xip_mem)
 			dyaop->da_op.get_xip_mem = NULL;

@@ -97,7 +97,7 @@ static void sysrq_sb(struct super_block *sb)
 /* ---------------------------------------------------------------------- */
 
 /* module parameter */
-static char *aufs_sysrq_key = "a";
+static char *aufs_sysrq_key = "x";
 module_param_named(sysrq, aufs_sysrq_key, charp, S_IRUGO);
 MODULE_PARM_DESC(sysrq, "MagicSysRq key for " AUFS_NAME);
 
@@ -115,7 +115,7 @@ static void au_sysrq(int key __maybe_unused, struct tty_struct *tty)
 
 static struct sysrq_key_op au_sysrq_op = {
 	.handler	= au_sysrq,
-	.help_msg	= "Aufs",
+	.help_msg	= "Aufs(X)",
 	.action_msg	= "Aufs",
 	.enable_mask	= SYSRQ_ENABLE_DUMP
 };
