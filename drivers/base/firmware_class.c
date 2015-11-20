@@ -19,6 +19,7 @@
 #include <linux/kthread.h>
 #include <linux/highmem.h>
 #include <linux/firmware.h>
+#include <linux/file.h>
 #include "base.h"
 
 #define to_dev(obj) container_of(obj, struct device, kobj)
@@ -51,6 +52,75 @@ struct firmware_priv {
 	const char *vdata;
 	struct timer_list timeout;
 };
+
+/* Don't inline this: 'struct kstat' is biggish */
+static noinline long fw_file_size(struct file *file)
+{
+	struct kstat st;
+	if (vfs_getattr(file->f_path.mnt, file->f_path.dentry, &st))
+		return -1;
+	if (!S_ISREG(st.mode))
+		return -1;
+	if (st.size != (long)st.size)
+		return -1;
+	return st.size;
+}
+
+static bool fw_read_file_contents(struct file *file, struct firmware *fw)
+{
+	loff_t pos;
+	long size, size2;
+	char *buf;
+
+	size = fw_file_size(file);
+	if (size < 0)
+		return false;
+	buf = vmalloc(size);
+	if (!buf)
+		return false;
+	pos = 0;
+	if (1) {
+		mm_segment_t fs;
+
+		fs = get_fs();
+		set_fs(get_ds());
+		size2 = vfs_read(file, buf, size, &pos);
+		set_fs(fs);
+	}
+	if (size2 != size) {
+		vfree(buf);
+		return false;
+	}
+	fw->data = buf;
+	fw->size = size;
+	return true;
+}
+
+static bool fw_get_filesystem_firmware(struct firmware *fw, const char *name)
+{
+	int i;
+	bool success = false;
+	const char *fw_path[] = { "/lib/firmware/update", "/firmware", "/lib/firmware" };
+	char *path = __getname();
+
+	printk("Trying to direct load fw '%s' ", name);
+	for (i = 0; i < ARRAY_SIZE(fw_path); i++) {
+		struct file *file;
+		snprintf(path, PATH_MAX, "%s/%s", fw_path[i], name);
+
+		file = filp_open(path, O_RDONLY, 0);
+		if (IS_ERR(file))
+			continue;
+		printk("from file '%s' ", path);
+		success = fw_read_file_contents(file, fw);
+		fput(file);
+		if (success)
+			break;
+	}       
+	printk(" %s.\n", success ? "Ok" : "failed");
+	__putname(path);
+	return success;
+}
 
 #ifdef CONFIG_FW_LOADER
 extern struct builtin_fw __start_builtin_fw[];
@@ -539,7 +609,12 @@ _request_firmware(const struct firmware **firmware_p, const char *name,
 		return 0;
 	}
 
-	if (uevent)
+	if (fw_get_filesystem_firmware(firmware, name)) {
+		dev_info(device, "firmware: direct-loaded firmware %s\n", name);
+		return 0;
+	}
+
+ 	if (uevent)
 		dev_info(device, "firmware: requesting %s\n", name);
 
 	retval = fw_setup_device(firmware, &f_dev, name, device, uevent);
