@@ -232,8 +232,12 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 		goto out_put_pid;
 	}
 
-	/* for compatibility root is always authenticated */
-	priv->authenticated = capable(CAP_SYS_ADMIN);
+#ifdef CONFIG_NO_GPU_AUTHENTICATION
+	priv->authenticated = 1;
+#else
+ 	/* for compatibility root is always authenticated */
+ 	priv->authenticated = capable(CAP_SYS_ADMIN);
+#endif
 	priv->lock_count = 0;
 
 	INIT_LIST_HEAD(&priv->lhead);
