@@ -273,22 +273,25 @@ static int au_compare_mnt(struct vfsmount *mnt, void *arg)
 
 static struct vfsmount *au_mnt_get(struct super_block *sb)
 {
-	int err;
-	struct au_compare_mnt_args args = {
-		.sb = sb
-	};
 	struct mnt_namespace *ns;
+	struct vfsmount *pos, *mnt;
 
-	br_read_lock(vfsmount_lock);
+	spin_lock(&vfsmount_lock);
 	/* no get/put ?? */
 	AuDebugOn(!current->nsproxy);
 	ns = current->nsproxy->mnt_ns;
 	AuDebugOn(!ns);
-	err = iterate_mounts(au_compare_mnt, &args, ns->root);
-	br_read_unlock(vfsmount_lock);
-	AuDebugOn(!err);
-	AuDebugOn(!args.mnt);
-	return args.mnt;
+	mnt = NULL;
+	/* the order (reverse) will not be a problem */
+	list_for_each_entry(pos, &ns->list, mnt_list)
+		if (pos->mnt_sb == sb) {
+			mnt = mntget(pos);
+			break;
+		}
+	spin_unlock(&vfsmount_lock);
+	AuDebugOn(!mnt);
+
+	return mnt;
 }
 
 struct au_nfsd_si_lock {
