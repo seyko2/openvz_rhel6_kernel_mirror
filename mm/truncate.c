@@ -628,6 +628,7 @@ int vmtruncate_range(struct inode *inode, loff_t lstart, loff_t lend)
 
 	return 0;
 }
+EXPORT_SYMBOL(vmtruncate_range);
 
 /**
  * truncate_pagecache_range - unmap and remove pagecache that is hole-punched

@@ -163,6 +163,7 @@ void alarm_init(struct alarm *alarm,
 
 	pr_alarm(FLOW, "created alarm, type %d, func %pF\n", type, function);
 }
+EXPORT_SYMBOL(alarm_init);
 
 
 /**
@@ -181,6 +182,7 @@ void alarm_start_range(struct alarm *alarm, ktime_t start, ktime_t end)
 	alarm_enqueue_locked(alarm);
 	spin_unlock_irqrestore(&alarm_slock, flags);
 }
+EXPORT_SYMBOL(alarm_start_range);
 
 /**
  * alarm_try_to_cancel - try to deactivate an alarm
@@ -221,6 +223,7 @@ int alarm_try_to_cancel(struct alarm *alarm)
 		ret = -1;
 	return ret;
 }
+EXPORT_SYMBOL(alarm_try_to_cancel);
 
 /**
  * alarm_cancel - cancel an alarm and wait for the handler to finish.
@@ -239,6 +242,7 @@ int alarm_cancel(struct alarm *alarm)
 		cpu_relax();
 	}
 }
+EXPORT_SYMBOL(alarm_cancel);
 
 /**
  * alarm_set_rtc - set the kernel and rtc walltime
@@ -300,6 +304,7 @@ err:
 	mutex_unlock(&alarm_setrtc_mutex);
 	return ret;
 }
+EXPORT_SYMBOL(alarm_set_rtc);
 
 /**
  * alarm_get_elapsed_realtime - get the elapsed real time in ktime_t format
@@ -318,6 +323,7 @@ ktime_t alarm_get_elapsed_realtime(void)
 	spin_unlock_irqrestore(&alarm_slock, flags);
 	return now;
 }
+EXPORT_SYMBOL(alarm_get_elapsed_realtime);
 
 static enum hrtimer_restart alarm_timer_triggered(struct hrtimer *timer)
 {
@@ -586,7 +592,10 @@ static void  __exit alarm_exit(void)
 	platform_driver_unregister(&alarm_driver);
 }
 
+#ifndef CONFIG_RTC_INTF_ALARM_MODULE
 late_initcall(alarm_late_init);
+#endif
+
 module_init(alarm_driver_init);
 module_exit(alarm_exit);
-
+MODULE_LICENSE("GPL");

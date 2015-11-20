@@ -22,6 +22,7 @@
 static DEFINE_IDR(rtc_idr);
 static DEFINE_MUTEX(idr_lock);
 struct class *rtc_class;
+EXPORT_SYMBOL(rtc_class);
 
 static void rtc_device_release(struct device *dev)
 {

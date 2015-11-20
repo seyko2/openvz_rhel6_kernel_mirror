@@ -2557,6 +2557,7 @@ void shmem_set_file(struct vm_area_struct *vma, struct file *file, loff_t size)
 	if (vma->vm_flags & VM_SHARED)
 	    vma->vm_ops = &shmem_vm_ops;
 }
+EXPORT_SYMBOL(shmem_set_file);
 
 /**
  * shmem_zero_setup - setup a shared anonymous mapping
