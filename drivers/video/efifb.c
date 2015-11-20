@@ -14,9 +14,8 @@
 #include <linux/screen_info.h>
 #include <linux/dmi.h>
 #include <linux/pci.h>
+#include <linux/vgaarb.h>
 #include <video/vga.h>
-
-static struct pci_dev *default_vga;
 
 static struct fb_var_screeninfo efifb_defined __initdata = {
 	.activate		= FB_ACTIVATE_NOW,
@@ -180,16 +179,6 @@ static struct fb_ops efifb_ops = {
 	.fb_imageblit	= cfb_imageblit,
 };
 
-struct pci_dev *vga_default_device(void)
-{
-	return default_vga;
-}
-
-void vga_set_default_device(struct pci_dev *pdev)
-{
-	default_vga = pdev;
-}
-
 static int __init efifb_setup(char *options)
 {
 	char *this_opt;
@@ -240,7 +229,7 @@ static int __init efifb_setup(char *options)
 
 			if (screen_info.lfb_base >= start &&
 			    (screen_info.lfb_base + screen_info.lfb_size) < end)
-				default_vga = dev;
+				vga_set_default_device(dev);
 		}
 	}
 

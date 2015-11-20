@@ -704,8 +704,8 @@ config FB_VESA
 	  read <file:Documentation/fb/vesafb.txt>. If unsure, say Y.
 
 config FB_EFI
-	bool "EFI-based Framebuffer Support"
-	depends on (FB = y) && X86 && EFI
+	tristate "EFI-based Framebuffer Support"
+	depends on FB && X86 && EFI
 	select FB_CFB_FILLRECT
 	select FB_CFB_COPYAREA
 	select FB_CFB_IMAGEBLIT

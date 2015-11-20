@@ -74,6 +74,21 @@ static bool vga_arbiter_used;
 static DEFINE_SPINLOCK(vga_lock);
 static DECLARE_WAIT_QUEUE_HEAD(vga_wait_queue);
 
+#ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
+static struct pci_dev *vga_default;
+
+struct pci_dev *vga_default_device(void)
+{
+	return vga_default;
+}
+EXPORT_SYMBOL_GPL(vga_default_device);
+
+void vga_set_default_device(struct pci_dev *pdev)
+{
+	vga_default = pdev;
+}
+EXPORT_SYMBOL_GPL(vga_set_default_device);
+#endif
 
 static const char *vga_iostate_to_str(unsigned int iostate)
 {
@@ -112,11 +127,6 @@ both:
 	return 1;
 }
 
-#ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
-/* this is only used a cookie - it should not be dereferenced */
-static struct pci_dev *vga_default;
-#endif
-
 static void vga_arb_device_card_gone(struct pci_dev *pdev);
 
 /* Find somebody in our list */
@@ -129,14 +139,6 @@ static struct vga_device *vgadev_find(struct pci_dev *pdev)
 			return vgadev;
 	return NULL;
 }
-
-/* Returns the default VGA device (vgacon's babe) */
-#ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
-struct pci_dev *vga_default_device(void)
-{
-	return vga_default;
-}
-#endif
 
 static inline void vga_irq_set_state(struct vga_device *vgadev, bool state)
 {
@@ -567,11 +569,9 @@ static bool vga_arbiter_add_pci_device(struct pci_dev *pdev)
 	/* Deal with VGA default device. Use first enabled one
 	 * by default if arch doesn't have it's own hook
 	 */
-#ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
-	if (vga_default == NULL &&
+	if (vga_default_device() == NULL &&
 	    ((vgadev->owns & VGA_RSRC_LEGACY_MASK) == VGA_RSRC_LEGACY_MASK))
-		vga_default = pci_dev_get(pdev);
-#endif
+		vga_set_default_device(pci_dev_get(pdev));
 
 	vga_arbiter_check_bridge_sharing(vgadev);
 
@@ -605,12 +605,10 @@ static bool vga_arbiter_del_pci_device(struct pci_dev *pdev)
 		goto bail;
 	}
 
-#ifndef __ARCH_HAS_VGA_DEFAULT_DEVICE
-	if (vga_default == pdev) {
+	if (vga_default_device() == pdev) {
 		pci_dev_put(vga_default);
-		vga_default = NULL;
+		vga_set_default_device(NULL);
 	}
-#endif
 
 	if (vgadev->decodes & (VGA_RSRC_LEGACY_IO | VGA_RSRC_LEGACY_MEM))
 		vga_decode_count--;

@@ -41,7 +41,9 @@ some_fb_console_in_kernel=$(shell echo \
  $(CONFIG_FRAMEBUFFER_CONSOLE) \
  $(CONFIG_STI_CONSOLE) \
  $(CONFIG_SGI_NEWPORT_CONSOLE) \
- $(CONFIG_FB_STI) | tr -d "nm " | tr -s y )
+ $(CONFIG_FB_STI) \
+ $(CONFIG_EARLY_PRINTK_EFI) \
+ | tr -d "nm " | tr -s y )
 
 some_fb_console_as_module=$(shell echo \
  $(CONFIG_USB_SISUSBVGA) \
